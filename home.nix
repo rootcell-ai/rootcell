@@ -18,7 +18,7 @@
     fd              # pi shells out to `fd`
 
     # Core dev CLIs
-    gh
+    gh              # GitHub CLI; agents use this a lot
     curl
     wget
     jq
@@ -34,6 +34,12 @@
   # `npm install -g` against the default prefix would fail.
   home.sessionVariables = {
     NPM_CONFIG_PREFIX = "${config.home.homeDirectory}/.npm-global";
+
+    # Pi reads its provider key from the env. DON'T put it here — the Nix
+    # store is world-readable. Export it from your shell each session, or
+    # put it in a non-tracked file inside the VM.
+    #
+    # ANTHROPIC_API_KEY = "...";   # don't actually do this
   };
 
   home.sessionPath = [
@@ -48,11 +54,20 @@
     '';
   };
 
+  # direnv + nix-direnv: drop a flake.nix in any project dir and have its
+  # toolchain auto-load. Pairs very well with disposable VMs.
+  # `programs.direnv.enable` adds the direnv binary itself, no need to
+  # list it in home.packages.
+  programs.direnv = {
+    enable = true;
+    nix-direnv.enable = true;
+  };
+
   # `programs.git.enable` adds git itself, so we don't list it above.
   programs.git = {
     enable = true;
-    userName = "Jim Pudar";
-    userEmail = "jim@pudar.com";
+    userName  = lib.mkDefault "agent";
+    userEmail = lib.mkDefault "agent@localhost";
     extraConfig = {
       init.defaultBranch = "main";
       pull.rebase = true;

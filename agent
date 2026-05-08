@@ -31,6 +31,7 @@ FORCE_PROVISION=0
 if [ "${1:-}" = "provision" ]; then
   FORCE_PROVISION=1
   shift
+  PROVISION_ONLY=1
 fi
 
 log() { printf 'agent: %s\n' "$*" >&2; }
@@ -106,6 +107,19 @@ if [ "$needs_provision" -eq 1 ]; then
   log "provisioning complete."
 fi
 
+if [ "${PROVISION_ONLY:-0}" -eq 1 ]; then
+  log "done."
+  exit 0
+fi
+
+# Just before the final exec:
+if [ "$#" -eq 0 ]; then
+  set -- bash -l
+fi
+
 # --- 4. Run the command with the key in the env -----------------------------
-exec limactl shell --workdir=/home/$GUEST_USER "$VM_NAME" \
-  env AWS_BEDROCK_API_KEY="$key" "$@"
+exec limactl shell "$VM_NAME" \
+  env \
+  AWS_BEARER_TOKEN_BEDROCK="$key" \
+  AWS_REGION="${AWS_REGION:-us-east-2}" \
+  "$@"
