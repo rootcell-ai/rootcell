@@ -13,7 +13,12 @@
 #      Syncs the allowlist files into it and reloads.
 #   3. Waits for the firewall's mitmproxy + dnsmasq to be listening.
 #   4. Ensures the agent VM exists, is running, and is provisioned.
-#   5. Execs into the agent VM with the key + proxy env vars.
+#   5. Execs into the agent VM with the key in the env.
+#
+# HTTPS/HTTP egress from the agent VM is filtered transparently — there
+# are no proxy env vars to set, the firewall VM intercepts via NAT. SSH
+# uses an explicit ProxyCommand (configured in home.nix) so it can be
+# allowlisted by hostname.
 #
 # Daily use: `./agent pi`, `./agent`, `./agent -- nix flake update`, etc.
 #
@@ -35,7 +40,6 @@ AGENT_VM="agent"
 FIREWALL_VM="firewall"
 GUEST_USER="luser"
 GUEST_REPO_DIR="/home/${GUEST_USER}/lima-pi-vm"
-PROXY_URL="http://192.168.106.1:8080"
 
 # Files copied into each VM for `nixos-rebuild --flake`. Both VMs share
 # flake.nix + common.nix; each pulls in only its own role module via the
@@ -199,8 +203,9 @@ fi
 # Sync allowlists every time so edits to proxy/allowed-*.txt take effect
 # even on a plain ./agent invocation. Cheap (a few small file copies).
 sync_allowlists
-wait_for_listener "$FIREWALL_VM" 192.168.106.1 tcp 8080
-wait_for_listener "$FIREWALL_VM" 192.168.106.1 udp 53
+wait_for_listener "$FIREWALL_VM" 192.168.106.1 tcp 8080  # mitmproxy explicit (SSH)
+wait_for_listener "$FIREWALL_VM" 192.168.106.1 tcp 8081  # mitmproxy transparent (HTTPS)
+wait_for_listener "$FIREWALL_VM" 192.168.106.1 udp 53    # dnsmasq
 
 # --- 4. Bring up the agent VM and provision it -----------------------------
 force_agent=0
@@ -220,27 +225,13 @@ if [ "$needs_agent_provision" -eq 1 ]; then
   write_git_local_nix
   copy_repo_into_vm "$AGENT_VM" "${AGENT_NIX_FILES[@]}"
 
-  # Bootstrap: the freshly-created agent VM has Lima's default networking
-  # (Apple Virtio NAT on enp0s1 + lima:host on lima0). The first rebuild
-  # APPLIES our config that drops enp0s1 entirely, after which the only
-  # internet path is through the firewall on 192.168.106.1:8080. We
-  # pre-stage a nix-daemon proxy env via a systemd drop-in so even the
-  # bootstrap fetch goes through the firewall — keeps the behavior
-  # identical to the post-rebuild steady state. agent-vm.nix declares the
-  # same env, so the drop-in becomes redundant after the rebuild.
+  # The firewall VM is up with nftables NAT REDIRECT for TCP/80 and TCP/443,
+  # so the agent VM's first nixos-rebuild reaches cache.nixos.org through
+  # the transparent mitmproxy with no in-VM config needed. After the
+  # rebuild applies, the only network path is via the firewall (lima0),
+  # which is the steady state.
   limactl shell "$AGENT_VM" -- bash -lc "
     set -e
-    sudo mkdir -p /etc/systemd/system/nix-daemon.service.d
-    sudo tee /etc/systemd/system/nix-daemon.service.d/proxy.conf >/dev/null <<'PROXY_EOF'
-[Service]
-Environment=\"HTTPS_PROXY=$PROXY_URL\"
-Environment=\"HTTP_PROXY=$PROXY_URL\"
-Environment=\"https_proxy=$PROXY_URL\"
-Environment=\"http_proxy=$PROXY_URL\"
-PROXY_EOF
-    sudo systemctl daemon-reload
-    sudo systemctl restart nix-daemon
-
     cd '$GUEST_REPO_DIR'
     sudo nixos-rebuild switch --flake .#agent-vm
     nix run nixpkgs#home-manager -- switch --flake .#$GUEST_USER
@@ -275,10 +266,4 @@ exec limactl shell "$AGENT_VM" \
   env \
   AWS_BEARER_TOKEN_BEDROCK="$key" \
   AWS_REGION="${AWS_REGION:-us-east-1}" \
-  HTTPS_PROXY="$PROXY_URL" \
-  HTTP_PROXY="$PROXY_URL" \
-  https_proxy="$PROXY_URL" \
-  http_proxy="$PROXY_URL" \
-  NO_PROXY="localhost,127.0.0.1,host.lima.internal" \
-  no_proxy="localhost,127.0.0.1,host.lima.internal" \
   "$@"

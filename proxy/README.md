@@ -3,13 +3,21 @@
 The egress firewall for the agent VM. All outbound traffic from the agent
 VM passes through services running in the firewall VM:
 
-- **mitmproxy** at `192.168.106.1:8080` — HTTP CONNECT proxy with SNI
-  inspection. Allows HTTPS to hosts matching [allowed-https.txt](allowed-https.txt)
-  and SSH-via-CONNECT to hosts matching [allowed-ssh.txt](allowed-ssh.txt).
-  Passes traffic through without MITM (no CA in the guest).
+- **mitmproxy (transparent)** at `192.168.106.1:8081` — receives TCP/80
+  and TCP/443 packets that nftables NAT REDIRECT intercepts on the
+  inter-VM link. Reads the TLS SNI (HTTPS) or HTTP Host header and matches
+  against [allowed-https.txt](allowed-https.txt). Passthrough on allow
+  (no MITM, no CA in the agent VM); kill on deny.
+- **mitmproxy (explicit / CONNECT)** at `192.168.106.1:8080` — handles
+  the agent VM's SSH `ProxyCommand`, which speaks HTTP `CONNECT host:22`.
+  Matches against [allowed-ssh.txt](allowed-ssh.txt).
 - **dnsmasq** at `192.168.106.1:53` — DNS resolver that forwards names
   matching [allowed-dns.txt](allowed-dns.txt) to 1.1.1.1 and returns
   `0.0.0.0` for everything else.
+
+The two mitmproxy instances share the same Python addon (mitmproxy can
+only run one mode per process). HTTPS/HTTP is transparent by design;
+SSH stays explicit so we can allowlist by hostname.
 
 ## Adding a host
 
@@ -47,10 +55,13 @@ Plain hostnames (no globs). dnsmasq matches as a suffix, so listing
 
 ```bash
 # What's the firewall VM logging?
-limactl shell firewall -- journalctl -u mitmproxy -u dnsmasq -f
+limactl shell firewall -- journalctl -u mitmproxy-explicit -u mitmproxy-transparent -u dnsmasq -f
 
-# Is mitmproxy listening?
-limactl shell firewall -- ss -tln
+# Is mitmproxy listening on both ports?
+limactl shell firewall -- ss -tln '( sport = :8080 or sport = :8081 )'
+
+# Is the NAT REDIRECT rule loaded?
+limactl shell firewall -- sudo nft list table ip agent-vm-nat
 
 # What's the agent VM seeing?
 ./agent -- curl -v https://example.com 2>&1 | head -20

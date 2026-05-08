@@ -8,8 +8,18 @@ egress firewall.
 The architecture is **two VMs**: an **agent VM** where `pi` runs with full
 root, and a tiny **firewall VM** that brokers all egress through mitmproxy
 (SNI allowlist) and dnsmasq (DNS allowlist). The agent VM has no network
-path to the public internet except through the firewall VM. Allowlists
-live in the repo and hot-reload via `./agent allow`.
+path to the public internet except through the firewall VM.
+
+**HTTPS/HTTP egress is transparent** — the agent VM has no proxy env vars
+configured; the firewall intercepts TCP/80 and TCP/443 with nftables NAT
+REDIRECT, then mitmproxy reads the SNI / Host header and applies the
+allowlist. Plain `curl https://github.com` Just Works (or doesn't,
+transparently).
+
+**SSH egress is explicit** because SSH has no SNI and we want hostname-level
+allowlisting. The agent VM's `~/.ssh/config` (set declaratively via
+home-manager) tunnels every SSH connection through mitmproxy via HTTP
+CONNECT. Allowlists live in the repo and hot-reload via `./agent allow`.
 
 ## Layout
 
@@ -97,13 +107,15 @@ fetches all flow through mitmproxy). Subsequent runs are seconds.
 Anything the agent VM tries to reach must go through the firewall VM. The
 allowlists live in [proxy/](proxy/):
 
-- **`allowed-https.txt`** — SNI allowlist for HTTPS. mitmproxy reads the
-  TLS ClientHello and matches the SNI against `fnmatch` globs (one per
-  line). Strict — even an allowed CONNECT host can't bypass by spoofing
-  the SNI inside the tunnel.
+- **`allowed-https.txt`** — SNI/Host allowlist for HTTPS and HTTP. For
+  HTTPS, mitmproxy reads the TLS ClientHello and matches the SNI against
+  `fnmatch` globs (one per line). For HTTP, the Host header is checked
+  the same way. Strict — even an allowed destination IP can't bypass by
+  spoofing the SNI/Host.
 - **`allowed-ssh.txt`** — SSH CONNECT-host allowlist. SSH has no SNI, so
-  this is matched against the `CONNECT host:22` line. Used for
-  `git clone git@github.com:...` and similar.
+  this is matched against the `CONNECT host:22` line that the agent VM's
+  SSH `ProxyCommand` sends. Used for `git clone git@github.com:...` and
+  similar.
 - **`allowed-dns.txt`** — DNS suffix allowlist. dnsmasq forwards matching
   names to 1.1.1.1; everything else returns `0.0.0.0`.
 

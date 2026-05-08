@@ -1,20 +1,23 @@
-"""SNI / CONNECT-host allowlist addon for mitmproxy in regular (forward) mode.
+"""SNI / CONNECT-host / Host-header allowlist addon for mitmproxy.
 
-Two decisions per flow:
+Used by two mitmproxy instances on the firewall VM:
 
-1. http_connect: when the guest issues `CONNECT host:port`, decide based on
-   the destination port. For 22 (SSH) we allowlist by CONNECT host directly
-   from allowed-ssh.txt. For 443 we defer to tls_clienthello where the
-   real SNI is visible. Other ports: always deny.
+  * regular mode (port 8080) — receives explicit HTTP CONNECT from the
+    agent VM's SSH ProxyCommand. http_connect inspects the CONNECT host
+    against allowed-ssh.txt for port 22.
 
-2. tls_clienthello: peek at the TLS ClientHello SNI and check it against
-   allowed-https.txt. On allow we mark the connection for TCP passthrough
-   (no MITM, no decryption — mitmproxy just relays raw bytes). On deny we
-   ignore_connection, which causes mitmproxy to close it.
+  * transparent mode (port 8081) — receives nftables-redirected raw TCP
+    for ports 80 and 443. For 443, tls_clienthello inspects the SNI from
+    the TLS ClientHello against allowed-https.txt. For 80, request
+    inspects the Host header against the same list.
 
-Allowlists are read from /etc/agent-vm/. The addon stats them on every
-event and reloads on mtime change, so `./agent allow` takes effect with
-no service restart.
+In all cases the addon NEVER decrypts (no MITM, no CA in the guest). It
+either kills the flow or sets ignore_connection, which makes mitmproxy
+relay raw bytes between client and upstream.
+
+Allowlists live in /etc/agent-vm/ on the firewall VM. The addon stats
+them on every event and reloads on mtime change, so `./agent allow`
+takes effect with no service restart.
 """
 
 import fnmatch
@@ -90,3 +93,18 @@ def tls_clienthello(data: tls.ClientHelloData) -> None:
     # Passthrough: relay raw bytes, no TLS termination. No CA needed in the
     # guest. The proxy never sees plaintext.
     data.ignore_connection = True
+
+
+def request(flow: http.HTTPFlow) -> None:
+    """Plain HTTP requests on port 80 in transparent mode. Match by Host."""
+    # HTTPS flows are short-circuited in tls_clienthello (passthrough), so
+    # this hook only fires for cleartext HTTP that was NAT-redirected to
+    # the transparent listener. Decision is by the Host header / authority.
+    if flow.request.scheme != "http":
+        return
+    host = flow.request.pretty_host
+    if not _matches(host, _https_cache.get(ALLOW_HTTPS)):
+        ctx.log.warn(f"DENY http host={host}")
+        flow.kill()
+        return
+    ctx.log.info(f"ALLOW http host={host}")
