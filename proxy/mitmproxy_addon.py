@@ -21,8 +21,13 @@ takes effect with no service restart.
 """
 
 import fnmatch
+import logging
 import os
-from mitmproxy import ctx, http, tls
+from mitmproxy import http, tls
+
+# mitmproxy ≥ 11 routes addon logging through stdlib `logging` instead of
+# `ctx.log`. Use a module-level logger so journalctl shows our prefix.
+logger = logging.getLogger("agent_vm_filter")
 
 ALLOW_HTTPS = "/etc/agent-vm/allowed-https.txt"
 ALLOW_SSH = "/etc/agent-vm/allowed-ssh.txt"
@@ -69,27 +74,27 @@ def http_connect(flow: http.HTTPFlow) -> None:
 
     if port == 22:
         if _matches(host, _ssh_cache.get(ALLOW_SSH)):
-            ctx.log.info(f"ALLOW ssh {host}:{port}")
+            logger.info(f"ALLOW ssh {host}:{port}")
             return
-        ctx.log.warn(f"DENY ssh {host}:{port}")
+        logger.warning(f"DENY ssh {host}:{port}")
         flow.kill()
         return
 
-    ctx.log.warn(f"DENY connect {host}:{port}")
+    logger.warning(f"DENY connect {host}:{port}")
     flow.kill()
 
 
 def tls_clienthello(data: tls.ClientHelloData) -> None:
     sni = data.client_hello.sni
     if not sni or not _matches(sni, _https_cache.get(ALLOW_HTTPS)):
-        ctx.log.warn(f"DENY https sni={sni!r}")
+        logger.warning(f"DENY https sni={sni!r}")
         # Marking ignore_connection on a denied flow before the upstream
         # connection is established results in the client seeing a closed
         # tunnel. That's the desired "fail-closed" behavior.
         data.ignore_connection = True
         return
 
-    ctx.log.info(f"ALLOW https sni={sni}")
+    logger.info(f"ALLOW https sni={sni}")
     # Passthrough: relay raw bytes, no TLS termination. No CA needed in the
     # guest. The proxy never sees plaintext.
     data.ignore_connection = True
@@ -104,7 +109,7 @@ def request(flow: http.HTTPFlow) -> None:
         return
     host = flow.request.pretty_host
     if not _matches(host, _https_cache.get(ALLOW_HTTPS)):
-        ctx.log.warn(f"DENY http host={host}")
+        logger.warning(f"DENY http host={host}")
         flow.kill()
         return
-    ctx.log.info(f"ALLOW http host={host}")
+    logger.info(f"ALLOW http host={host}")
