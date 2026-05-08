@@ -37,6 +37,19 @@ fi
 
 log() { printf 'agent: %s\n' "$*" >&2; }
 
+# --- 0. Seed and load .env --------------------------------------------------
+# .env.defaults is checked in; .env is the user's gitignored override copy.
+if [ ! -f "$REPO_DIR/.env" ] && [ -f "$REPO_DIR/.env.defaults" ]; then
+  cp "$REPO_DIR/.env.defaults" "$REPO_DIR/.env"
+  log "seeded .env from .env.defaults"
+fi
+if [ -f "$REPO_DIR/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . "$REPO_DIR/.env"
+  set +a
+fi
+
 # --- 1. Read the API key from Keychain --------------------------------------
 key=$(security find-generic-password -s aws-bedrock-api-key -w 2>/dev/null) || {
   cat >&2 <<'EOF'
@@ -139,5 +152,5 @@ fi
 exec limactl shell "$VM_NAME" \
   env \
   AWS_BEARER_TOKEN_BEDROCK="$key" \
-  AWS_REGION="${AWS_REGION:-us-east-2}" \
+  AWS_REGION="${AWS_REGION:-us-east-1}" \
   "$@"

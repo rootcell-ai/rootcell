@@ -12,6 +12,7 @@ flake.nix          # inputs (nixpkgs, nixos-lima, home-manager) + outputs
 configuration.nix  # NixOS system config: bootloader, lima integration, users
 home.nix           # Home Manager config: pi + dev CLIs
 nixos.yaml         # Lima config: image pin, hardware, mounts, port forwards
+.env.defaults      # checked-in defaults (e.g. AWS_REGION); seeds .env on first run
 AGENTS.md          # Pi global instructions; symlinked into ~/.pi/agent/
 skills/            # Pi global skills; the directory itself is symlinked
                    # into ~/.pi/agent/skills/
@@ -40,9 +41,16 @@ chmod +x ./agent
 ```
 
 The script is wired for **AWS Bedrock** (it exports `AWS_BEARER_TOKEN_BEDROCK`
-and `AWS_REGION` into the VM, defaulting the latter to `us-east-2`). If you
-use a different provider, edit `agent` — the Keychain lookup name, the env
-vars exported, and the region default are the only assumptions baked in.
+and `AWS_REGION` into the VM). On first run, `./agent` copies `.env.defaults`
+to `.env` (gitignored) and sources it on every subsequent invocation. Edit
+`.env` to change the region or add other env vars — for example:
+
+```
+AWS_REGION=us-west-2
+```
+
+If you use a different provider, edit `agent` — the Keychain lookup name and
+the env vars exported are the only other assumptions baked in.
 
 ## Daily use
 
