@@ -14,10 +14,11 @@ let
   # bump both fields together. Latest at:
   #   https://github.com/badlogic/pi-mono/releases
   #
-  # The release tarball contains the binary plus runtime assets
-  # (theme/, export-html/, assets/, photon_rs_bg.wasm) which the binary
-  # expects to find as siblings. We install the lot under $out/share and
-  # symlink the binary into $out/bin so `pi` is on PATH.
+  # The release tarball contains the binary plus runtime resources it
+  # reads at startup (themes, export-html template, a wasm blob, and
+  # package.json for the version string). Copy the whole unpacked tree
+  # under $out/share so we don't have to track which files are needed,
+  # and symlink the binary into $out/bin so `pi` is on PATH.
   pi-coding-agent = pkgs.stdenv.mkDerivation rec {
     pname = "pi-coding-agent";
     version = "0.74.0";
@@ -36,8 +37,7 @@ let
     installPhase = ''
       runHook preInstall
       mkdir -p $out/share/pi-coding-agent $out/bin
-      cp -r theme export-html assets photon_rs_bg.wasm pi \
-        $out/share/pi-coding-agent/
+      cp -r . $out/share/pi-coding-agent/
       ln -s $out/share/pi-coding-agent/pi $out/bin/pi
       runHook postInstall
     '';
@@ -102,11 +102,17 @@ in
     nix-direnv.enable = true;
   };
 
+  # git-delta as the git pager. The `enableGitIntegration` flag writes the
+  # `[core] pager = delta` and `[interactive] diffFilter = delta` entries
+  # into git's config.
+  programs.delta = {
+    enable = true;
+    enableGitIntegration = true;
+  };
+
   # `programs.git.enable` adds git itself, so we don't list it above.
-  # `delta.enable` installs git-delta and wires it up as the pager.
   programs.git = {
     enable = true;
-    delta.enable = true;
     settings = {
       user.name  = lib.mkDefault "agent";
       user.email = lib.mkDefault "agent@localhost";
