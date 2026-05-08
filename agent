@@ -11,7 +11,7 @@
 # Daily use: `./agent pi`, `./agent`, `./agent -- nix flake update`, etc.
 #
 # After editing any of flake.nix / configuration.nix / home.nix /
-# AGENTS.md / skills/ on the host:
+# pi/ on the host:
 #   ./agent provision     # re-copy files and re-run nixos-rebuild + hm switch
 #
 # One-time host setup:
@@ -25,7 +25,7 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VM_NAME="agent"
 GUEST_USER="luser"
 GUEST_REPO_DIR="/home/${GUEST_USER}/lima-pi-vm"
-NIX_FILES=(flake.nix configuration.nix home.nix git-local.nix AGENTS.md skills)
+NIX_FILES=(flake.nix configuration.nix home.nix git-local.nix pi)
 
 # --- Subcommand parsing -----------------------------------------------------
 FORCE_PROVISION=0
@@ -119,7 +119,7 @@ if [ "$needs_provision" -eq 1 ]; then
 
   limactl shell "$VM_NAME" -- mkdir -p "$GUEST_REPO_DIR"
 
-  # -r so directory entries in NIX_FILES (e.g. skills/) recurse; harmless
+  # -r so directory entries in NIX_FILES (e.g. pi/) recurse; harmless
   # for plain files.
   copy_args=()
   for f in "${NIX_FILES[@]}"; do

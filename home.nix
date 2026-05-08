@@ -94,8 +94,8 @@ in
   # only the front-matter description goes in the system prompt; pi loads
   # the full body when a task matches). Per-project AGENTS.md/CLAUDE.md and
   # .pi/skills/ are picked up separately by walking up from the cwd.
-  home.file.".pi/agent/AGENTS.md".source = ./AGENTS.md;
-  home.file.".pi/agent/skills".source = ./skills;
+  home.file.".pi/agent/AGENTS.md".source = ./pi/agent/AGENTS.md;
+  home.file.".pi/agent/skills".source = ./pi/agent/skills;
 
   programs.bash = {
     enable = true;

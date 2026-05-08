@@ -13,9 +13,9 @@ configuration.nix  # NixOS system config: bootloader, lima integration, users
 home.nix           # Home Manager config: pi + dev CLIs
 nixos.yaml         # Lima config: image pin, hardware, mounts, port forwards
 .env.defaults      # checked-in defaults (e.g. AWS_REGION); seeds .env on first run
-AGENTS.md          # Pi global instructions; symlinked into ~/.pi/agent/
-skills/            # Pi global skills; the directory itself is symlinked
-                   # into ~/.pi/agent/skills/
+pi/agent/          # mirrors ~/.pi/agent/ in the VM (home-manager symlinks):
+  AGENTS.md        #   pi global instructions
+  skills/          #   pi global skills (one dir per skill, each with SKILL.md)
 ```
 
 `nixos.yaml` is a self-contained Lima config — not a `base:` overlay. The
@@ -67,8 +67,8 @@ already-provisioned VM with the API key in the env.
 
 ## After editing config
 
-Whenever you change `flake.nix`, `configuration.nix`, `home.nix`, `AGENTS.md`,
-or anything under `skills/`:
+Whenever you change `flake.nix`, `configuration.nix`, `home.nix`, or anything
+under `pi/`:
 
 ```bash
 ./agent provision
@@ -121,16 +121,19 @@ limactl stop agent
 
 ## Customizing pi
 
-`AGENTS.md` is symlinked into `~/.pi/agent/AGENTS.md`, which pi loads as
-global instructions on every session. Keep it short — its full body goes into
-the system prompt.
+Everything under `pi/agent/` on the host is symlinked into `~/.pi/agent/` in
+the VM, so the host layout mirrors the guest layout one-to-one.
 
-The whole `skills/` directory is symlinked into `~/.pi/agent/skills/`, so each
-`skills/<name>/SKILL.md` is reachable at `~/.pi/agent/skills/<name>/SKILL.md`.
+`pi/agent/AGENTS.md` lands at `~/.pi/agent/AGENTS.md`, which pi loads as global
+instructions on every session. Keep it short — its full body goes into the
+system prompt.
+
+`pi/agent/skills/` lands at `~/.pi/agent/skills/`, so each
+`pi/agent/skills/<name>/SKILL.md` is reachable at `~/.pi/agent/skills/<name>/SKILL.md`.
 Pi treats those as [skills](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/skills.md):
 the frontmatter `description` goes into the system prompt, and the body loads
 on demand when a task matches. Add new skills by dropping more directories
-under `skills/` and running `./agent provision`.
+under `pi/agent/skills/` and running `./agent provision`.
 
 Per-project rules go in an `AGENTS.md` or `CLAUDE.md` at the project's repo
 root. Pi finds them by walking up from the cwd, and merges them with the
