@@ -1,20 +1,29 @@
 #!/usr/bin/env bash
-# agent — self-bootstrapping wrapper around the Lima VM.
+# agent — self-bootstrapping wrapper around two Lima VMs.
+#
+# Two VMs:
+#   - firewall  — tiny appliance running mitmproxy + dnsmasq, brokers all
+#                 egress for the agent VM.
+#   - agent     — where the coding agent (pi.dev) actually runs. Has only
+#                 a private link to the firewall; no other internet path.
 #
 # On every invocation:
 #   1. Reads the AWS Bedrock API key from macOS Keychain.
-#   2. Ensures the VM exists and is running. Creates it on first run.
-#   3. Ensures the VM is provisioned (Nix files copied, nixos-rebuild done,
-#      home-manager activated, pi installed). Provisions on first run.
-#   4. Execs into the VM with the key in the environment.
+#   2. Ensures the firewall VM exists, is running, and is provisioned.
+#      Syncs the allowlist files into it and reloads.
+#   3. Waits for the firewall's mitmproxy + dnsmasq to be listening.
+#   4. Ensures the agent VM exists, is running, and is provisioned.
+#   5. Execs into the agent VM with the key + proxy env vars.
 #
 # Daily use: `./agent pi`, `./agent`, `./agent -- nix flake update`, etc.
 #
-# After editing any of flake.nix / configuration.nix / home.nix /
-# pi/ on the host:
-#   ./agent provision     # re-copy files and re-run nixos-rebuild + hm switch
+# Subcommands:
+#   ./agent provision     # re-copy files and re-rebuild both VMs
+#   ./agent allow         # hot-reload allowlists into the running firewall
+#                         #   (use after editing proxy/allowed-*.txt)
 #
 # One-time host setup:
+#   limactl sudoers | sudo tee /private/etc/sudoers.d/lima
 #   security add-generic-password -a "$USER" -s aws-bedrock-api-key -w "sk-..."
 #   chmod +x ./agent
 
@@ -22,23 +31,28 @@ set -euo pipefail
 
 # --- Configuration ----------------------------------------------------------
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VM_NAME="agent"
+AGENT_VM="agent"
+FIREWALL_VM="firewall"
 GUEST_USER="luser"
 GUEST_REPO_DIR="/home/${GUEST_USER}/lima-pi-vm"
-NIX_FILES=(flake.nix configuration.nix home.nix git-local.nix pi)
+PROXY_URL="http://192.168.106.1:8080"
 
-# --- Subcommand parsing -----------------------------------------------------
-FORCE_PROVISION=0
-if [ "${1:-}" = "provision" ]; then
-  FORCE_PROVISION=1
-  shift
-  PROVISION_ONLY=1
-fi
+# Files copied into each VM for `nixos-rebuild --flake`. Both VMs share
+# flake.nix + common.nix; each pulls in only its own role module via the
+# flake output it builds.
+AGENT_NIX_FILES=(flake.nix common.nix agent-vm.nix home.nix git-local.nix pi)
+FIREWALL_NIX_FILES=(flake.nix common.nix firewall-vm.nix proxy)
 
 log() { printf 'agent: %s\n' "$*" >&2; }
 
+# --- Subcommand parsing -----------------------------------------------------
+SUBCMD=""
+case "${1:-}" in
+  provision) SUBCMD=provision; shift ;;
+  allow)     SUBCMD=allow; shift ;;
+esac
+
 # --- 0. Seed and load .env --------------------------------------------------
-# .env.defaults is checked in; .env is the user's gitignored override copy.
 if [ ! -f "$REPO_DIR/.env" ] && [ -f "$REPO_DIR/.env.defaults" ]; then
   cp "$REPO_DIR/.env.defaults" "$REPO_DIR/.env"
   log "seeded .env from .env.defaults"
@@ -50,7 +64,196 @@ if [ -f "$REPO_DIR/.env" ]; then
   set +a
 fi
 
-# --- 1. Read the API key from Keychain --------------------------------------
+# --- 1. Preflight: lima sudoers --------------------------------------------
+# `lima: host` networking requires socket_vmnet, which Lima manages but
+# needs sudo. The sudoers file is one-time host setup.
+if [ ! -f /private/etc/sudoers.d/lima ]; then
+  cat >&2 <<'EOF'
+agent: one-time host setup needed before first run.
+
+Lima's `lima: host` shared network needs a sudoers entry so socket_vmnet
+can manage the inter-VM network without prompting. Run:
+
+  limactl sudoers | sudo tee /private/etc/sudoers.d/lima
+
+Then re-run ./agent.
+EOF
+  exit 1
+fi
+
+# --- 2. Helpers -------------------------------------------------------------
+# Returns 0 if the VM was already running or was just started from Stopped.
+# Returns 1 if the VM was newly created (caller must force a provision).
+ensure_vm_running() {
+  local name="$1" config="$2"
+  local status
+  status=$(limactl list --format '{{.Status}}' "$name" 2>/dev/null || true)
+  case "$status" in
+    Running) return 0 ;;
+    Stopped) log "starting $name VM..."; limactl start "$name"; return 0 ;;
+    "")
+      log "$name VM not found — creating (~3-5 min for image + boot)..."
+      limactl start --tty=false --name="$name" \
+        --set ".user.name = \"$GUEST_USER\"" "$config"
+      return 1
+      ;;
+    *) log "$name VM in unexpected state: '$status'. Aborting."; exit 1 ;;
+  esac
+}
+
+# Copy a file/dir list into the VM at $GUEST_REPO_DIR.
+copy_repo_into_vm() {
+  local vm="$1"; shift
+  local files=("$@")
+  limactl shell "$vm" -- mkdir -p "$GUEST_REPO_DIR"
+  local copy_args=()
+  local f
+  for f in "${files[@]}"; do
+    copy_args+=("$REPO_DIR/$f")
+  done
+  copy_args+=("$vm:$GUEST_REPO_DIR/")
+  limactl cp -r "${copy_args[@]}"
+}
+
+# Generate git-local.nix from the host's git config so commits inside the
+# agent VM are attributed to the user. Regenerated on every provision.
+write_git_local_nix() {
+  local git_user_name git_user_email
+  git_user_name=$(git config --global user.name 2>/dev/null || true)
+  git_user_email=$(git config --global user.email 2>/dev/null || true)
+  {
+    echo "{"
+    [ -n "$git_user_name" ] && \
+      printf '  programs.git.settings.user.name  = "%s";\n' "$git_user_name"
+    [ -n "$git_user_email" ] && \
+      printf '  programs.git.settings.user.email = "%s";\n' "$git_user_email"
+    echo "}"
+  } > "$REPO_DIR/git-local.nix"
+}
+
+# Block until $vm is listening on $host:$port for $proto (tcp|udp).
+wait_for_listener() {
+  local vm="$1" host="$2" proto="$3" port="$4"
+  local flag i
+  if [ "$proto" = tcp ]; then flag="-tln"; else flag="-uln"; fi
+  for i in $(seq 1 60); do
+    if limactl shell "$vm" -- ss "$flag" 2>/dev/null \
+         | awk '{print $5}' | grep -q "^${host}:${port}$"; then
+      return 0
+    fi
+    sleep 1
+  done
+  log "timeout waiting for $vm to listen on $proto $host:$port"
+  limactl shell "$vm" -- journalctl -u mitmproxy -u dnsmasq --no-pager -n 50 >&2
+  exit 1
+}
+
+# Sync allowlist files into the firewall VM and trigger a reload.
+sync_allowlists() {
+  local f
+  for f in proxy/allowed-https.txt proxy/allowed-ssh.txt proxy/allowed-dns.txt; do
+    limactl cp "$REPO_DIR/$f" "$FIREWALL_VM:/etc/agent-vm/$(basename "$f")"
+  done
+  limactl shell "$FIREWALL_VM" -- sudo /etc/agent-vm/reload.sh
+}
+
+# --- Subcommand: allow ------------------------------------------------------
+# Hot-reload only — assumes both VMs are already up.
+if [ "$SUBCMD" = allow ]; then
+  status=$(limactl list --format '{{.Status}}' "$FIREWALL_VM" 2>/dev/null || true)
+  if [ "$status" != Running ]; then
+    log "firewall VM not running; start it with ./agent first."
+    exit 1
+  fi
+  sync_allowlists
+  log "allowlists reloaded."
+  exit 0
+fi
+
+# --- 3. Bring up the firewall VM and provision it --------------------------
+force_firewall=0
+[ "$SUBCMD" = provision ] && force_firewall=1
+ensure_vm_running "$FIREWALL_VM" "$REPO_DIR/firewall.yaml" || force_firewall=1
+
+needs_firewall_provision=$force_firewall
+if [ "$needs_firewall_provision" -eq 0 ]; then
+  if ! limactl shell "$FIREWALL_VM" -- bash -lc \
+        'systemctl is-active mitmproxy >/dev/null 2>&1 \
+         && systemctl is-active dnsmasq >/dev/null 2>&1' 2>/dev/null; then
+    needs_firewall_provision=1
+  fi
+fi
+
+if [ "$needs_firewall_provision" -eq 1 ]; then
+  log "provisioning firewall VM (first run takes ~5 min)..."
+  write_git_local_nix
+  copy_repo_into_vm "$FIREWALL_VM" "${FIREWALL_NIX_FILES[@]}"
+  limactl shell "$FIREWALL_VM" -- bash -lc "
+    set -e
+    cd '$GUEST_REPO_DIR'
+    sudo nixos-rebuild switch --flake .#firewall-vm
+  "
+  log "firewall provisioning complete."
+fi
+
+# Sync allowlists every time so edits to proxy/allowed-*.txt take effect
+# even on a plain ./agent invocation. Cheap (a few small file copies).
+sync_allowlists
+wait_for_listener "$FIREWALL_VM" 192.168.106.1 tcp 8080
+wait_for_listener "$FIREWALL_VM" 192.168.106.1 udp 53
+
+# --- 4. Bring up the agent VM and provision it -----------------------------
+force_agent=0
+[ "$SUBCMD" = provision ] && force_agent=1
+ensure_vm_running "$AGENT_VM" "$REPO_DIR/nixos.yaml" || force_agent=1
+
+needs_agent_provision=$force_agent
+if [ "$needs_agent_provision" -eq 0 ]; then
+  if ! limactl shell "$AGENT_VM" -- \
+       bash -lc 'command -v pi >/dev/null 2>&1' 2>/dev/null; then
+    needs_agent_provision=1
+  fi
+fi
+
+if [ "$needs_agent_provision" -eq 1 ]; then
+  log "provisioning agent VM (first run takes ~10 min: nixpkgs fetch via firewall)..."
+  write_git_local_nix
+  copy_repo_into_vm "$AGENT_VM" "${AGENT_NIX_FILES[@]}"
+
+  # Bootstrap: the freshly-created agent VM has Lima's default networking
+  # (Apple Virtio NAT on enp0s1 + lima:host on lima0). The first rebuild
+  # APPLIES our config that drops enp0s1 entirely, after which the only
+  # internet path is through the firewall on 192.168.106.1:8080. We
+  # pre-stage a nix-daemon proxy env via a systemd drop-in so even the
+  # bootstrap fetch goes through the firewall — keeps the behavior
+  # identical to the post-rebuild steady state. agent-vm.nix declares the
+  # same env, so the drop-in becomes redundant after the rebuild.
+  limactl shell "$AGENT_VM" -- bash -lc "
+    set -e
+    sudo mkdir -p /etc/systemd/system/nix-daemon.service.d
+    sudo tee /etc/systemd/system/nix-daemon.service.d/proxy.conf >/dev/null <<'PROXY_EOF'
+[Service]
+Environment=\"HTTPS_PROXY=$PROXY_URL\"
+Environment=\"HTTP_PROXY=$PROXY_URL\"
+Environment=\"https_proxy=$PROXY_URL\"
+Environment=\"http_proxy=$PROXY_URL\"
+PROXY_EOF
+    sudo systemctl daemon-reload
+    sudo systemctl restart nix-daemon
+
+    cd '$GUEST_REPO_DIR'
+    sudo nixos-rebuild switch --flake .#agent-vm
+    nix run nixpkgs#home-manager -- switch --flake .#$GUEST_USER
+  "
+  log "agent provisioning complete."
+fi
+
+if [ "$SUBCMD" = provision ]; then
+  log "done."
+  exit 0
+fi
+
+# --- 5. Read the API key from Keychain -------------------------------------
 key=$(security find-generic-password -s aws-bedrock-api-key -w 2>/dev/null) || {
   cat >&2 <<'EOF'
 agent: AWS Bedrock API key not found in macOS Keychain.
@@ -63,94 +266,19 @@ EOF
   exit 1
 }
 
-# --- 2. Ensure VM exists and is running -------------------------------------
-status=$(limactl list --format '{{.Status}}' "$VM_NAME" 2>/dev/null || true)
-
-case "$status" in
-Running)
-  : # ready to go
-  ;;
-Stopped)
-  log "starting existing VM..."
-  limactl start "$VM_NAME"
-  ;;
-"")
-  log "VM not found — creating (first time, ~3-5 min for image download + boot)..."
-  limactl start \
-    --tty=false \
-    --name="$VM_NAME" \
-    --set ".user.name = \"$GUEST_USER\"" \
-    "$REPO_DIR/nixos.yaml"
-  FORCE_PROVISION=1
-  ;;
-*)
-  log "VM in unexpected state: '$status'. Aborting."
-  exit 1
-  ;;
-esac
-
-# --- 3. Provision if needed -------------------------------------------------
-# Sentinel: pi binary on PATH inside the VM. If absent, we haven't provisioned.
-needs_provision=$FORCE_PROVISION
-if [ "$needs_provision" -eq 0 ]; then
-  if ! limactl shell "$VM_NAME" -- \
-    bash -lc 'command -v pi >/dev/null 2>&1' 2>/dev/null; then
-    needs_provision=1
-  fi
-fi
-
-if [ "$needs_provision" -eq 1 ]; then
-  log "provisioning VM (first run takes ~10 min: nixpkgs fetch + closure build)..."
-
-  # Pass the host's git identity through to home-manager. Generated fresh each
-  # provision so it tracks any changes the user makes to ~/.gitconfig.
-  git_user_name=$(git config --global user.name 2>/dev/null || true)
-  git_user_email=$(git config --global user.email 2>/dev/null || true)
-  {
-    echo "{"
-    if [ -n "$git_user_name" ]; then
-      printf '  programs.git.settings.user.name  = "%s";\n' "$git_user_name"
-    fi
-    if [ -n "$git_user_email" ]; then
-      printf '  programs.git.settings.user.email = "%s";\n' "$git_user_email"
-    fi
-    echo "}"
-  } > "$REPO_DIR/git-local.nix"
-
-  limactl shell "$VM_NAME" -- mkdir -p "$GUEST_REPO_DIR"
-
-  # -r so directory entries in NIX_FILES (e.g. pi/) recurse; harmless
-  # for plain files.
-  copy_args=()
-  for f in "${NIX_FILES[@]}"; do
-    copy_args+=("$REPO_DIR/$f")
-  done
-  copy_args+=("$VM_NAME:$GUEST_REPO_DIR/")
-  limactl cp -r "${copy_args[@]}"
-
-  limactl shell "$VM_NAME" -- bash -lc "
-    set -e
-    cd '$GUEST_REPO_DIR'
-    sudo nixos-rebuild switch --flake .#agent-vm
-    nix run nixpkgs#home-manager -- switch --flake .#$GUEST_USER
-  "
-
-  log "provisioning complete."
-fi
-
-if [ "${PROVISION_ONLY:-0}" -eq 1 ]; then
-  log "done."
-  exit 0
-fi
-
-# Just before the final exec:
+# --- 6. Exec into the agent VM ---------------------------------------------
 if [ "$#" -eq 0 ]; then
   set -- bash -l
 fi
 
-# --- 4. Run the command with the key in the env -----------------------------
-exec limactl shell "$VM_NAME" \
+exec limactl shell "$AGENT_VM" \
   env \
   AWS_BEARER_TOKEN_BEDROCK="$key" \
   AWS_REGION="${AWS_REGION:-us-east-1}" \
+  HTTPS_PROXY="$PROXY_URL" \
+  HTTP_PROXY="$PROXY_URL" \
+  https_proxy="$PROXY_URL" \
+  http_proxy="$PROXY_URL" \
+  NO_PROXY="localhost,127.0.0.1,host.lima.internal" \
+  no_proxy="localhost,127.0.0.1,host.lima.internal" \
   "$@"

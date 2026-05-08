@@ -44,4 +44,16 @@
   # without going through dnsmasq. (Empty by default in NixOS but make it
   # explicit so it's an invariant, not an accident.)
   networking.hosts = lib.mkForce {};
+
+  # nix-daemon and other system fetchers need to use the firewall as their
+  # HTTP proxy — there's no other internet path. The `agent` script also
+  # writes a matching systemd drop-in BEFORE the first nixos-rebuild so
+  # the bootstrap fetch can use the proxy too; this declaration replaces
+  # that drop-in once the new config activates.
+  systemd.services.nix-daemon.environment = {
+    HTTPS_PROXY = "http://192.168.106.1:8080";
+    HTTP_PROXY  = "http://192.168.106.1:8080";
+    https_proxy = "http://192.168.106.1:8080";
+    http_proxy  = "http://192.168.106.1:8080";
+  };
 }

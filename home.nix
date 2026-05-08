@@ -132,4 +132,31 @@ in
       pull.rebase = true;
     };
   };
+
+  # All SSH egress tunnels through the firewall VM via HTTP CONNECT, where
+  # mitmproxy applies the allowed-ssh.txt allowlist. ssh-to-localhost
+  # (limactl, dev workflows) explicitly bypasses the proxy.
+  programs.ssh = {
+    enable = true;
+    matchBlocks = {
+      "localhost 127.0.0.1 ::1 host.lima.internal" = {
+        proxyCommand = "none";
+      };
+      "*" = {
+        proxyCommand = "${pkgs.netcat-openbsd}/bin/nc -X connect -x 192.168.106.1:8080 %h %p";
+      };
+    };
+    # Pre-seed known_hosts so first-run `git clone` doesn't prompt. Update
+    # by running `ssh-keyscan github.com` etc. on a trusted host.
+    knownHosts = {
+      github = {
+        hostNames = [ "github.com" ];
+        publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+      };
+      gitlab = {
+        hostNames = [ "gitlab.com" ];
+        publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAfuCHKVTjquxvt6CM6tdG4SLp1Btn/nOeHHE5UOzRdf";
+      };
+    };
+  };
 }
