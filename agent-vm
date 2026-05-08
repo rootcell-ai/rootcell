@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# agent — self-bootstrapping wrapper around the Lima VM.
+#
+# On every invocation:
+#   1. Reads the AWS Bedrock API key from macOS Keychain.
+#   2. Ensures the VM exists and is running. Creates it on first run.
+#   3. Ensures the VM is provisioned (Nix files copied, nixos-rebuild done,
+#      home-manager activated, pi installed). Provisions on first run.
+#   4. Execs into the VM with the key in the environment.
+#
+# Daily use: `./agent pi`, `./agent`, `./agent -- nix flake update`, etc.
+#
+# After editing flake.nix / configuration.nix / home.nix on the host:
+#   ./agent provision     # re-copy files and re-run nixos-rebuild + hm switch
+#
+# One-time host setup:
+#   security add-generic-password -a "$USER" -s aws-bedrock-api-key -w "sk-..."
+#   chmod +x ./agent
+
+set -euo pipefail
+
+# --- Configuration ----------------------------------------------------------
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VM_NAME="agent"
+GUEST_USER="luser"
+GUEST_REPO_DIR="/home/${GUEST_USER}/lima-pi-vm"
+NIX_FILES=(flake.nix configuration.nix home.nix)
+
+# --- Subcommand parsing -----------------------------------------------------
+FORCE_PROVISION=0
+if [ "${1:-}" = "provision" ]; then
+  FORCE_PROVISION=1
+  shift
+fi
+
+log() { printf 'agent: %s\n' "$*" >&2; }
+
+# --- 1. Read the API key from Keychain --------------------------------------
+key=$(security find-generic-password -s aws-bedrock-api-key -w 2>/dev/null) || {
+  cat >&2 <<'EOF'
+agent: AWS Bedrock API key not found in macOS Keychain.
+
+Add it with:
+  security add-generic-password -a "$USER" -s aws-bedrock-api-key -w "sk-..."
+
+Then re-run.
+EOF
+  exit 1
+}
+
+# --- 2. Ensure VM exists and is running -------------------------------------
+status=$(limactl list --format '{{.Status}}' "$VM_NAME" 2>/dev/null || true)
+
+case "$status" in
+Running)
+  : # ready to go
+  ;;
+Stopped)
+  log "starting existing VM..."
+  limactl start "$VM_NAME"
+  ;;
+"")
+  log "VM not found — creating (first time, ~3-5 min for image download + boot)..."
+  limactl start \
+    --tty=false \
+    --name="$VM_NAME" \
+    --set ".user.name = \"$GUEST_USER\"" \
+    "$REPO_DIR/nixos.yaml"
+  FORCE_PROVISION=1
+  ;;
+*)
+  log "VM in unexpected state: '$status'. Aborting."
+  exit 1
+  ;;
+esac
+
+# --- 3. Provision if needed -------------------------------------------------
+# Sentinel: pi binary on PATH inside the VM. If absent, we haven't provisioned.
+needs_provision=$FORCE_PROVISION
+if [ "$needs_provision" -eq 0 ]; then
+  if ! limactl shell "$VM_NAME" -- \
+    bash -lc 'command -v pi >/dev/null 2>&1' 2>/dev/null; then
+    needs_provision=1
+  fi
+fi
+
+if [ "$needs_provision" -eq 1 ]; then
+  log "provisioning VM (first run takes ~10 min: nixpkgs fetch + closure build)..."
+
+  limactl shell "$VM_NAME" -- mkdir -p "$GUEST_REPO_DIR"
+
+  copy_args=()
+  for f in "${NIX_FILES[@]}"; do
+    copy_args+=("$REPO_DIR/$f")
+  done
+  copy_args+=("$VM_NAME:$GUEST_REPO_DIR/")
+  limactl cp "${copy_args[@]}"
+
+  limactl shell "$VM_NAME" -- bash -lc "
+    set -e
+    cd '$GUEST_REPO_DIR'
+    sudo nixos-rebuild switch --flake .#agent-vm
+    nix run nixpkgs#home-manager -- switch --flake .#$GUEST_USER
+  "
+
+  log "provisioning complete."
+fi
+
+# --- 4. Run the command with the key in the env -----------------------------
+exec limactl shell --workdir=/home/$GUEST_USER "$VM_NAME" \
+  env AWS_BEDROCK_API_KEY="$key" "$@"
