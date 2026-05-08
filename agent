@@ -10,7 +10,8 @@
 #
 # Daily use: `./agent pi`, `./agent`, `./agent -- nix flake update`, etc.
 #
-# After editing flake.nix / configuration.nix / home.nix on the host:
+# After editing any of flake.nix / configuration.nix / home.nix /
+# AGENTS.md / skills/ on the host:
 #   ./agent provision     # re-copy files and re-run nixos-rebuild + hm switch
 #
 # One-time host setup:
