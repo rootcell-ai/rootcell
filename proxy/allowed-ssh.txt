@@ -5,3 +5,5 @@
 
 github.com
 gitlab.com
+bitbucket.org
+ssh.dev.azure.com

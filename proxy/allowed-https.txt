@@ -6,13 +6,8 @@
 #
 # Edit this file then run `./agent allow` to hot-reload (no rebuild).
 
-# Anthropic + AWS Bedrock (the agent's LLM provider)
-api.anthropic.com
-*.anthropic.com
+# AWS Bedrock (the agent's LLM provider)
 bedrock-runtime.*.amazonaws.com
-
-# OpenAI (in case you switch providers)
-api.openai.com
 
 # GitHub (clones, releases, raw content)
 github.com
@@ -23,6 +18,16 @@ objects.githubusercontent.com
 
 # GitLab (mirrors github coverage)
 gitlab.com
+
+# Bitbucket
+bitbucket.org
+*.bitbucket.org
+
+# Azure DevOps (Repos, Pipelines, Artifacts)
+dev.azure.com
+*.dev.azure.com
+ssh.dev.azure.com
+*.visualstudio.com
 
 # Nix binary caches and channels
 cache.nixos.org

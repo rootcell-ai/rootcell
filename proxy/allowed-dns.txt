@@ -3,11 +3,13 @@
 # dnsmasq's `server=/HOST/...` syntax matches HOST and all subdomains).
 # Anything else returns 0.0.0.0 via the catch-all.
 
-anthropic.com
 amazonaws.com
 github.com
 githubusercontent.com
 gitlab.com
+bitbucket.org
+dev.azure.com
+visualstudio.com
 nixos.org
 cachix.org
 cloudfront.net
@@ -16,4 +18,3 @@ pypi.org
 pythonhosted.org
 crates.io
 golang.org
-openai.com
