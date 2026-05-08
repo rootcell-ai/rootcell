@@ -17,15 +17,21 @@ in
   # anyway. All meaningful filtering happens in the firewall VM.
   networking.firewall.enable = false;
 
-  # Networking: ONLY the lima:host interface (lima0). No Virtio NAT, no
-  # IPv6, no path to the internet that bypasses the firewall VM.
+  # Networking: only the lima:host interface (enp0s2 in kernel naming)
+  # is configured. enp0s1 (Apple Virtio NAT) is left unmanaged by
+  # networkd so it stays IP-less, and there's no path to the internet
+  # that bypasses the firewall VM.
   # `limactl shell` keeps working because ssh.overVsock=true is the default
   # on vz+Linux, so the SSH control plane is independent of any IP NIC.
   networking.useDHCP = false;
   networking.useNetworkd = true;
   systemd.network.enable = true;
-  systemd.network.networks."10-lima0" = {
-    matchConfig.Name = "lima0";
+  # The lima:host link from nixos.yaml. The kernel names it via systemd's
+  # predictable scheme — enp0s2 because it's the second PCI virtio-net
+  # device (enp0s1 is Apple's Virtio NAT, which we deliberately don't
+  # configure here so it has no IP and can't carry traffic).
+  systemd.network.networks."10-enp0s2" = {
+    matchConfig.Name = "enp0s2";
     networkConfig = {
       DHCP = "no";
       IPv6AcceptRA = false;

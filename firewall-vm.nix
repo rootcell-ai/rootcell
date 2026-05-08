@@ -6,9 +6,9 @@ in
 
 # Firewall VM: a tiny appliance VM that brokers all egress for the agent VM.
 #
-# Two NICs:
+# Two NICs (kernel names from systemd predictable naming):
 #   enp0s1  vzNAT       — internet egress (default route)
-#   lima0   lima:host   — private link to the agent VM (default
+#   enp0s2  lima:host   — private link to the agent VM (default
 #                          192.168.106.0/24, overridable via .env;
 #                          IPs come from network.nix)
 #
@@ -61,10 +61,13 @@ in
     networkConfig.DHCP = "ipv4";
   };
 
-  # lima0 = lima:host, our private link to the agent VM. Static address;
-  # DHCP would conflict with the agent's static .2.
-  systemd.network.networks."20-lima0" = {
-    matchConfig.Name = "lima0";
+  # enp0s2 = lima:host, our private link to the agent VM. (The kernel
+  # names this NIC enp0s2 via systemd predictable naming because it's
+  # the second virtio-net device — Lima's `interface:` field can't
+  # actually rename the kernel device, so we just use enp0s2 directly.)
+  # Static address; DHCP would conflict with the agent's static .2.
+  systemd.network.networks."20-enp0s2" = {
+    matchConfig.Name = "enp0s2";
     networkConfig = {
       DHCP = "no";
       IPv6AcceptRA = false;
@@ -83,13 +86,14 @@ in
 
   # ── Firewall ──────────────────────────────────────────────────────────
   # NixOS firewall manages the filter table. We add a separate nat table
-  # below for the REDIRECT rules. Inbound on lima0 is allowed only on the
-  # explicit-mitmproxy port (8080), the transparent-mitmproxy port (8081,
-  # which is the post-REDIRECT destination), and dnsmasq (53).
+  # below for the REDIRECT rules. Inbound on enp0s2 (the lima:host link
+  # to the agent VM) is allowed only on the explicit-mitmproxy port
+  # (8080), the transparent-mitmproxy port (8081, which is the
+  # post-REDIRECT destination), and dnsmasq (53).
   networking.nftables.enable = true;
   networking.firewall = {
     enable = true;
-    interfaces.lima0 = {
+    interfaces.enp0s2 = {
       allowedTCPPorts = [ 8080 8081 ];
       allowedUDPPorts = [ 53 ];
     };
@@ -106,10 +110,12 @@ in
         type nat hook prerouting priority dstnat;
         # iifname (not iif) so NixOS's build-time `nft -c` validation
         # doesn't fail — iif resolves to a kernel ifindex at parse time
-        # and lima0 doesn't exist on the build host. iifname is a string
-        # match resolved at rule-load time inside the running guest.
-        iifname "lima0" tcp dport 80  redirect to :8081
-        iifname "lima0" tcp dport 443 redirect to :8081
+        # and the device doesn't exist on the build host. iifname is a
+        # string match resolved at rule-load time inside the running
+        # guest. The interface is enp0s2 (the second virtio-net,
+        # enp0s1 is the Apple Virtio NAT we don't configure).
+        iifname "enp0s2" tcp dport 80  redirect to :8081
+        iifname "enp0s2" tcp dport 443 redirect to :8081
       }
     '';
   };
@@ -137,10 +143,10 @@ in
   #
   # Both services bind 0.0.0.0 (not net.firewallIp) — even with
   # `After=network-online.target`, mitmproxy can race ahead of
-  # systemd-networkd assigning lima0's static address and bind() fails
+  # systemd-networkd assigning enp0s2's static address and bind() fails
   # with "could not bind on any address". 0.0.0.0 sidesteps the race
   # without weakening the security boundary: networking.firewall (above)
-  # only allows TCP/8080 and TCP/8081 inbound on lima0, so the agent VM
+  # only allows TCP/8080 and TCP/8081 inbound on enp0s2, so the agent VM
   # is still the only thing that can reach these ports.
   environment.etc."agent-vm/mitmproxy_addon.py".source = ./proxy/mitmproxy_addon.py;
 
@@ -225,7 +231,7 @@ in
       listen-address = net.firewallIp;
       # bind-dynamic, not bind-interfaces: the latter requires the listen
       # address to already be configured on an interface at start time,
-      # which races with systemd-networkd assigning lima0's static IP.
+      # which races with systemd-networkd assigning enp0s2's static IP.
       # bind-dynamic uses IP_FREEBIND and tracks interface changes.
       bind-dynamic = true;
       no-resolv = true;
@@ -236,7 +242,7 @@ in
   };
 
   # Belt-and-suspenders: even with bind-dynamic, wait for the network to
-  # be online so the first listen-address bind reliably finds lima0.
+  # be online so the first listen-address bind reliably finds enp0s2.
   systemd.services.dnsmasq = {
     after = [ "network-online.target" ];
     wants = [ "network-online.target" ];

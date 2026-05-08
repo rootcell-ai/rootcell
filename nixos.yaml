@@ -35,11 +35,12 @@ containerd:
   system: false
   user: false
 
-# ONLY interface — lima:host = the private segment shared with the
-# firewall VM (default 192.168.106.0/24). No vzNAT, no internet path that
-# bypasses the firewall. The Lima network name is overridden at create
-# time by `./agent` from $LIMA_NETWORK in .env; the static IPs come from
-# agent-vm.nix via network.nix.
+# Only one explicit Lima network: lima:host = the private segment
+# shared with the firewall VM (default 192.168.106.0/24). The kernel
+# names this NIC enp0s2 inside the guest (Apple Virtio NAT, which Lima
+# always provides with vmType: vz, takes enp0s1). No vzNAT here, no
+# internet path that bypasses the firewall — agent-vm.nix only assigns
+# an IP to enp0s2, leaving enp0s1 unmanaged. The Lima network name is
+# overridden at create time by `./agent` from $LIMA_NETWORK in .env.
 networks:
   - lima: host
-    interface: lima0
