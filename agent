@@ -238,7 +238,8 @@ wait_for_listener() {
     sleep 1
   done
   log "timeout waiting for $vm to listen on $proto $host:$port"
-  limactl shell "$vm" -- journalctl -u mitmproxy -u dnsmasq --no-pager -n 50 >&2
+  limactl shell "$vm" -- journalctl --no-pager -n 50 \
+    -u mitmproxy-explicit -u mitmproxy-transparent -u dnsmasq >&2
   exit 1
 }
 
@@ -272,7 +273,8 @@ ensure_vm_running "$FIREWALL_VM" "$REPO_DIR/firewall.yaml" || force_firewall=1
 needs_firewall_provision=$force_firewall
 if [ "$needs_firewall_provision" -eq 0 ]; then
   if ! limactl shell "$FIREWALL_VM" -- bash -lc \
-        'systemctl is-active mitmproxy >/dev/null 2>&1 \
+        'systemctl is-active mitmproxy-explicit >/dev/null 2>&1 \
+         && systemctl is-active mitmproxy-transparent >/dev/null 2>&1 \
          && systemctl is-active dnsmasq >/dev/null 2>&1' 2>/dev/null; then
     needs_firewall_provision=1
   fi
