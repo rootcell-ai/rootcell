@@ -1,0 +1,40 @@
+# HTTPS hostnames the agent VM may reach. Matched against TLS SNI by
+# mitmproxy (so SNI-spoofing inside an allowed CONNECT tunnel is caught).
+# fnmatch syntax: `*` matches any chars except `.`-style separators in
+# Python's fnmatch — i.e. `*.example.com` matches `foo.example.com` but
+# NOT `example.com`. List both forms when you want both.
+#
+# Edit this file then run `./agent allow` to hot-reload (no rebuild).
+
+# Anthropic + AWS Bedrock (the agent's LLM provider)
+api.anthropic.com
+*.anthropic.com
+bedrock-runtime.*.amazonaws.com
+
+# OpenAI (in case you switch providers)
+api.openai.com
+
+# GitHub (clones, releases, raw content)
+github.com
+api.github.com
+codeload.github.com
+*.githubusercontent.com
+objects.githubusercontent.com
+
+# GitLab (mirrors github coverage)
+gitlab.com
+
+# Nix binary caches and channels
+cache.nixos.org
+channels.nixos.org
+*.cloudfront.net
+*.cachix.org
+
+# Language package registries
+registry.npmjs.org
+*.npmjs.org
+pypi.org
+files.pythonhosted.org
+*.crates.io
+proxy.golang.org
+sum.golang.org

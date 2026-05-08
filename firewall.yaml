@@ -1,0 +1,39 @@
+# Lima config for the firewall VM. Tiny appliance: mitmproxy + dnsmasq,
+# brokers all egress for the agent VM. See firewall-vm.nix for the NixOS
+# side and proxy/README.md for ops notes.
+
+images:
+  - location: "https://github.com/nixos-lima/nixos-lima/releases/download/v0.0.5/nixos-lima-v0.0.5-aarch64.qcow2"
+    arch: "aarch64"
+    digest: "sha512:e1daeb0dcec65c624253603ab5ec06f0831b0940cd95a88903f9bfd0ee4009b2c45806b868674c7e8cb12941e50799e85d710fc0e9ad659059108cebbc4d19c1"
+
+mounts: []
+
+portForwards:
+  # Same port-68 ignore as the agent VM: nixos-lima/issues/50.
+  - proto: udp
+    guestPort: 68
+    guestIP: 0.0.0.0
+    ignore: true
+
+user:
+  home: "/home/{{.User}}"
+
+memory: "1GiB"
+cpus: 2
+disk: "8GiB"
+
+vmType: vz
+mountType: virtiofs
+
+containerd:
+  system: false
+  user: false
+
+# Two NICs:
+#   vzNAT       — internet egress (Apple vmnet shared NAT)
+#   lima:host   — private 192.168.106.0/24 segment shared with agent VM
+networks:
+  - vzNAT: true
+  - lima: host
+    interface: lima0

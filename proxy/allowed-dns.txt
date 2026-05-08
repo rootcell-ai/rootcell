@@ -1,0 +1,19 @@
+# DNS suffixes the firewall VM's dnsmasq will resolve. Matched as a
+# suffix (so `github.com` here lets `api.github.com` resolve too —
+# dnsmasq's `server=/HOST/...` syntax matches HOST and all subdomains).
+# Anything else returns 0.0.0.0 via the catch-all.
+
+anthropic.com
+amazonaws.com
+github.com
+githubusercontent.com
+gitlab.com
+nixos.org
+cachix.org
+cloudfront.net
+npmjs.org
+pypi.org
+pythonhosted.org
+crates.io
+golang.org
+openai.com

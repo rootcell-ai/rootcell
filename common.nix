@@ -1,9 +1,8 @@
 { config, modulesPath, pkgs, lib, username, nixos-lima, ... }:
 
-# System-level NixOS config. Most user-facing tooling lives in home.nix
-# instead, so home-manager can iterate fast without triggering nixos-rebuild.
-# This file only contains things that are genuinely system-level: the lima
-# integration, boot loader, filesystems, user account, sudo, nix daemon.
+# Shared NixOS bits used by both the agent VM and the firewall VM. Things
+# that are genuinely VM-specific (hostname, networking, firewall policy,
+# services) live in agent-vm.nix and firewall-vm.nix respectively.
 
 {
   imports = [
@@ -14,13 +13,12 @@
     nixos-lima.nixosModules.lima
   ];
 
-  networking.hostName = "agent-vm";
-
   # Activate the nixos-lima module. Without this, lima-guestagent won't
   # run and `limactl shell` will fail after rebuild.
   services.lima.enable = true;
 
-  # Lima communicates with the guest over SSH.
+  # Lima communicates with the guest over SSH (vsock-multiplexed on vz+Linux,
+  # so this works regardless of whether the VM has a routable NIC).
   services.openssh.enable = true;
 
   # The Lima user. Lima sets up the user at first boot via cloud-init style
@@ -68,13 +66,9 @@
     fsType = "ext4";
     options = [ "noatime" "nodiratime" "discard" ];
   };
- 
+
   environment.enableAllTerminfo = true;
-
   boot.kernelPackages = pkgs.linuxPackages_latest;
-
-  # Don't bother with a firewall inside a Lima VM.
-  networking.firewall.enable = false;
 
   # Pin to the NixOS release nixos-lima is built against. Don't bump casually.
   system.stateVersion = "25.11";

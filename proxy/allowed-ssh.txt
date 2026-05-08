@@ -1,0 +1,7 @@
+# SSH hostnames the agent VM may reach via `git clone git@host:...` and
+# similar. The agent's SSH client is configured (in home.nix) to tunnel
+# through the firewall via HTTP CONNECT, so mitmproxy's addon checks the
+# CONNECT host:22 against this list.
+
+github.com
+gitlab.com

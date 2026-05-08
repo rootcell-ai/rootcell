@@ -1,5 +1,5 @@
 {
-  description = "Disposable NixOS Lima VM for agentic coding with pi (pi.dev)";
+  description = "Disposable NixOS Lima VMs for agentic coding with pi (pi.dev)";
 
   inputs = {
     # Must match what nixos-lima is built against. v0.0.5 = nixos-25.11.
@@ -28,17 +28,24 @@
       username = "luser";
 
       pkgs = nixpkgs.legacyPackages.${system};
+
+      mkVM = module: nixpkgs.lib.nixosSystem {
+        inherit system;
+        # nixos-lima is referenced from common.nix; username from both.
+        specialArgs = { inherit username nixos-lima; };
+        modules = [ module ];
+      };
     in
     {
-      # System-level NixOS configuration. Built/switched with `nixos-rebuild`.
-      nixosConfigurations.agent-vm = nixpkgs.lib.nixosSystem {
-        inherit system;
-        # Pass nixos-lima through so configuration.nix can import its module.
-        specialArgs = { inherit username nixos-lima; };
-        modules = [ ./configuration.nix ];
+      # Two VMs share common.nix; each pulls in its own role module.
+      # Built/switched with `nixos-rebuild switch --flake .#<name>`.
+      nixosConfigurations = {
+        agent-vm    = mkVM ./agent-vm.nix;
+        firewall-vm = mkVM ./firewall-vm.nix;
       };
 
-      # Home Manager configuration. Built/switched with `home-manager`.
+      # Home Manager only attaches to the agent VM. The firewall VM is an
+      # appliance with no interactive user. Built/switched with `home-manager`.
       homeConfigurations.${username} = home-manager.lib.homeManagerConfiguration {
         inherit pkgs;
         extraSpecialArgs = { inherit username; };
