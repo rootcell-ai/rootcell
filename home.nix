@@ -134,18 +134,16 @@ in
   };
 
   # All SSH egress tunnels through the firewall VM via HTTP CONNECT, where
-  # mitmproxy applies the allowed-ssh.txt allowlist. ssh-to-localhost
-  # (limactl, dev workflows) explicitly bypasses the proxy.
+  # mitmproxy applies the allowed-ssh.txt allowlist. No exceptions —
+  # `ssh host.lima.internal` falls through this rule too and gets denied
+  # by the firewall (host.lima.internal isn't on the SSH allowlist), so
+  # the VM has no path to SSH back to the host. (limactl shell / cp use
+  # Lima's own host→guest vsock transport on the *server* side, which
+  # this client config doesn't touch.)
   programs.ssh = {
     enable = true;
-    matchBlocks = {
-      "localhost 127.0.0.1 ::1 host.lima.internal" = {
-        proxyCommand = "none";
-      };
-      "*" = {
-        proxyCommand = "${pkgs.netcat-openbsd}/bin/nc -X connect -x 192.168.106.1:8080 %h %p";
-      };
-    };
+    matchBlocks."*".proxyCommand =
+      "${pkgs.netcat-openbsd}/bin/nc -X connect -x 192.168.106.1:8080 %h %p";
     # Pre-seed known_hosts so first-run `git clone` doesn't prompt. Update
     # by running `ssh-keyscan github.com` etc. on a trusted host.
     knownHosts = {
