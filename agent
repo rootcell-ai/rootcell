@@ -230,20 +230,26 @@ write_git_local_nix() {
 # limactl shell costs ~1s of SSH startup, which adds up if you make ~180
 # of them like the previous per-port version did).
 wait_for_firewall_listeners() {
+  # mitmproxy binds 0.0.0.0:{8080,8081} (see firewall-vm.nix for why);
+  # dnsmasq binds firewallIp:53 via bind-dynamic. Match by ":port " so
+  # we don't depend on which IP a service settled on. Trailing space
+  # avoids accidentally matching :80 inside :8080 or :853 etc.
+  # ss --no-header so we don't have to skip the column titles, then awk
+  # column 4 (Local Address:Port) and grep for the port we want. Same
+  # column for both tcp and udp.
   local probe='
-    ip="$1"
     for _ in $(seq 1 300); do
-      if ss -tln | grep -qF "${ip}:8080" \
-         && ss -tln | grep -qF "${ip}:8081" \
-         && ss -uln | grep -qF "${ip}:53"; then
+      if ss -tlnH | awk "{print \$4}" | grep -qE ":8080$" \
+         && ss -tlnH | awk "{print \$4}" | grep -qE ":8081$" \
+         && ss -ulnH | awk "{print \$4}" | grep -qE ":53$"; then
         exit 0
       fi
       sleep 0.2
     done
     exit 1
   '
-  if ! limactl shell "$FIREWALL_VM" -- bash -c "$probe" _ "$FIREWALL_IP" 2>/dev/null; then
-    log "timeout waiting for firewall services on $FIREWALL_IP"
+  if ! limactl shell "$FIREWALL_VM" -- bash -c "$probe" 2>/dev/null; then
+    log "timeout waiting for firewall services"
     limactl shell "$FIREWALL_VM" -- journalctl --no-pager -n 50 \
       -u mitmproxy-explicit -u mitmproxy-transparent -u dnsmasq >&2
     exit 1
