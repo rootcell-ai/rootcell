@@ -31,11 +31,15 @@ containerd:
   user: false
 
 # Two NICs:
-#   vzNAT       — internet egress (Apple vmnet shared NAT)
-#   lima:host   — private segment shared with agent VM (default
-#                 192.168.106.0/24; the Lima network name and IPs are
-#                 overridable via .env — see README and network.nix)
+#   enp0s1 — Apple Virtio NAT (always present with vmType: vz; gives the
+#            firewall its internet egress; default route lives here)
+#   lima0  — lima:host private segment shared with the agent VM (default
+#            192.168.106.0/24; the Lima network name and IPs are
+#            overridable via .env — see README and network.nix)
+#
+# We don't redeclare the Virtio NAT here. `vzNAT: true` would be redundant
+# with vmType: vz's default and Lima would auto-assign it interface=lima0,
+# colliding with our explicit lima:host interface name.
 networks:
-  - vzNAT: true
   - lima: host
     interface: lima0

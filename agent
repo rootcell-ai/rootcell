@@ -166,13 +166,13 @@ fi
 # Returns 0 if the VM was already running or was just started from Stopped.
 # Returns 1 if the VM was newly created (caller must force a provision).
 #
-# $3 is the index of the `lima: <name>` entry inside the YAML's `networks:`
-# block. nixos.yaml has only one network (index 0); firewall.yaml puts
-# `lima: host` at index 1 because `vzNAT: true` is index 0. We patch that
-# entry at create time to match $LIMA_NETWORK from .env, so the same
-# checked-in YAML works for any user-customized network name.
+# Both YAMLs (nixos.yaml and firewall.yaml) put the `lima: <name>` entry at
+# index 0 of `networks:` — the firewall's internet egress is the implicit
+# Apple Virtio NAT that vmType: vz provides for free, not a separate
+# entry. We patch index 0 at create time to match $LIMA_NETWORK from .env
+# so the checked-in YAML works for any user-customized network name.
 ensure_vm_running() {
-  local name="$1" config="$2" lima_idx="$3"
+  local name="$1" config="$2"
   local status
   status=$(limactl list --format '{{.Status}}' "$name" 2>/dev/null || true)
   case "$status" in
@@ -180,10 +180,15 @@ ensure_vm_running() {
     Stopped) log "starting $name VM..."; limactl start "$name"; return 0 ;;
     "")
       log "$name VM not found — creating (~3-5 min for image + boot)..."
-      limactl start --tty=false --name="$name" \
-        --set ".user.name = \"$GUEST_USER\"" \
-        --set ".networks[$lima_idx].lima = \"$LIMA_NETWORK\"" \
-        "$config"
+      # Wrap in `if` so the call-site `|| force_provision=1` (which masks
+      # function returns) doesn't also mask a real limactl failure here.
+      if ! limactl start --tty=false --name="$name" \
+            --set ".user.name = \"$GUEST_USER\"" \
+            --set ".networks[0].lima = \"$LIMA_NETWORK\"" \
+            "$config"; then
+        log "limactl start $name failed; aborting."
+        exit 1
+      fi
       return 1
       ;;
     *) log "$name VM in unexpected state: '$status'. Aborting."; exit 1 ;;
@@ -262,7 +267,7 @@ fi
 # --- 3. Bring up the firewall VM and provision it --------------------------
 force_firewall=0
 [ "$SUBCMD" = provision ] && force_firewall=1
-ensure_vm_running "$FIREWALL_VM" "$REPO_DIR/firewall.yaml" 1 || force_firewall=1
+ensure_vm_running "$FIREWALL_VM" "$REPO_DIR/firewall.yaml" || force_firewall=1
 
 needs_firewall_provision=$force_firewall
 if [ "$needs_firewall_provision" -eq 0 ]; then
@@ -295,7 +300,7 @@ wait_for_listener "$FIREWALL_VM" "$FIREWALL_IP" udp 53    # dnsmasq
 # --- 4. Bring up the agent VM and provision it -----------------------------
 force_agent=0
 [ "$SUBCMD" = provision ] && force_agent=1
-ensure_vm_running "$AGENT_VM" "$REPO_DIR/nixos.yaml" 0 || force_agent=1
+ensure_vm_running "$AGENT_VM" "$REPO_DIR/nixos.yaml" || force_agent=1
 
 needs_agent_provision=$force_agent
 if [ "$needs_agent_provision" -eq 0 ]; then
