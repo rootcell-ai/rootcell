@@ -16,10 +16,19 @@ let
   defaults = {
     # IP of the firewall VM on the inter-VM lima:host network. The agent
     # VM uses this as its default route, DNS server, and SSH proxy.
-    firewallIp = "192.168.106.1";
+    #
+    # NOTE: do not put either VM at the .1 of the subnet. Apple's
+    # vmnet.framework (which Lima's `lima:host` network is built on
+    # via socket_vmnet) gives the macOS host bridge that .1 address
+    # automatically and we can't take it back. If the firewall VM also
+    # claims .1, the host bridge and the VM both respond to traffic
+    # for that address — ARP races, TCP/UDP get intercepted by the
+    # host bridge (which has nothing listening on our ports), and
+    # connections from the agent VM see "Connection refused".
+    firewallIp = "192.168.106.2";
 
     # IP of the agent VM on the same network.
-    agentIp = "192.168.106.2";
+    agentIp = "192.168.106.3";
 
     # Subnet prefix length for the inter-VM network.
     networkPrefix = 24;

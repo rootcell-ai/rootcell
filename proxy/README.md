@@ -3,15 +3,15 @@
 The egress firewall for the agent VM. All outbound traffic from the agent
 VM passes through services running in the firewall VM:
 
-- **mitmproxy (transparent)** at `192.168.106.1:8081` — receives TCP/80
+- **mitmproxy (transparent)** at `192.168.106.2:8081` — receives TCP/80
   and TCP/443 packets that nftables NAT REDIRECT intercepts on the
   inter-VM link. Reads the TLS SNI (HTTPS) or HTTP Host header and matches
   against [allowed-https.txt](allowed-https.txt). Passthrough on allow
   (no MITM, no CA in the agent VM); kill on deny.
-- **mitmproxy (explicit / CONNECT)** at `192.168.106.1:8080` — handles
+- **mitmproxy (explicit / CONNECT)** at `192.168.106.2:8080` — handles
   the agent VM's SSH `ProxyCommand`, which speaks HTTP `CONNECT host:22`.
   Matches against [allowed-ssh.txt](allowed-ssh.txt).
-- **dnsmasq** at `192.168.106.1:53` — DNS resolver that forwards names
+- **dnsmasq** at `192.168.106.2:53` — DNS resolver that forwards names
   matching [allowed-dns.txt](allowed-dns.txt) to 1.1.1.1 and returns
   `0.0.0.0` for everything else.
 

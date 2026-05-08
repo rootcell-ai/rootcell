@@ -227,6 +227,9 @@ networks:
     netmask: 255.255.255.0
 ```
 
+The `gateway` is what the macOS host bridge claims for itself — *don't*
+put either VM at that address (see network.nix for the gory detail).
+
 The name (`host2` here) is what you'll reference in `.env`. Subnet must
 not overlap any other entry on this Mac.
 
@@ -237,8 +240,8 @@ not overlap any other entry on this Mac.
 
 ```sh
 LIMA_NETWORK=host2
-FIREWALL_IP=192.168.107.1
-AGENT_IP=192.168.107.2
+FIREWALL_IP=192.168.107.2
+AGENT_IP=192.168.107.3
 NETWORK_PREFIX=24
 ```
 
