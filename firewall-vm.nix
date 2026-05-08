@@ -104,8 +104,12 @@ in
     content = ''
       chain prerouting {
         type nat hook prerouting priority dstnat;
-        iif "lima0" tcp dport 80  redirect to :8081
-        iif "lima0" tcp dport 443 redirect to :8081
+        # iifname (not iif) so NixOS's build-time `nft -c` validation
+        # doesn't fail — iif resolves to a kernel ifindex at parse time
+        # and lima0 doesn't exist on the build host. iifname is a string
+        # match resolved at rule-load time inside the running guest.
+        iifname "lima0" tcp dport 80  redirect to :8081
+        iifname "lima0" tcp dport 443 redirect to :8081
       }
     '';
   };
