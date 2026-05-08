@@ -116,8 +116,14 @@ in
 
   # ── Mutable allowlist directory ───────────────────────────────────────
   # `./agent allow` writes here via `limactl cp`. Not in the Nix store.
+  # The dnsmasq-allowlist.conf seed below is the catch-all-NXDOMAIN line
+  # by itself — dnsmasq's pre-start check refuses to launch without the
+  # conf-file existing, but on first boot reload.sh hasn't run yet to
+  # generate the real allowlist. The `f` rule only creates if missing,
+  # so the file we write later via reload.sh is not clobbered.
   systemd.tmpfiles.rules = [
     "d /etc/agent-vm 0755 root root -"
+    "f /etc/agent-vm/dnsmasq-allowlist.conf 0644 root root - address=/#/0.0.0.0"
   ];
 
   # ── mitmproxy ─────────────────────────────────────────────────────────
