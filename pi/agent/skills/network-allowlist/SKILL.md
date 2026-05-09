@@ -1,6 +1,6 @@
 ---
 name: network-allowlist
-description: When a network call fails with "could not resolve host" or "connection refused", or you need to know up-front whether a particular host is reachable from inside this VM.
+description: When a network call fails with DNS, TLS, or SSH refusal, or to check up-front whether a host is reachable from this firewalled VM.
 ---
 
 # Network egress allowlist

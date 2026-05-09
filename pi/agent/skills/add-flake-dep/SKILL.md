@@ -1,6 +1,6 @@
 ---
 name: add-flake-dep
-description: Add a new dependency (system tool, language library, or CLI) to a project's local flake.nix and reload the dev shell. Use this any time the user asks to install, add, or pull in a tool or library that isn't already on PATH or importable, instead of reaching for pip, npm install -g, apt, brew, cargo install, or ad-hoc downloads.
+description: Add a system tool or language library to the project's flake.nix instead of pip, npm install -g, apt, brew, cargo install, or curl|sh installers. Use whenever a dep isn't on PATH or importable.
 ---
 
 # Add a dependency to flake.nix
