@@ -102,14 +102,21 @@ def tls_clienthello(data: tls.ClientHelloData) -> None:
     if not sni or not _matches(sni, _https_cache.get(ALLOW_HTTPS)):
         logger.warning(f"DENY https sni={sni!r}")
         # Force the passthrough path to fail closed: redirect the
-        # upstream address to a closed local port BEFORE setting
-        # ignore_connection. mitmproxy will TCP-relay to 127.0.0.1:1,
-        # immediately get connection-refused, and tear down the client
-        # tunnel. The denied SNI never sees a byte of the real
-        # destination. (Setting ignore_connection without redirecting
-        # upstream — as this addon previously did — silently relayed
-        # bytes to the original SO_ORIGINAL_DST and made the allowlist
-        # a no-op for any host that resolved through DNS.)
+        # upstream to a closed local port, then set ignore_connection.
+        # mitmproxy will TCP-relay to 127.0.0.1:1, get connection-
+        # refused, and tear down the client tunnel. The denied SNI
+        # never sees a byte of the real destination.
+        #
+        # Critical dependency: this only works with
+        # `connection_strategy=lazy` (set in firewall-vm.nix). Under
+        # the default `eager`, mitmproxy has already opened the upstream
+        # to SO_ORIGINAL_DST by the time this hook runs, and
+        # Server.__setattr__ raises on `address =` mutation of an open
+        # connection. The hook dispatcher swallows that exception, so
+        # ignore_connection is never set, and mitmproxy falls through
+        # to a full MITM (CN=mitmproxy cert + relay to real upstream)
+        # — making the deny path a no-op for any client that ignores
+        # cert errors (e.g. `curl -k`).
         data.context.server.address = ("127.0.0.1", 1)
         data.ignore_connection = True
         return

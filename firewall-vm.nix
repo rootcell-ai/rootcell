@@ -176,6 +176,17 @@ in
         "--listen-port 8080"
         "--set termlog_verbosity=warn"
         "--set flow_detail=0"
+        # Defer opening the upstream TCP connection until after our addon
+        # runs. With the default "eager", mitmproxy opens the upstream at
+        # SO_ORIGINAL_DST before tls_clienthello fires; by the time the
+        # addon tries to redirect denied SNIs to a black hole,
+        # Server.__setattr__ raises (the connection is already OPEN), the
+        # exception is swallowed by the hook dispatcher, and ignore_connection
+        # stays False — so mitmproxy proceeds with a full MITM and a CN=mitmproxy
+        # cert, while still relaying bytes to the real upstream. That made
+        # `curl -k` a complete allowlist bypass. With lazy, the address
+        # rewrite in the deny path actually takes effect.
+        "--set connection_strategy=lazy"
         "--set confdir=/var/lib/mitmproxy-explicit"
         "-s /etc/agent-vm/mitmproxy_addon.py"
       ];
@@ -204,6 +215,17 @@ in
         "--listen-port 8081"
         "--set termlog_verbosity=warn"
         "--set flow_detail=0"
+        # Defer opening the upstream TCP connection until after our addon
+        # runs. With the default "eager", mitmproxy opens the upstream at
+        # SO_ORIGINAL_DST before tls_clienthello fires; by the time the
+        # addon tries to redirect denied SNIs to a black hole,
+        # Server.__setattr__ raises (the connection is already OPEN), the
+        # exception is swallowed by the hook dispatcher, and ignore_connection
+        # stays False — so mitmproxy proceeds with a full MITM and a CN=mitmproxy
+        # cert, while still relaying bytes to the real upstream. That made
+        # `curl -k` a complete allowlist bypass. With lazy, the address
+        # rewrite in the deny path actually takes effect.
+        "--set connection_strategy=lazy"
         "--set confdir=/var/lib/mitmproxy-transparent"
         "-s /etc/agent-vm/mitmproxy_addon.py"
       ];
