@@ -91,13 +91,18 @@ in
     neovim
   ];
 
-  # Pi auto-loads ~/.pi/agent/AGENTS.md as global instructions and discovers
-  # skills under ~/.pi/agent/skills/<name>/SKILL.md (progressive disclosure:
-  # only the front-matter description goes in the system prompt; pi loads
-  # the full body when a task matches). Per-project AGENTS.md/CLAUDE.md and
-  # .pi/skills/ are picked up separately by walking up from the cwd.
-  home.file.".pi/agent/AGENTS.md".source = ./pi/agent/AGENTS.md;
-  home.file.".pi/agent/skills".source = ./pi/agent/skills;
+  # Pi discovers skills under ~/.pi/agent/skills/<name>/SKILL.md (progressive
+  # disclosure: only the front-matter description goes in the system prompt;
+  # pi loads the full body when a task matches). Per-project AGENTS.md /
+  # CLAUDE.md and .pi/skills/ are picked up separately by walking up from
+  # the cwd.
+  #
+  # Symlink each skill we manage individually rather than the whole skills
+  # dir — that way ~/.pi/ and ~/.pi/agent/skills/ stay real directories,
+  # so pi's own state (e.g. /scoped-models config) and any skills the user
+  # adds at runtime survive `home-manager switch`.
+  home.file.".pi/agent/skills/add-flake-dep".source     = ./pi/agent/skills/add-flake-dep;
+  home.file.".pi/agent/skills/network-allowlist".source = ./pi/agent/skills/network-allowlist;
 
   programs.bash = {
     enable = true;
