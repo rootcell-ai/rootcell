@@ -113,6 +113,20 @@ in
   home.file.".pi/agent/extensions/subagent".source =
     "${pi-coding-agent}/share/pi-coding-agent/examples/extensions/subagent";
 
+  # The subagent extension loads agent definitions from ~/.pi/agent/agents/
+  # (user-level) by default — it does NOT look inside its own examples/agents/
+  # subdir. Symlink each example agent .md individually so the parent dir
+  # stays writable and any agents the user authors at runtime survive
+  # `home-manager switch`.
+  home.file.".pi/agent/agents/planner.md".source =
+    "${pi-coding-agent}/share/pi-coding-agent/examples/extensions/subagent/agents/planner.md";
+  home.file.".pi/agent/agents/reviewer.md".source =
+    "${pi-coding-agent}/share/pi-coding-agent/examples/extensions/subagent/agents/reviewer.md";
+  home.file.".pi/agent/agents/scout.md".source =
+    "${pi-coding-agent}/share/pi-coding-agent/examples/extensions/subagent/agents/scout.md";
+  home.file.".pi/agent/agents/worker.md".source =
+    "${pi-coding-agent}/share/pi-coding-agent/examples/extensions/subagent/agents/worker.md";
+
   programs.bash = {
     enable = true;
     enableCompletion = true;
