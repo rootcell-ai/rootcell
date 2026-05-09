@@ -71,6 +71,17 @@ fi
 log "provisioning test VMs (first run takes ~15 min)..."
 "$REPO_DIR/agent" provision
 
+# Force-sync the .defaults allowlists into the test firewall so the
+# test assertions are stable regardless of any host-side allowlist
+# customization. Only touches the test firewall (firewall-test); the
+# host's live files and the prod firewall are untouched.
+log "syncing .defaults allowlists into test firewall..."
+for f in allowed-https.txt allowed-ssh.txt allowed-dns.txt; do
+  limactl cp "$REPO_DIR/proxy/$f.defaults" \
+    "$FIREWALL_VM_NAME:/etc/agent-vm/$f"
+done
+limactl shell "$FIREWALL_VM_NAME" -- sudo /etc/agent-vm/reload.sh >/dev/null
+
 # --- harness ----------------------------------------------------------------
 PASS=0
 FAIL=0

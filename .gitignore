@@ -7,4 +7,10 @@ network-local.nix
 # Per-user env overrides, seeded from .env.defaults on first run.
 .env
 
+# Per-user egress allowlists, seeded from proxy/allowed-*.txt.defaults
+# on first run. Edit these directly + `./agent allow` to hot-reload.
+proxy/allowed-https.txt
+proxy/allowed-ssh.txt
+proxy/allowed-dns.txt
+
 .claude/

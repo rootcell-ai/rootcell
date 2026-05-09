@@ -6,18 +6,23 @@ VM passes through services running in the firewall VM:
 - **mitmproxy (transparent)** at `192.168.106.2:8081` — receives TCP/80
   and TCP/443 packets that nftables NAT REDIRECT intercepts on the
   inter-VM link. Reads the TLS SNI (HTTPS) or HTTP Host header and matches
-  against [allowed-https.txt](allowed-https.txt). Passthrough on allow
-  (no MITM, no CA in the agent VM); kill on deny.
+  against `allowed-https.txt`. Passthrough on allow (no MITM, no CA in
+  the agent VM); deny redirects upstream to `127.0.0.1:1` so the client
+  TCP-handshake gets RST and the real upstream sees nothing.
 - **mitmproxy (explicit / CONNECT)** at `192.168.106.2:8080` — handles
   the agent VM's SSH `ProxyCommand`, which speaks HTTP `CONNECT host:22`.
-  Matches against [allowed-ssh.txt](allowed-ssh.txt).
+  Matches against `allowed-ssh.txt`.
 - **dnsmasq** at `192.168.106.2:53` — DNS resolver that forwards names
-  matching [allowed-dns.txt](allowed-dns.txt) to 1.1.1.1 and returns
-  `0.0.0.0` for everything else.
+  matching `allowed-dns.txt` to 1.1.1.1 and returns `REFUSED` for
+  everything else.
 
 The two mitmproxy instances share the same Python addon (mitmproxy can
 only run one mode per process). HTTPS/HTTP is transparent by design;
 SSH stays explicit so we can allowlist by hostname.
+
+The three allowlist files are gitignored; `./agent` seeds each from its
+`.defaults` sibling on first run. Edit the live `*.txt` to customize;
+delete the live file and re-run `./agent` to reset to project defaults.
 
 ## Adding a host
 
@@ -73,8 +78,11 @@ limactl shell firewall -- cat /etc/agent-vm/dnsmasq-allowlist.conf
 
 ## Files in this directory
 
-- `allowed-https.txt` `allowed-ssh.txt` `allowed-dns.txt` — user-editable
-  allowlists. The single source of truth.
+- `allowed-https.txt.defaults` `allowed-ssh.txt.defaults`
+  `allowed-dns.txt.defaults` — checked-in seed allowlists. `./agent`
+  copies each to `<name>.txt` (gitignored) on first run.
+- `allowed-https.txt` `allowed-ssh.txt` `allowed-dns.txt` — gitignored,
+  user-editable live allowlists. The single source of truth at runtime.
 - `mitmproxy_addon.py` — Python addon loaded by mitmdump. Reads the
   allowlist files from `/etc/agent-vm/` inside the firewall VM, with
   mtime-based hot reload.

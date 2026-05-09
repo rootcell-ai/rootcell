@@ -36,9 +36,11 @@ firewall.yaml      # Lima config for the firewall VM (vzNAT + lima:host)
 network.nix        # default IPs/subnet for the inter-VM link (overridable via .env)
 pkgs/socket_vmnet.nix  # Nix derivation for socket_vmnet (not in nixpkgs)
 proxy/             # the egress firewall — see proxy/README.md:
-  allowed-https.txt#   SNI allowlist (fnmatch globs)
-  allowed-ssh.txt  #   SSH CONNECT-host allowlist
-  allowed-dns.txt  #   DNS suffix allowlist (dnsmasq)
+  allowed-https.txt.defaults#  SNI allowlist seed (fnmatch globs);
+                   #          the live `allowed-https.txt` is gitignored
+                   #          and seeded from this on first run
+  allowed-ssh.txt.defaults  #  SSH CONNECT-host allowlist seed
+  allowed-dns.txt.defaults  #  DNS suffix allowlist seed (dnsmasq)
   mitmproxy_addon.py #  mitmproxy addon implementing the SNI check
   reload.sh        #   hot-reload helper (runs inside the firewall VM)
 pi/agent/          # mirrors ~/.pi/agent/ in the agent VM (home-manager symlinks):
@@ -143,7 +145,10 @@ fetches all flow through mitmproxy). Subsequent runs are seconds.
 ## Egress firewall
 
 Anything the agent VM tries to reach must go through the firewall VM. The
-allowlists live in [proxy/](proxy/):
+allowlists live in [proxy/](proxy/) as three plain-text files. Each one
+ships as `<name>.txt.defaults` (tracked in git) and is copied to
+`<name>.txt` (gitignored, your editable copy) on first `./agent` run —
+mirroring how `.env` is seeded from `.env.defaults`.
 
 - **`allowed-https.txt`** — SNI/Host allowlist for HTTPS and HTTP. For
   HTTPS, mitmproxy reads the TLS ClientHello and matches the SNI against
@@ -155,11 +160,13 @@ allowlists live in [proxy/](proxy/):
   SSH `ProxyCommand` sends. Used for `git clone git@github.com:...` and
   similar.
 - **`allowed-dns.txt`** — DNS suffix allowlist. dnsmasq forwards matching
-  names to 1.1.1.1; everything else returns `0.0.0.0`.
+  names to 1.1.1.1; everything else returns `REFUSED`.
 
-To add a host, edit the relevant file(s) and run `./agent allow`. Reload
-takes ~1s and doesn't restart any services. See [proxy/README.md](proxy/README.md)
-for ops notes (logs, debugging, file formats).
+To add a host, edit the relevant `*.txt` file(s) and run `./agent allow`.
+Reload takes ~1s and doesn't restart any services. To reset to project
+defaults, delete the live file and re-run `./agent` — it'll re-seed from
+the `.defaults` sibling. See [proxy/README.md](proxy/README.md) for ops
+notes (logs, debugging, file formats).
 
 If a host needs both DNS resolution and HTTPS access (the common case),
 add it to **both** `allowed-dns.txt` and `allowed-https.txt`.
