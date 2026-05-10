@@ -97,21 +97,36 @@ in
   # CLAUDE.md and .pi/skills/ are picked up separately by walking up from
   # the cwd.
   #
-  # Symlink each skill we manage individually rather than the whole skills
-  # dir — that way ~/.pi/ and ~/.pi/agent/skills/ stay real directories,
-  # so pi's own state (e.g. /scoped-models config) and any skills the user
-  # adds at runtime survive `home-manager switch`.
-  home.file.".pi/agent/skills/add-flake-dep".source     = ./pi/agent/skills/add-flake-dep;
-  home.file.".pi/agent/skills/network-allowlist".source = ./pi/agent/skills/network-allowlist;
+  # `recursive = true` is load-bearing: with it, home-manager's home-files
+  # derivation uses `lndir` to build a real directory tree containing one
+  # symlink per leaf file, so ~/.pi/agent/skills/ stays a real directory
+  # (the user can add their own skills alongside) AND each managed skill's
+  # interior is per-file symlinks (so editing SKILL.md and re-provisioning
+  # only swaps the SKILL.md symlink target). With the default
+  # `recursive = false`, home-manager symlinks the whole skill directory
+  # to a nix-store path; the next `home-manager switch` then can't replace
+  # it cleanly when content changes — `cmp` errors on directory targets
+  # and `mv` fails because the nix-store parent is read-only — leaving
+  # activation in a half-broken state. (Likewise for the `subagent`
+  # extension below.)
+  home.file.".pi/agent/skills/add-flake-dep" = {
+    source = ./pi/agent/skills/add-flake-dep;
+    recursive = true;
+  };
+  home.file.".pi/agent/skills/network-allowlist" = {
+    source = ./pi/agent/skills/network-allowlist;
+    recursive = true;
+  };
 
-  # Pi extensions live under ~/.pi/agent/extensions/<name>/. Same per-entry
-  # symlink rationale as skills above: keep the parent dir real so any
-  # extensions the user adds at runtime survive `home-manager switch`. The
-  # `subagent` example ships inside the pi-coding-agent release tarball, so
-  # point at the copy already present in the derivation's $out/share tree
-  # rather than vendoring it.
-  home.file.".pi/agent/extensions/subagent".source =
-    "${pi-coding-agent}/share/pi-coding-agent/examples/extensions/subagent";
+  # Pi extensions live under ~/.pi/agent/extensions/<name>/. Same
+  # `recursive = true` rationale as skills above. The `subagent` example
+  # ships inside the pi-coding-agent release tarball, so point at the
+  # copy already present in the derivation's $out/share tree rather than
+  # vendoring it.
+  home.file.".pi/agent/extensions/subagent" = {
+    source = "${pi-coding-agent}/share/pi-coding-agent/examples/extensions/subagent";
+    recursive = true;
+  };
 
   # The subagent extension loads agent definitions from ~/.pi/agent/agents/
   # (user-level) by default — it does NOT look inside its own examples/agents/
