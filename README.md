@@ -61,6 +61,7 @@ proxy/             # the egress firewall — see proxy/README.md:
   reload.sh        #   hot-reload helper (runs inside the firewall VM)
 pki/               # gitignored — per-deployment TLS-MITM CA, generated on
                    #   first ./agent run; private key never leaves host+firewall
+completions/       # tab-completion for ./agent (zsh + bash); see "Shell completions"
 pi/agent/          # mirrors ~/.pi/agent/ in the agent VM (home-manager symlinks):
   AGENTS.md        #   pi global instructions
   skills/          #   pi global skills (one dir per skill, each with SKILL.md)
@@ -159,6 +160,24 @@ On first run, `./agent`:
 
 End-to-end first run is ~15 minutes (firewall + agent rebuilds + home-manager
 fetches all flow through mitmproxy). Subsequent runs are seconds.
+
+## Shell completions
+
+Tab-completion for the `provision`, `allow`, and `pubkey` subcommands. Both
+files register completion under `agent` and `./agent`, so it works whether
+you've put the script on `PATH` or run it from the repo.
+
+**zsh** — add to `~/.zshrc` (after wherever you run `compinit`):
+
+```sh
+source /path/to/lima-pi-vm/completions/agent.zsh
+```
+
+**bash** — add to `~/.bashrc`:
+
+```sh
+source /path/to/lima-pi-vm/completions/agent.bash
+```
 
 ## Egress firewall
 
