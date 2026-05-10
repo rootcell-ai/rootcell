@@ -346,6 +346,10 @@ bootstrap_agent_firewall_route() {
     if [ -e /sys/class/net/enp0s2 ]; then
       iface=enp0s2
     fi
+    # The nixos-lima base image runs dhcpcd before our NixOS generation is
+    # active. Stop it so it cannot remove the temporary default route while
+    # the first nixos-rebuild is fetching nixpkgs through the firewall.
+    systemctl stop dhcpcd.service 2>/dev/null || true
     ip link set \"\$iface\" up
     ip addr flush dev \"\$iface\"
     ip addr add '$AGENT_IP/$NETWORK_PREFIX' dev \"\$iface\"
