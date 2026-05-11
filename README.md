@@ -58,6 +58,7 @@ proxy/             # the egress firewall — see proxy/README.md:
   allowed-ssh.txt.defaults  #  SSH CONNECT-host allowlist seed
   allowed-dns.txt.defaults  #  DNS suffix allowlist seed (dnsmasq)
   mitmproxy_addon.py #  mitmproxy addon implementing SNI + Host checks
+  agent_spy.py      #   Bedrock traffic formatter for ./agent spy
   reload.sh        #   hot-reload helper (runs inside the firewall VM)
 pki/               # gitignored — per-deployment TLS-MITM CA, generated on
                    #   first ./agent run; private key never leaves host+firewall
@@ -148,6 +149,8 @@ and the env vars exported are the only other assumptions baked in.
 ./agent -- nix flake update    # any command, in the agent VM
 ./agent allow                  # hot-reload the allowlists into the firewall VM
                                # (after editing proxy/allowed-*.txt)
+./agent spy                    # tail formatted Bedrock Runtime traffic
+./agent spy --raw              # include sanitized raw JSON bodies too
 ```
 
 To make the command available on `PATH`, symlink the repo script instead of
@@ -175,9 +178,9 @@ fetches all flow through mitmproxy). Subsequent runs are seconds.
 
 ## Shell completions
 
-Tab-completion for the `provision`, `allow`, and `pubkey` subcommands. Both
-files register completion under `agent` and `./agent`, so it works whether
-you've put the script on `PATH` or run it from the repo.
+Tab-completion for the `provision`, `allow`, `pubkey`, and `spy` subcommands.
+Both files register completion under `agent` and `./agent`, so it works
+whether you've put the script on `PATH` or run it from the repo.
 
 **zsh** — add to `~/.zshrc` (after wherever you run `compinit`):
 
