@@ -63,6 +63,13 @@ if not logger.handlers:
     _h.setFormatter(logging.Formatter("%(levelname)s [%(name)s] %(message)s"))
     logger.addHandler(_h)
 
+sys.path.insert(0, os.path.dirname(__file__))
+try:
+    import agent_spy
+except Exception as exc:  # pragma: no cover - live firewall diagnostics.
+    agent_spy = None
+    logger.warning(f"agent spy unavailable: {exc}")
+
 ALLOW_HTTPS = "/etc/agent-vm/allowed-https.txt"
 ALLOW_SSH = "/etc/agent-vm/allowed-ssh.txt"
 
@@ -204,3 +211,10 @@ def request(flow: http.HTTPFlow) -> None:
         return
 
     logger.info(f"ALLOW https {flow.request.method} {host}{flow.request.path}")
+    if agent_spy is not None:
+        agent_spy.capture_request(flow)
+
+
+def response(flow: http.HTTPFlow) -> None:
+    if agent_spy is not None:
+        agent_spy.capture_response(flow)

@@ -126,6 +126,9 @@ Plain hostnames (no globs). dnsmasq matches as a suffix, so listing
 # What's the firewall VM logging?
 limactl shell firewall -- journalctl -u mitmproxy-explicit -u mitmproxy-transparent -u dnsmasq -f
 
+# What is the agent sending to Bedrock?
+./agent spy
+
 # Is mitmproxy listening on both ports?
 limactl shell firewall -- ss -tln '( sport = :8080 or sport = :8081 )'
 
@@ -150,6 +153,11 @@ limactl shell firewall -- cat /etc/agent-vm/dnsmasq-allowlist.conf
 - `mitmproxy_addon.py` — Python addon loaded by mitmdump. Reads the
   allowlist files from `/etc/agent-vm/` inside the firewall VM, with
   mtime-based hot reload.
+- `agent_spy.py` — stdlib-only Bedrock Runtime capture/formatter used by
+  `./agent spy`. It detects Bedrock by host + REST path, redacts auth
+  headers, summarizes binary JSON fields, decodes AWS event streams, and
+  elides repeated prompt prefixes marked with `cachePoint` or
+  `cache_control`.
 - `reload.sh` — runs inside the firewall VM after `./agent allow` copies
   fresh allowlist files in. Regenerates dnsmasq's config and signals it.
 - This README.

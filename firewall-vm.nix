@@ -64,6 +64,7 @@ in
   imports = [ ./common.nix ];
 
   networking.hostName = "firewall-vm";
+  environment.systemPackages = [ pkgs.python3 ];
 
   # ── Networking ────────────────────────────────────────────────────────
   networking.useDHCP = false;
@@ -161,6 +162,7 @@ in
   systemd.tmpfiles.rules = [
     "d /etc/agent-vm 0755 ${username} users -"
     "f /etc/agent-vm/dnsmasq-allowlist.conf 0644 root root -"
+    "d /run/agent-vm-spy 1777 root root -"
   ];
 
   # ── mitmproxy ─────────────────────────────────────────────────────────
@@ -177,6 +179,10 @@ in
   # only allows TCP/8080 and TCP/8081 inbound on enp0s2, so the agent VM
   # is still the only thing that can reach these ports.
   environment.etc."agent-vm/mitmproxy_addon.py".source = ./proxy/mitmproxy_addon.py;
+  environment.etc."agent-vm/agent_spy.py" = {
+    source = ./proxy/agent_spy.py;
+    mode = "0755";
+  };
 
   # mitmproxy unconditionally materializes a `confdir` on startup. It
   # also LOOKS in confdir for `mitmproxy-ca.pem`; if present it uses
@@ -211,7 +217,7 @@ in
     # (logger handler attachment, caches) is set once at process start.
     # Force a clean restart so addon edits actually take effect on
     # `./agent provision`.
-    restartTriggers = [ ./proxy/mitmproxy_addon.py ];
+    restartTriggers = [ ./proxy/mitmproxy_addon.py ./proxy/agent_spy.py ];
     serviceConfig = {
       LoadCredential = "mitmproxy-ca.pem:/etc/agent-vm/agent-vm-ca.pem";
       RuntimeDirectory = "mitmproxy-explicit";
@@ -238,6 +244,7 @@ in
       ProtectHome = true;
       NoNewPrivileges = true;
       ReadOnlyPaths = "/etc/agent-vm";
+      ReadWritePaths = "/run/agent-vm-spy";
       Restart = "on-failure";
       RestartSec = "2s";
     };
@@ -249,7 +256,7 @@ in
     wants = [ "network-online.target" ];
     wantedBy = [ "multi-user.target" ];
     unitConfig.ConditionPathExists = "/etc/agent-vm/agent-vm-ca.pem";
-    restartTriggers = [ ./proxy/mitmproxy_addon.py ];
+    restartTriggers = [ ./proxy/mitmproxy_addon.py ./proxy/agent_spy.py ];
     serviceConfig = {
       LoadCredential = "mitmproxy-ca.pem:/etc/agent-vm/agent-vm-ca.pem";
       RuntimeDirectory = "mitmproxy-transparent";
@@ -269,6 +276,7 @@ in
       ProtectSystem = "strict";
       ProtectHome = true;
       ReadOnlyPaths = "/etc/agent-vm";
+      ReadWritePaths = "/run/agent-vm-spy";
       Restart = "on-failure";
       RestartSec = "2s";
       # Transparent mode binds the listening socket with IP_TRANSPARENT
