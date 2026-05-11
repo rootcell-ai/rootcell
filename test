@@ -165,6 +165,12 @@ run "agent restarts via ./agent after locked-down networking" \
 run "firewall services active" \
   firewall_sh 'systemctl is-active mitmproxy-explicit mitmproxy-transparent dnsmasq >/dev/null'
 
+run "agent spy --help is wired" \
+  "$REPO_DIR/agent" spy --help
+
+run "firewall spy formatter installed" \
+  firewall_sh 'test -x /etc/agent-vm/agent_spy.py && command -v python3 >/dev/null && test -d /run/agent-vm-spy'
+
 # A static IP on the private socket_vmnet NIC proves the per-VM
 # systemd-networkd config from
 # agent-vm.nix / firewall-vm.nix actually applied. Stronger signal than
