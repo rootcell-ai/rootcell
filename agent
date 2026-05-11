@@ -27,6 +27,7 @@
 #   ./agent allow         # hot-reload allowlists into the running firewall
 #                         #   (use after editing proxy/allowed-*.txt)
 #   ./agent pubkey        # print the agent VM's SSH public key
+#   ./agent spy           # tail formatted Bedrock traffic from the firewall
 #
 # One-time host setup (the script prints the exact commands the first time
 # something's missing — these are listed here for reference):
@@ -71,6 +72,20 @@ FIREWALL_NIX_FILES=(flake.nix common.nix firewall-vm.nix
 
 log() { printf 'agent: %s\n' "$*" >&2; }
 
+spy_usage() {
+  cat <<'EOF'
+Usage: ./agent spy [--raw] [--no-dedupe]
+
+Tail a formatted stream of AWS Bedrock Runtime requests and responses
+captured by the firewall VM's mitmproxy TLS interception.
+
+Options:
+  --raw        also print sanitized raw JSON bodies
+  --no-dedupe  do not elide repeated cache-marked prompt prefixes
+  -h, --help   show this help
+EOF
+}
+
 LIMACTL_BIN="${LIMACTL:-}"
 ensure_lima() {
   [ -n "$LIMACTL_BIN" ] && return 0
@@ -98,7 +113,17 @@ case "${1:-}" in
   provision) SUBCMD=provision; shift ;;
   allow)     SUBCMD=allow; shift ;;
   pubkey)    SUBCMD=pubkey; shift ;;
+  spy)       SUBCMD=spy; shift ;;
 esac
+
+if [ "$SUBCMD" = spy ]; then
+  for _arg in "$@"; do
+    case "$_arg" in
+      -h|--help) spy_usage; exit 0 ;;
+    esac
+  done
+  unset _arg
+fi
 
 # --- 0. Seed and load .env, seed allowlists --------------------------------
 if [ ! -f "$REPO_DIR/.env" ] && [ -f "$REPO_DIR/.env.defaults" ]; then
@@ -135,6 +160,19 @@ FIREWALL_IP="${FIREWALL_IP:-192.168.106.2}"
 AGENT_IP="${AGENT_IP:-192.168.106.3}"
 NETWORK_PREFIX="${NETWORK_PREFIX:-24}"
 VM_START_TIMEOUT="${VM_START_TIMEOUT:-180s}"
+
+SPY_RAW=0
+SPY_DEDUPE=1
+if [ "$SUBCMD" = spy ]; then
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --raw) SPY_RAW=1; shift ;;
+      --no-dedupe) SPY_DEDUPE=0; shift ;;
+      -h|--help) spy_usage; exit 0 ;;
+      *) log "unknown spy option: $1"; spy_usage >&2; exit 2 ;;
+    esac
+  done
+fi
 
 # Generate network-local.nix from the resolved values. Mirrors how
 # git-local.nix is generated. The file is gitignored; defaults in
@@ -520,6 +558,92 @@ sync_firewall_ca() {
   limactl shell "$FIREWALL_VM" -- rm -f /tmp/.agent-vm-ca.pem.staged
 }
 
+ensure_firewall_provisioned() {
+  local force_firewall="${1:-0}"
+
+  ensure_vm_running "$FIREWALL_VM" "$REPO_DIR/firewall.yaml" || force_firewall=1
+
+  local needs_firewall_provision=$force_firewall
+  if [ "$needs_firewall_provision" -eq 0 ]; then
+    if ! limactl shell "$FIREWALL_VM" -- bash -lc \
+          'systemctl is-active mitmproxy-explicit >/dev/null 2>&1 \
+           && systemctl is-active mitmproxy-transparent >/dev/null 2>&1 \
+           && systemctl is-active dnsmasq >/dev/null 2>&1 \
+           && test -x /etc/agent-vm/agent_spy.py' 2>/dev/null; then
+      needs_firewall_provision=1
+    fi
+  fi
+
+  if [ "$needs_firewall_provision" -eq 1 ]; then
+    log "provisioning firewall VM (first run takes ~5 min)..."
+    write_git_local_nix
+    ensure_ca
+    copy_repo_into_vm "$FIREWALL_VM" "${FIREWALL_NIX_FILES[@]}"
+    limactl shell "$FIREWALL_VM" -- bash -lc "
+      set -e
+      cd '$GUEST_REPO_DIR'
+      sudo nixos-rebuild switch --flake .#firewall-vm
+    "
+    # The mitmproxy services have ConditionPathExists=/etc/agent-vm/agent-vm-ca.pem
+    # so on the very first nixos-rebuild they're skipped (their CA is absent);
+    # we push the CA, then start them. On subsequent provisions the file is
+    # already there and nixos-rebuild restarts them itself, but pushing again
+    # is idempotent (and catches the case where the host's pki/ was rotated).
+    sync_firewall_ca
+    limactl shell "$FIREWALL_VM" -- sudo systemctl restart \
+      mitmproxy-explicit mitmproxy-transparent
+    log "firewall provisioning complete."
+  fi
+
+  # Sync allowlists every time so edits to proxy/allowed-*.txt take effect
+  # even on a plain ./agent invocation. Cheap (a few small file copies).
+  ensure_ca
+  sync_allowlists
+  wait_for_firewall_listeners
+}
+
+run_spy() {
+  local spy_session="/run/agent-vm-spy/enabled.$$"
+
+  limactl shell "$FIREWALL_VM" -- sudo install -d -m 1777 /run/agent-vm-spy
+  limactl shell "$FIREWALL_VM" -- sudo install -m 0666 /dev/null /run/agent-vm-spy/events.ndjson
+  limactl shell "$FIREWALL_VM" -- sudo touch /run/agent-vm-spy/enabled "$spy_session"
+  limactl shell "$FIREWALL_VM" -- sudo chmod 0666 /run/agent-vm-spy/enabled "$spy_session"
+
+  cleanup_spy() {
+    limactl shell "$FIREWALL_VM" -- sudo sh -lc "
+      rm -f '$spy_session'
+      if ls /run/agent-vm-spy/enabled.* >/dev/null 2>&1; then
+        touch /run/agent-vm-spy/enabled
+        chmod 0666 /run/agent-vm-spy/enabled
+      else
+        rm -f /run/agent-vm-spy/enabled
+      fi
+    " >/dev/null 2>&1 || true
+  }
+  trap cleanup_spy EXIT INT TERM
+
+  log "spying on Bedrock Runtime traffic from $FIREWALL_VM (Ctrl-C to stop)..."
+  case "$SPY_RAW:$SPY_DEDUPE" in
+    1:0)
+      limactl shell "$FIREWALL_VM" -- sudo env PYTHONUNBUFFERED=1 \
+        python3 /etc/agent-vm/agent_spy.py tail --raw --no-dedupe
+      ;;
+    1:1)
+      limactl shell "$FIREWALL_VM" -- sudo env PYTHONUNBUFFERED=1 \
+        python3 /etc/agent-vm/agent_spy.py tail --raw
+      ;;
+    0:0)
+      limactl shell "$FIREWALL_VM" -- sudo env PYTHONUNBUFFERED=1 \
+        python3 /etc/agent-vm/agent_spy.py tail --no-dedupe
+      ;;
+    *)
+      limactl shell "$FIREWALL_VM" -- sudo env PYTHONUNBUFFERED=1 \
+        python3 /etc/agent-vm/agent_spy.py tail
+      ;;
+  esac
+}
+
 # --- Subcommand: allow ------------------------------------------------------
 # Hot-reload only — assumes both VMs are already up.
 if [ "$SUBCMD" = allow ]; then
@@ -541,44 +665,12 @@ repair_stale_socket_vmnet
 # --- 3. Bring up the firewall VM and provision it --------------------------
 force_firewall=0
 [ "$SUBCMD" = provision ] && force_firewall=1
-ensure_vm_running "$FIREWALL_VM" "$REPO_DIR/firewall.yaml" || force_firewall=1
+ensure_firewall_provisioned "$force_firewall"
 
-needs_firewall_provision=$force_firewall
-if [ "$needs_firewall_provision" -eq 0 ]; then
-  if ! limactl shell "$FIREWALL_VM" -- bash -lc \
-        'systemctl is-active mitmproxy-explicit >/dev/null 2>&1 \
-         && systemctl is-active mitmproxy-transparent >/dev/null 2>&1 \
-         && systemctl is-active dnsmasq >/dev/null 2>&1' 2>/dev/null; then
-    needs_firewall_provision=1
-  fi
+if [ "$SUBCMD" = spy ]; then
+  run_spy
+  exit 0
 fi
-
-if [ "$needs_firewall_provision" -eq 1 ]; then
-  log "provisioning firewall VM (first run takes ~5 min)..."
-  write_git_local_nix
-  ensure_ca
-  copy_repo_into_vm "$FIREWALL_VM" "${FIREWALL_NIX_FILES[@]}"
-  limactl shell "$FIREWALL_VM" -- bash -lc "
-    set -e
-    cd '$GUEST_REPO_DIR'
-    sudo nixos-rebuild switch --flake .#firewall-vm
-  "
-  # The mitmproxy services have ConditionPathExists=/etc/agent-vm/agent-vm-ca.pem
-  # so on the very first nixos-rebuild they're skipped (their CA is absent);
-  # we push the CA, then start them. On subsequent provisions the file is
-  # already there and nixos-rebuild restarts them itself, but pushing again
-  # is idempotent (and catches the case where the host's pki/ was rotated).
-  sync_firewall_ca
-  limactl shell "$FIREWALL_VM" -- sudo systemctl restart \
-    mitmproxy-explicit mitmproxy-transparent
-  log "firewall provisioning complete."
-fi
-
-# Sync allowlists every time so edits to proxy/allowed-*.txt take effect
-# even on a plain ./agent invocation. Cheap (a few small file copies).
-ensure_ca
-sync_allowlists
-wait_for_firewall_listeners
 
 # --- 4. Bring up the agent VM and provision it -----------------------------
 force_agent=0
