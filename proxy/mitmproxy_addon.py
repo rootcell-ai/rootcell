@@ -45,7 +45,7 @@ import fnmatch
 import logging
 import os
 import sys
-from mitmproxy import http, tls
+from mitmproxy import ctx, exceptions, http, tls
 
 # mitmproxy ≥ 11 routes addon logging through stdlib `logging`. In our
 # systemd-DynamicUser sandbox, mitmproxy's own termlog handler doesn't
@@ -72,6 +72,7 @@ except Exception as exc:  # pragma: no cover - live firewall diagnostics.
 
 ALLOW_HTTPS = "/etc/agent-vm/allowed-https.txt"
 ALLOW_SSH = "/etc/agent-vm/allowed-ssh.txt"
+REQUIRED_CONNECTION_STRATEGY = "lazy"
 
 
 class _Cache:
@@ -89,7 +90,7 @@ class _Cache:
         if mt != self.mtime:
             with open(path) as f:
                 self.entries = {
-                    line.strip()
+                    line.strip().lower()
                     for line in f
                     if line.strip() and not line.lstrip().startswith("#")
                 }
@@ -102,7 +103,31 @@ _ssh_cache = _Cache()
 
 
 def _matches(host: str, patterns: set[str]) -> bool:
-    return any(fnmatch.fnmatchcase(host, p) for p in patterns)
+    host = host.lower()
+    return any(fnmatch.fnmatchcase(host, p.lower()) for p in patterns)
+
+
+def _require_lazy_connection_strategy() -> None:
+    strategy = getattr(ctx.options, "connection_strategy", None)
+    if strategy == REQUIRED_CONNECTION_STRATEGY:
+        return
+
+    msg = (
+        "agent_vm_filter requires mitmproxy connection_strategy=lazy; "
+        f"got {strategy!r}. Denied TLS flows can fail open when mitmproxy "
+        "opens upstream connections before tls_clienthello runs."
+    )
+    logger.critical(msg)
+    raise exceptions.OptionsError(msg)
+
+
+def load(_loader) -> None:
+    _require_lazy_connection_strategy()
+
+
+def configure(updated: set[str]) -> None:
+    if "connection_strategy" in updated:
+        _require_lazy_connection_strategy()
 
 
 def _deny_tls(data: tls.ClientHelloData, why: str) -> None:
