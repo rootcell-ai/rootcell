@@ -45,17 +45,28 @@ an explicit network boundary around the work.
 
 ```mermaid
 flowchart LR
-  Host["macOS host<br/>repo, Keychain, ./rootcell"] -->|SSH| Firewall["firewall VM<br/>dnsmasq, mitmproxy"]
-  Host -->|SSH ProxyJump through firewall| Agent["agent VM<br/>NixOS, pi, dev tools"]
-  Agent -->|DNS, HTTPS, SSH| Firewall["firewall VM<br/>dnsmasq, mitmproxy"]
-  Firewall -->|allowlisted egress| Internet["internet"]
+  Internet(("Internet"))
+  Host["Host<br/>repo, secrets, ./rootcell"]
+  Firewall["Firewall VM<br/>DNS, HTTPS, SSH policy"]
+  Agent["Agent VM<br/>shell, tools, workspace"]
+
+  Host -->|SSH to firewall| Firewall
+  Firewall -->|SSH ProxyJump leg to agent<br/>over private L2 link| Agent
+  Agent -->|DNS, HTTPS, SSH egress<br/>over private L2 link| Firewall
+  Firewall -->|allowlisted egress| Internet
 ```
+
+There is deliberately no direct Host-to-Agent path. Host sessions reach the
+agent by connecting to the firewall first; SSH ProxyJump then carries the agent
+session through the firewall to the agent across the private L2 link. The agent
+VM also uses that same private L2 link for all DNS, HTTPS, and SSH egress; it
+has no direct route to the Internet.
 
 The two VMs have different jobs:
 
 | Piece | What it does |
 | --- | --- |
-| `agent` VM | Runs `pi`, shell commands, Git, build tools, and project work. It has root inside the VM, but no direct public internet route. |
+| `agent` VM | Runs the coding harness, shell commands, Git, build tools, and project work. It has root inside the VM, but no direct public internet route. |
 | `firewall` VM | Owns the public egress path. It runs `dnsmasq` for DNS allowlisting and `mitmproxy` for HTTPS interception and SSH CONNECT policy. |
 | `./rootcell` | Host-side wrapper that creates, provisions, updates, and enters the VMs. It also syncs allowlists and injects configured provider secrets for each session. |
 
