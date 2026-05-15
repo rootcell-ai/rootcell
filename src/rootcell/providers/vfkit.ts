@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { resolveHostTool } from "../host-tools.ts";
 import { ImageStore } from "../images.ts";
 import { runCapture, runInherited } from "../process.ts";
 import type { RootcellConfig } from "../types.ts";
@@ -25,7 +26,7 @@ interface VfkitVmState {
 
 export class VfkitVmProvider implements VmProvider<VfkitNetworkAttachment> {
   readonly id = "vfkit";
-  private vfkitBin = process.env.ROOTCELL_VFKIT ?? "";
+  private vfkitBin = "";
   private readonly imageStore: ImageStore;
   private readonly transport: ProxyJumpSshTransport;
 
@@ -175,16 +176,11 @@ export class VfkitVmProvider implements VmProvider<VfkitNetworkAttachment> {
     if (this.vfkitBin.length > 0) {
       return;
     }
-    const result = runCapture("nix", [
-      "build",
-      "--no-link",
-      "--print-out-paths",
-      `${this.config.repoDir}#vfkit`,
-    ], { allowFailure: true });
-    if (result.status !== 0) {
-      throw new Error(`failed to build vfkit from ${this.config.repoDir}/flake.nix:\n${result.stderr}`);
-    }
-    this.vfkitBin = join(firstToken(result.stdout), "bin/vfkit");
+    this.vfkitBin = resolveHostTool({
+      name: "vfkit",
+      envVar: "ROOTCELL_VFKIT",
+      purpose: "to start rootcell VMs on macOS",
+    });
   }
 
   private ensureControlKey(): void {
@@ -572,12 +568,4 @@ function dhcpLease(block: string): number {
     return 0;
   }
   return Number.parseInt(match[1], 16);
-}
-
-function firstToken(output: string): string {
-  const token = output.trim().split(/\s+/)[0];
-  if (token === undefined || token.length === 0) {
-    throw new Error("command produced no output");
-  }
-  return token;
 }

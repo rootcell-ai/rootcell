@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { commandExists } from "../process.ts";
+import { resolveHostTool } from "../host-tools.ts";
 import type { RootcellConfig } from "../types.ts";
 import type { NetworkPlan, NetworkProvider, VmNetworkAttachment } from "./types.ts";
 
@@ -28,6 +28,8 @@ export class MacOsVfkitNetworkProvider implements NetworkProvider<VfkitNetworkAt
     private readonly config: RootcellConfig,
     private readonly log: (message: string) => void,
   ) {}
+
+  private pythonBin = "";
 
   plan(): NetworkPlan<VfkitNetworkAttachment> {
     return {
@@ -62,9 +64,7 @@ export class MacOsVfkitNetworkProvider implements NetworkProvider<VfkitNetworkAt
   }
 
   preflight(): Promise<void> {
-    if (!commandExists("python3")) {
-      throw new Error("vfkit provider requires python3 for the rootcell hostless L2 helper");
-    }
+    this.ensurePython();
     return Promise.resolve();
   }
 
@@ -87,7 +87,7 @@ export class MacOsVfkitNetworkProvider implements NetworkProvider<VfkitNetworkAt
     rmSync(this.agentSocketPath(), { force: true });
     const helper = join(this.config.repoDir, "src/bin/rootcell-vfkit-l2-helper.py");
     this.log(`starting hostless vfkit private link for instance '${this.config.instanceName}'...`);
-    const child = spawn("python3", [
+    const child = spawn(this.ensurePython(), [
       helper,
       this.firewallSocketPath(),
       this.agentSocketPath(),
@@ -160,6 +160,17 @@ export class MacOsVfkitNetworkProvider implements NetworkProvider<VfkitNetworkAt
 
   private agentSocketPath(): string {
     return join(this.networkDir(), "agent-private.sock");
+  }
+
+  private ensurePython(): string {
+    if (this.pythonBin.length === 0) {
+      this.pythonBin = resolveHostTool({
+        name: "python3",
+        envVar: "ROOTCELL_PYTHON",
+        purpose: "for the rootcell vfkit private-link helper",
+      });
+    }
+    return this.pythonBin;
   }
 }
 
