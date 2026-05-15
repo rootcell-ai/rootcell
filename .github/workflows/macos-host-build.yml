@@ -56,5 +56,5 @@ jobs:
       - name: Build Darwin-only host packages
         run: |
           nix build --print-build-logs \
-            .#packages.aarch64-darwin.lima \
-            .#packages.aarch64-darwin.socket_vmnet
+            .#packages.aarch64-darwin.vfkit \
+            .#packages.aarch64-darwin.zstd
