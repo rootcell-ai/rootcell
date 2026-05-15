@@ -70,13 +70,22 @@
 JSON
       '';
 
-      # Host-side packages. vfkit is the macOS VM runtime.
+      # Optional host-side packages for running rootcell on macOS through Nix.
       forEachDarwin = nixpkgs.lib.genAttrs [ "aarch64-darwin" "x86_64-darwin" ];
       darwinPkgs = forEachDarwin (sys:
         let p = nixpkgs.legacyPackages.${sys};
         in {
           vfkit = p.vfkit;
           zstd = p.zstd;
+          hostTools = p.buildEnv {
+            name = "rootcell-host-tools";
+            paths = [
+              p.bun
+              p.python3
+              p.vfkit
+              p.zstd
+            ];
+          };
         });
     in
     {
@@ -103,7 +112,8 @@ JSON
       packages = forEachDarwin (sys: {
         vfkit   = darwinPkgs.${sys}.vfkit;
         zstd    = darwinPkgs.${sys}.zstd;
-        default = darwinPkgs.${sys}.vfkit;
+        hostTools = darwinPkgs.${sys}.hostTools;
+        default = darwinPkgs.${sys}.hostTools;
       }) // {
         aarch64-linux = {
           inherit agentImage firewallImage builderImage rootcellImages;

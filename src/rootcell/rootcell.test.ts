@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { parseRootcellArgs } from "./args.ts";
 import { ROOTCELL_SUBCOMMANDS } from "./metadata.ts";
 import { loadDotEnv, parseSecretMappings } from "./env.ts";
+import { resolveHostTool } from "./host-tools.ts";
 import { buildConfig } from "./rootcell.ts";
 import { deriveVmNames, loadRootcellInstance, seedRootcellInstanceFiles } from "./instance.ts";
 import { runCapture } from "./process.ts";
@@ -146,6 +147,49 @@ describe("environment parsing", () => {
     expect(config.firewallIp).toBe("192.168.109.2");
     expect(config.agentIp).toBe("192.168.109.3");
     expect(config.imageManifestUrl).toBe("https://github.com/rootcell-ai/rootcell/releases/latest/download/manifest.json");
+  });
+});
+
+describe("host tool resolution", () => {
+  const vfkitSpec = {
+    name: "vfkit",
+    envVar: "ROOTCELL_VFKIT",
+    purpose: "to start test VMs",
+  };
+
+  test("prefers explicit environment overrides", () => {
+    expect(resolveHostTool(vfkitSpec, {
+      env: { ROOTCELL_VFKIT: "/opt/rootcell/bin/vfkit" },
+      commandExists: () => false,
+    })).toBe("/opt/rootcell/bin/vfkit");
+  });
+
+  test("uses PATH before asking the user to install anything", () => {
+    expect(resolveHostTool(vfkitSpec, {
+      env: {},
+      commandExists: (command) => command === "vfkit",
+    })).toBe("vfkit");
+  });
+
+  test("missing tools produce package-manager instructions", () => {
+    expect(() => resolveHostTool(vfkitSpec, {
+      env: {},
+      commandExists: () => false,
+    })).toThrow("brew install bun vfkit zstd python");
+    expect(() => resolveHostTool(vfkitSpec, {
+      env: {},
+      commandExists: () => false,
+    })).toThrow("nix shell .#hostTools --command ./rootcell");
+  });
+
+  test("runtime host tools do not fall back to host-side nix builds", () => {
+    for (const file of [
+      "src/rootcell/images.ts",
+      "src/rootcell/providers/vfkit.ts",
+      "src/rootcell/providers/macos-vfkit-network.ts",
+    ]) {
+      expect(readFileSync(file, "utf8")).not.toMatch(/run(?:Capture|Inherited)\("nix"/);
+    }
   });
 });
 

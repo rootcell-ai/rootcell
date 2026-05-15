@@ -76,30 +76,28 @@ Cleartext HTTP is denied. All egress is expected to be HTTPS or SSH.
 
 You need:
 
-- macOS with [vfkit](https://github.com/crc-org/vfkit) available through Nix.
-- [Nix](https://nixos.org/download) installed.
-- [Bun](https://bun.sh) installed.
+- macOS. The current vfkit runtime path uses Apple's Virtualization Framework.
+- [Bun](https://bun.sh), [vfkit](https://github.com/crc-org/vfkit),
+  [zstd](https://facebook.github.io/zstd/), and Python 3 on the host `PATH`.
+- macOS command-line tools used by rootcell: `curl`, `ssh`, `scp`,
+  `ssh-keygen`, `openssl`, and `security`.
 - Amazon Bedrock credentials stored in macOS Keychain.
 
-The default VM build targets Apple Silicon hosts. Intel hosts require the
-architecture changes described in [Changing Architecture](#changing-architecture).
+The default published VM images target Apple Silicon hosts. Intel hosts require
+the architecture changes described in [Changing Architecture](#changing-architecture).
 
-If your host Nix install has not enabled flakes and the new CLI yet, add
-`--extra-experimental-features 'nix-command flakes'` to host-side `nix`
-commands, for example:
-`nix --extra-experimental-features 'nix-command flakes' build .#vfkit`.
+The agent and firewall are still NixOS VMs, and provisioning runs Nix inside
+those VMs. Host-side Nix is optional for end users: use it only if you choose
+the Nix setup below or if you are building release images.
 
-The easiest path is to run `./rootcell` once and follow the exact commands it
-prints. The full one-time setup is:
+### Homebrew Setup
 
 ```bash
 chmod +x ./rootcell
 
-# Install Bun if it is not already available.
-curl -fsSL https://bun.sh/install | bash
-
-# Confirm the default vfkit host package builds.
-nix build .#vfkit
+brew tap oven-sh/bun
+brew install bun vfkit zstd python
+bun install --frozen-lockfile
 
 # Store the default Bedrock provider key in Keychain.
 security add-generic-password -a "$USER" -s aws-bedrock-api-key -w "<your-key>"
@@ -108,11 +106,48 @@ security add-generic-password -a "$USER" -s aws-bedrock-api-key -w "<your-key>"
 ./rootcell
 ```
 
+### Nix Setup
+
+From the repository root:
+
+```bash
+chmod +x ./rootcell
+
+nix profile install .#hostTools
+bun install --frozen-lockfile
+
+# Store the default Bedrock provider key in Keychain.
+security add-generic-password -a "$USER" -s aws-bedrock-api-key -w "<your-key>"
+
+./rootcell
+```
+
+For a one-off shell instead of a profile install:
+
+```bash
+nix shell .#hostTools --command bun install --frozen-lockfile
+nix shell .#hostTools --command ./rootcell
+```
+
+If your host Nix install has not enabled flakes and the new CLI yet, add
+`--extra-experimental-features 'nix-command flakes'` to the host-side `nix`
+commands above.
+
 First run downloads compatible rootcell VM images from the configured release
 manifest, creates instance-local vfkit disks, and provisions the VMs. Later runs
 normally take seconds.
 
 ### Host Runtime
+
+rootcell does not install or build host tools at runtime. It expects `bun`,
+`vfkit`, `zstd`, and `python3` to be available from your chosen package manager.
+For non-standard paths, set:
+
+```bash
+ROOTCELL_VFKIT=/path/to/vfkit
+ROOTCELL_ZSTD=/path/to/zstd
+ROOTCELL_PYTHON=/path/to/python3
+```
 
 vfkit is the supported VM runtime:
 
@@ -139,7 +174,7 @@ repository's GitHub Release assets.
 ./rootcell pi                     # run pi directly
 ./rootcell -- nix flake update    # run any command inside the agent VM
 ./rootcell allow                  # reload network allowlists after editing them
-./rootcell provision              # rebuild/re-provision after Nix or pi config edits
+./rootcell provision              # rebuild/re-provision after VM Nix or pi config edits
 ./rootcell pubkey                 # print the agent VM's SSH public key
 ./rootcell spy                    # tail formatted Bedrock Runtime traffic
 ./rootcell spy --raw              # include sanitized raw JSON bodies too
@@ -267,7 +302,7 @@ the same explicit network policy model across supported hosts.
 ```text
 rootcell                 host entry point for VM lifecycle and commands
 src/                     Bun TypeScript implementation for migrated entrypoints
-flake.nix                Nix inputs, guest VM configs, and host packages
+flake.nix                Nix inputs, guest VM configs, images, and optional host tools
 common.nix               shared NixOS config for both VMs
 agent-vm.nix             agent VM network and trust-store config
 firewall-vm.nix          firewall VM services and nftables rules
