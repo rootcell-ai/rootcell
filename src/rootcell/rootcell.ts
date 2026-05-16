@@ -28,6 +28,7 @@ const GUEST_USER = "luser";
 const VM_FILES: VmFileSet = {
   agent: [
     "flake.nix",
+    "flake.lock",
     "common.nix",
     "agent-vm.nix",
     "home.nix",
@@ -36,6 +37,7 @@ const VM_FILES: VmFileSet = {
   ],
   firewall: [
     "flake.nix",
+    "flake.lock",
     "common.nix",
     "firewall-vm.nix",
     "network.nix",
