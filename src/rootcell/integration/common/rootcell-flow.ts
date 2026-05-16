@@ -144,7 +144,7 @@ export async function createProvisionedIntegrationFlow<TAttachment extends VmNet
   }
 
   const provisioning = provisionFlow(provider, importMetaUrl);
-  provisionedFlows.set(provider.id, provisioning as Promise<IntegrationFlow>);
+  provisionedFlows.set(provider.id, provisioning);
   try {
     return await provisioning;
   } catch (error) {
