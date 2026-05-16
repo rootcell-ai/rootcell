@@ -389,6 +389,7 @@ describe("VM and network providers", () => {
       agentHost: "192.168.109.3",
       identityPath: "/instance/ssh/rootcell_control_ed25519",
       knownHostsPath: "/instance/ssh/known_hosts",
+      controlPath: "/tmp/rootcell-ssh-test/%C",
     });
     expect(configText).toContain("Host rootcell-firewall");
     expect(configText).toContain("HostName 192.168.64.10");
@@ -398,6 +399,9 @@ describe("VM and network providers", () => {
     expect(configText).toContain("BatchMode yes");
     expect(configText).toContain("PasswordAuthentication no");
     expect(configText).toContain("KbdInteractiveAuthentication no");
+    expect(configText).toContain("ControlMaster auto");
+    expect(configText).toContain("ControlPersist 60s");
+    expect(configText).toContain("ControlPath /tmp/rootcell-ssh-test/%C");
   });
 
   test("proxyjump known_hosts removal clears only the rotated VM host", () => {

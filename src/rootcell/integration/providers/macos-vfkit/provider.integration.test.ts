@@ -64,6 +64,8 @@ describe.skipIf(!shouldRun)("macos-vfkit integration provider", { concurrent: fa
     expect(config).toContain("Host rootcell-firewall");
     expect(config).toContain("Host rootcell-agent");
     expect(config).toContain("ProxyJump rootcell-firewall");
+    expect(config).toContain("ControlMaster auto");
+    expect(config).toContain("ControlPersist 60s");
   });
 
   test("supports host SSH to firewall and agent through the vfkit transport", () => {
