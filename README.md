@@ -93,12 +93,13 @@ You need:
   `ssh-keygen`, `openssl`, and `security`.
 - Amazon Bedrock credentials stored in macOS Keychain.
 
-The default published VM images target Apple Silicon hosts. Intel hosts require
-the architecture changes described in [Changing Architecture](#changing-architecture).
+rootcell currently provisions AARCH64 NixOS guests from the pinned upstream
+`nixos-lima` qcow2 image. Intel hosts require the architecture changes
+described in [Changing Architecture](#changing-architecture).
 
 The agent and firewall run as NixOS VMs. Provisioning uses Nix inside those VMs,
 but you do not need Nix installed on the macOS host unless you choose the Nix
-setup below or build release images.
+setup below.
 
 ### Homebrew Setup
 
@@ -323,7 +324,7 @@ the same explicit network policy model across supported hosts.
 ```text
 rootcell                 host entry point for VM lifecycle and commands
 src/                     Bun TypeScript implementation for migrated entrypoints
-flake.nix                Nix inputs, guest VM configs, images, and optional host tools
+flake.nix                Nix inputs, guest VM configs, and optional host tools
 common.nix               shared NixOS config for both VMs
 agent-vm.nix             agent VM network and trust-store config
 firewall-vm.nix          firewall VM services and nftables rules
@@ -435,7 +436,8 @@ guests. For Intel Macs or x86 Linux guests, update these together:
 
 - `system` in `flake.nix`
 - The pi release tarball URL and hash in `home.nix`
-- The image build outputs and release assets under `images/`
+- The pinned upstream `nixos-lima` image URL, architecture, and digest in
+  `src/rootcell/providers/lima.ts`
 
 ### Multiple Instances
 
