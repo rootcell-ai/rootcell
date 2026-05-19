@@ -1,6 +1,6 @@
 import type { RootcellConfig } from "../../types.ts";
 import type { ProviderBundle, VmNetworkAttachment } from "../../providers/types.ts";
-import { macOsVfkitIntegrationProvider } from "../providers/macos-vfkit/provider.ts";
+import { macOsLimaUserV2IntegrationProvider } from "../providers/macos-lima-user-v2/provider.ts";
 
 export interface IntegrationProviderSpec<TAttachment extends VmNetworkAttachment = VmNetworkAttachment> {
   readonly id: string;
@@ -14,11 +14,11 @@ export interface IntegrationProviderSpec<TAttachment extends VmNetworkAttachment
 }
 
 const providers = [
-  macOsVfkitIntegrationProvider,
+  macOsLimaUserV2IntegrationProvider,
 ] as const satisfies readonly IntegrationProviderSpec[];
 
 export function selectedIntegrationProvider(): IntegrationProviderSpec {
-  const id = process.env.ROOTCELL_INTEGRATION_PROVIDER ?? "macos-vfkit";
+  const id = process.env.ROOTCELL_INTEGRATION_PROVIDER ?? "macos-lima-user-v2";
   const provider = providers.find((candidate) => candidate.id === id);
   if (provider === undefined) {
     throw new Error(`unknown integration provider '${id}'`);

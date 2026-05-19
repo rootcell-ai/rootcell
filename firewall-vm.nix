@@ -4,14 +4,8 @@ let
   net = import ./network.nix;
   firewallEgressInterface = net.firewallEgressInterface;
   firewallPrivateInterface = net.firewallPrivateInterface;
-  egressMatch =
-    if net ? firewallControlMac
-    then { MACAddress = net.firewallControlMac; }
-    else { Name = firewallEgressInterface; };
-  privateMatch =
-    if net ? firewallPrivateMac
-    then { MACAddress = net.firewallPrivateMac; }
-    else { Name = firewallPrivateInterface; };
+  egressMatch = { Name = firewallEgressInterface; };
+  privateMatch = { Name = firewallPrivateInterface; };
   reloadSh = pkgs.runCommand "agent-vm-reload-sh" {} ''
     ln -s /etc/agent-vm/reload.ts "$out"
   '';
@@ -19,10 +13,10 @@ in
 
 # Firewall VM: a tiny appliance VM that brokers all egress for the agent VM.
 #
-# Two NICs (kernel names from systemd predictable naming):
-#   enp0s1  vfkit NAT        — internet egress (default route)
-#   enp0s2  private vfkit    — per-instance link to the agent VM
-#                               (IPs come from network.nix/network-local.nix)
+# Two NICs under stock Lima/VZ:
+#   enp0s1  Lima user-v2 — per-instance link to the agent VM
+#                         (IPs come from network.nix/network-local.nix)
+#   enp0s2  Lima VZ NAT  — internet egress plus host control SSH
 #
 # Hybrid filtering — HTTPS is intercepted, SSH is explicit, HTTP is denied:
 #
@@ -85,19 +79,26 @@ in
   networking.useDHCP = false;
   networking.useNetworkd = true;
   systemd.network.enable = true;
+  # Lima VSock is the provisioning/control path, so switching the firewall
+  # config must not depend on networkd's global online heuristic. The private
+  # user-v2 peer may not exist until the agent starts, and the egress NIC can
+  # briefly churn while Lima's guest services are restarted.
+  systemd.network.wait-online.enable = false;
 
-  # enp0s1 = vzNAT, our internet-egress NIC. Default route lives here.
-  systemd.network.networks."10-enp0s1" = {
+  # Lima vzNAT, our internet-egress NIC. Default route lives here.
+  systemd.network.networks."10-egress" = {
     matchConfig = egressMatch;
     networkConfig.DHCP = "ipv4";
   };
 
-  # enp0s2 = private vfkit link to the agent VM. The kernel names this NIC
-  # enp0s2 via systemd predictable naming because it is the second virtio-net
-  # device.
-  # Static address; DHCP would conflict with the agent's static .2.
-  systemd.network.networks."20-enp0s2" = {
+  # Private Lima user-v2 link to the agent VM.
+  # Static address; DHCP would conflict with the agent's static address.
+  systemd.network.networks."20-private" = {
     matchConfig = privateMatch;
+    # The firewall boots before the agent, so the private user-v2 peer may not
+    # be present yet. Do not let wait-online fail the rebuild while waiting for
+    # this link; the static address is still configured by networkd.
+    linkConfig.RequiredForOnline = false;
     networkConfig = {
       DHCP = "no";
       IPv6AcceptRA = false;
@@ -116,16 +117,17 @@ in
 
   # ── Firewall ──────────────────────────────────────────────────────────
   # NixOS firewall manages the filter table. We add a separate nat table
-  # below for the REDIRECT rules. Inbound on enp0s2 (the private link to the
+  # below for the REDIRECT rules. Inbound on the private link to the
   # agent VM) is allowed only on the explicit-mitmproxy port
   # (8080), the transparent-mitmproxy port (8081, which is the
   # post-REDIRECT destination), and dnsmasq (53).
   networking.nftables.enable = true;
   networking.firewall = {
     enable = true;
-    interfaces.${firewallEgressInterface} = {
-      allowedTCPPorts = [ 22 ];
-    };
+    # Lima's hostagent reaches sshd through the instance's localhost-forwarded
+    # control port. Keep that available regardless of the guest-side interface
+    # name Lima assigns after the first nixos-rebuild.
+    allowedTCPPorts = [ 22 ];
     interfaces.${firewallPrivateInterface} = {
       allowedTCPPorts = [ 8080 8081 ];
       allowedUDPPorts = [ 53 ];
@@ -188,11 +190,11 @@ in
   #
   # Both services bind 0.0.0.0 (not net.firewallIp) — even with
   # `After=network-online.target`, mitmproxy can race ahead of
-  # systemd-networkd assigning enp0s2's static address and bind() fails
+  # systemd-networkd assigning the private static address and bind() fails
   # with "could not bind on any address". 0.0.0.0 sidesteps the race
   # without weakening the security boundary: networking.firewall (above)
-  # only allows TCP/8080 and TCP/8081 inbound on enp0s2, so the agent VM
-  # is still the only thing that can reach these ports.
+  # only allows TCP/8080 and TCP/8081 inbound on the private interface, so
+  # the agent VM is still the only thing that can reach these ports.
   environment.etc."agent-vm/mitmproxy_addon.py".source = ./proxy/mitmproxy_addon.py;
   environment.etc."agent-vm/agent_spy.py" = {
     source = ./proxy/agent_spy.py;
@@ -323,7 +325,7 @@ in
       listen-address = net.firewallIp;
       # bind-dynamic, not bind-interfaces: the latter requires the listen
       # address to already be configured on an interface at start time,
-      # which races with systemd-networkd assigning enp0s2's static IP.
+      # which races with systemd-networkd assigning the private static IP.
       # bind-dynamic uses IP_FREEBIND and tracks interface changes.
       bind-dynamic = true;
       no-resolv = true;
@@ -334,7 +336,7 @@ in
   };
 
   # Belt-and-suspenders: even with bind-dynamic, wait for the network to
-  # be online so the first listen-address bind reliably finds enp0s2.
+  # be online so the first listen-address bind reliably finds the private IP.
   systemd.services.dnsmasq = {
     after = [ "network-online.target" ];
     wants = [ "network-online.target" ];

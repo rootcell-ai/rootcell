@@ -8,12 +8,16 @@
       url = "github:nix-community/home-manager/release-25.11";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+
+    nixos-lima = {
+      url = "github:nixos-lima/nixos-lima/v0.0.5";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { self, nixpkgs, home-manager, ... }:
+  outputs = { self, nixpkgs, home-manager, nixos-lima, ... }:
     let
-      # Apple Silicon hosts use aarch64-linux guests.
-      # Switch to "x86_64-linux" if you're on an Intel Mac or x86 Linux host.
+      # Rootcell currently provisions aarch64-linux guests.
       system = "aarch64-linux";
 
       # Username inside the guest. MUST agree with:
@@ -25,65 +29,32 @@
       mkVM = module: nixpkgs.lib.nixosSystem {
         inherit system;
         specialArgs = { inherit username; };
-        modules = [ module ];
+        modules = [
+          nixos-lima.nixosModules.lima
+          module
+        ];
       };
 
-      mkImage = module: nixpkgs.lib.nixosSystem {
-        inherit system;
-        specialArgs = { inherit username; };
-        modules = [ module ./images/vfkit-image.nix ];
-      };
-
-      agentImage = (mkImage ./agent-vm.nix).config.system.build.image;
-      firewallImage = (mkImage ./firewall-vm.nix).config.system.build.image;
-      builderImage = (mkImage ./images/builder-vm.nix).config.system.build.image;
       rootcellSourceRevision = self.rev or self.dirtyRev or "unknown";
       nixpkgsRevision = nixpkgs.rev or "unknown";
-
-      rootcellImages = pkgs.runCommand "rootcell-image-assets" { nativeBuildInputs = [ pkgs.coreutils pkgs.zstd ]; } ''
-        mkdir -p "$out"
-        cp ${agentImage}/*.img "$out/agent.raw"
-        cp ${firewallImage}/*.img "$out/firewall.raw"
-        cp ${builderImage}/*.img "$out/builder.raw"
-        agent_raw_size="$(stat -c%s "$out/agent.raw")"
-        firewall_raw_size="$(stat -c%s "$out/firewall.raw")"
-        builder_raw_size="$(stat -c%s "$out/builder.raw")"
-        zstd -19 --rm "$out/agent.raw" -o "$out/agent.raw.zst"
-        zstd -19 --rm "$out/firewall.raw" -o "$out/firewall.raw.zst"
-        zstd -19 --rm "$out/builder.raw" -o "$out/builder.raw.zst"
-        agent_sha="$(sha256sum "$out/agent.raw.zst" | cut -d ' ' -f1)"
-        firewall_sha="$(sha256sum "$out/firewall.raw.zst" | cut -d ' ' -f1)"
-        builder_sha="$(sha256sum "$out/builder.raw.zst" | cut -d ' ' -f1)"
-        cat > "$out/manifest.json" <<JSON
-        {
-          "schemaVersion": 1,
-          "guestApiVersion": 1,
-          "rootcellSourceRevision": "${rootcellSourceRevision}",
-          "nixpkgsRevision": "${nixpkgsRevision}",
-          "rootcellCliContract": { "min": 1, "max": 1 },
-          "images": [
-            { "role": "agent", "architecture": "aarch64-linux", "fileName": "agent.raw.zst", "url": "agent.raw.zst", "compression": "zstd", "compressedSize": $(stat -c%s "$out/agent.raw.zst"), "rawSize": $agent_raw_size, "sha256": "$agent_sha" },
-            { "role": "firewall", "architecture": "aarch64-linux", "fileName": "firewall.raw.zst", "url": "firewall.raw.zst", "compression": "zstd", "compressedSize": $(stat -c%s "$out/firewall.raw.zst"), "rawSize": $firewall_raw_size, "sha256": "$firewall_sha" },
-            { "role": "builder", "architecture": "aarch64-linux", "fileName": "builder.raw.zst", "url": "builder.raw.zst", "compression": "zstd", "compressedSize": $(stat -c%s "$out/builder.raw.zst"), "rawSize": $builder_raw_size, "sha256": "$builder_sha" }
-          ]
-        }
-JSON
-      '';
 
       # Optional host-side packages for running rootcell on macOS through Nix.
       forEachDarwin = nixpkgs.lib.genAttrs [ "aarch64-darwin" "x86_64-darwin" ];
       darwinPkgs = forEachDarwin (sys:
-        let p = nixpkgs.legacyPackages.${sys};
+        let
+          p = import nixpkgs {
+            system = sys;
+            config.permittedInsecurePackages = [
+              "lima-1.2.2"
+            ];
+          };
         in {
-          vfkit = p.vfkit;
-          zstd = p.zstd;
+          lima = p.lima;
           hostTools = p.buildEnv {
             name = "rootcell-host-tools";
             paths = [
               p.bun
-              p.python3
-              p.vfkit
-              p.zstd
+              p.lima
             ];
           };
         });
@@ -94,9 +65,6 @@ JSON
       nixosConfigurations = {
         agent-vm    = mkVM ./agent-vm.nix;
         firewall-vm = mkVM ./firewall-vm.nix;
-        agent-vm-vfkit-image    = mkImage ./agent-vm.nix;
-        firewall-vm-vfkit-image = mkImage ./firewall-vm.nix;
-        builder-vm-vfkit-image  = mkImage ./images/builder-vm.nix;
       };
 
       # Home Manager only attaches to the agent VM. The firewall VM is an
@@ -110,15 +78,13 @@ JSON
       inherit rootcellSourceRevision nixpkgsRevision;
 
       packages = forEachDarwin (sys: {
-        vfkit   = darwinPkgs.${sys}.vfkit;
-        zstd    = darwinPkgs.${sys}.zstd;
+        lima    = darwinPkgs.${sys}.lima;
         hostTools = darwinPkgs.${sys}.hostTools;
         default = darwinPkgs.${sys}.hostTools;
       }) // {
         aarch64-linux = {
-          inherit agentImage firewallImage builderImage rootcellImages;
           "home-manager" = home-manager.packages.${system}.home-manager;
-          default = rootcellImages;
+          default = home-manager.packages.${system}.home-manager;
         };
       };
     };

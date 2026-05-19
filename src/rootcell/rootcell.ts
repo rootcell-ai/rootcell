@@ -265,15 +265,6 @@ export class RootcellApp<TAttachment extends VmNetworkAttachment> {
       ...(network.firewallControlInterface === undefined ? [] : [
         `  firewallControlInterface = ${nixString(network.firewallControlInterface)};`,
       ]),
-      ...(network.agentPrivateMac === undefined ? [] : [
-        `  agentPrivateMac    = ${nixString(network.agentPrivateMac)};`,
-      ]),
-      ...(network.firewallPrivateMac === undefined ? [] : [
-        `  firewallPrivateMac = ${nixString(network.firewallPrivateMac)};`,
-      ]),
-      ...(network.firewallControlMac === undefined ? [] : [
-        `  firewallControlMac = ${nixString(network.firewallControlMac)};`,
-      ]),
       "}",
       "",
     ].join("\n");
@@ -307,15 +298,8 @@ export class RootcellApp<TAttachment extends VmNetworkAttachment> {
     const network = this.networkPlan.guest;
     const script = `
 set -euo pipefail
-iface=''
-for path in /sys/class/net/*; do
-  candidate="\${path##*/}"
-  if [ "$candidate" != lo ] && { [ -z '${network.agentPrivateMac ?? ""}' ] || [ "$(cat "$path/address" 2>/dev/null)" = '${network.agentPrivateMac ?? ""}' ]; }; then
-    iface="$candidate"
-    break
-  fi
-done
-test -n "$iface"
+iface=${shellQuote(network.agentPrivateInterface)}
+test -d "/sys/class/net/$iface"
 systemctl stop dhcpcd.service 2>/dev/null || true
 ip link set "$iface" up
 ip addr flush dev "$iface"
@@ -645,12 +629,11 @@ systemctl is-active mitmproxy-explicit >/dev/null 2>&1 \\
     this.ensureCa();
     await this.copyRepoIntoVm(this.config.firewallVm, VM_FILES.firewall);
     await this.copyGeneratedNetworkIntoVm(this.config.firewallVm);
-    await this.providers.vm.exec(this.config.firewallVm, ["bash", "-lc", `
+    await this.runNixosSwitch("firewall", `
 set -e
 cd '${this.config.guestRepoDir}'
 sudo nixos-rebuild switch --flake .#${this.nixosConfiguration("firewall")}
-`]);
-    await this.providers.vm.forgetSshHostKey?.(this.config.firewallVm);
+`);
     await this.syncFirewallCa();
     await this.providers.vm.exec(this.config.firewallVm, [
       "sudo",
@@ -681,6 +664,11 @@ sudo nixos-rebuild switch --flake .#${this.nixosConfiguration("firewall")}
       }
     }
     if (!needsProvision) {
+      await this.providers.vm.finalizeNetworking?.({
+        role: "agent",
+        name: this.config.agentVm,
+        network: this.networkPlan.vms.agent,
+      });
       return;
     }
 
@@ -692,7 +680,7 @@ sudo nixos-rebuild switch --flake .#${this.nixosConfiguration("firewall")}
     await this.copyAgentCaIntoVm(this.config.agentVm);
     await this.bootstrapAgentFirewallRoute();
     await this.bootstrapAgentFirewallTrust();
-    await this.providers.vm.exec(this.config.agentVm, ["bash", "-lc", `
+    await this.runNixosSwitch("agent", `
 set -e
 cd '${this.config.guestRepoDir}'
 export NIX_SSL_CERT_FILE=/tmp/agent-vm-bootstrap-ca-bundle.crt
@@ -704,11 +692,9 @@ sudo env \\
   SSL_CERT_FILE="$SSL_CERT_FILE" \\
   GIT_SSL_CAINFO="$GIT_SSL_CAINFO" \\
   REQUESTS_CA_BUNDLE="$REQUESTS_CA_BUNDLE" \\
-  nixos-rebuild boot --flake .#${this.nixosConfiguration("agent")}
-`]);
-    await this.restartAgentVm("restarting agent VM into provisioned system...");
+  nixos-rebuild switch --flake .#${this.nixosConfiguration("agent")}
+`);
     await this.runAgentHomeManager();
-    await this.providers.vm.forgetSshHostKey?.(this.config.agentVm);
     log("agent provisioning complete.");
     const pubkey = (await this.providers.vm.execCapture(this.config.agentVm, ["cat", `/home/${this.config.guestUser}/.ssh/id_rsa.pub`], {
       allowFailure: true,
@@ -734,6 +720,22 @@ Run \`./rootcell pubkey\` to print it again.
       name: this.config.agentVm,
       network: this.networkPlan.vms.agent,
     });
+  }
+
+  private async runNixosSwitch(role: "agent" | "firewall", script: string): Promise<void> {
+    const name = role === "agent" ? this.config.agentVm : this.config.firewallVm;
+    const network = role === "agent" ? this.networkPlan.vms.agent : this.networkPlan.vms.firewall;
+    const result = await this.providers.vm.exec(name, ["bash", "-lc", script], {
+      allowFailure: true,
+    });
+    if (result.status !== 0 && result.status !== 255) {
+      throw new Error(`${role} nixos-rebuild switch failed with exit ${String(result.status)}`);
+    }
+    if (result.status === 255) {
+      log(`${role} nixos-rebuild switch interrupted SSH; waiting for transport to recover...`);
+      await this.providers.vm.ensureRunning({ role, name, network });
+    }
+    await this.providers.vm.finalizeNetworking?.({ role, name, network });
   }
 
   private async runAgentHomeManager(): Promise<void> {

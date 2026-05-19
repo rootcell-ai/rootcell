@@ -51,16 +51,16 @@ flowchart LR
   Agent["Agent VM<br/>shell, tools, workspace"]
 
   Host -->|SSH to firewall| Firewall
-  Firewall -->|SSH ProxyJump leg to agent<br/>over private L2 link| Agent
-  Agent -->|DNS, HTTPS, SSH egress<br/>over private L2 link| Firewall
+  Firewall -->|SSH ProxyJump leg to agent<br/>over Lima user-v2| Agent
+  Agent -->|DNS, HTTPS, SSH egress<br/>over Lima user-v2| Firewall
   Firewall -->|allowlisted egress| Internet
 ```
 
-There is deliberately no direct Host-to-Agent path. Host sessions reach the
-agent by connecting to the firewall first; SSH ProxyJump then carries the agent
-session through the firewall to the agent across the private L2 link. The agent
-VM also uses that same private L2 link for all DNS, HTTPS, and SSH egress; it
-has no direct route to the Internet.
+rootcell deliberately does not use a direct Host-to-Agent path. Host sessions
+reach the agent by connecting to the firewall first; SSH ProxyJump then carries
+the agent session through the firewall to the agent across the private Lima
+user-v2 link. The agent VM also uses that same private user-v2 link for all DNS,
+HTTPS, and SSH egress; it has no direct route to the Internet.
 
 The two VMs have different jobs:
 
@@ -87,9 +87,8 @@ Cleartext HTTP is denied. All egress is expected to be HTTPS or SSH.
 
 You need:
 
-- macOS. The current vfkit runtime path uses Apple's Virtualization Framework.
-- [Bun](https://bun.sh), [vfkit](https://github.com/crc-org/vfkit),
-  [zstd](https://facebook.github.io/zstd/), and Python 3 on the host `PATH`.
+- macOS with [Lima](https://lima-vm.io/) using Apple's Virtualization Framework.
+- [Bun](https://bun.sh) and Lima's `limactl` on the host `PATH`.
 - macOS command-line tools used by rootcell: `curl`, `ssh`, `scp`,
   `ssh-keygen`, `openssl`, and `security`.
 - Amazon Bedrock credentials stored in macOS Keychain.
@@ -107,7 +106,7 @@ setup below or build release images.
 chmod +x ./rootcell
 
 brew tap oven-sh/bun
-brew install bun vfkit zstd python
+brew install bun lima
 bun install --frozen-lockfile
 
 # Store the default Bedrock provider key in Keychain.
@@ -144,44 +143,36 @@ If your host Nix install has not enabled flakes and the new CLI yet, add
 `--extra-experimental-features 'nix-command flakes'` to the host-side `nix`
 commands above.
 
-First run downloads compatible rootcell VM images from the configured release
-manifest, creates instance-local vfkit disks, and provisions the VMs. Later runs
+First run lets Lima download the pinned upstream `nixos-lima` AARCH64 image,
+creates rootcell's Lima VMs, and provisions them. rootcell writes its own Lima
+YAML and keeps host filesystem mounts disabled with `mounts: []`. Later runs
 normally take seconds.
 
 ### Host Runtime
 
-rootcell does not install or build host tools at runtime. It expects `bun`,
-`vfkit`, `zstd`, and `python3` to be available from your chosen package manager.
+rootcell does not install or build host tools at runtime. It expects `bun` and
+`limactl` to be available from your chosen package manager.
 For non-standard paths, set:
 
 ```bash
-ROOTCELL_VFKIT=/path/to/vfkit
-ROOTCELL_ZSTD=/path/to/zstd
-ROOTCELL_PYTHON=/path/to/python3
+ROOTCELL_LIMACTL=/path/to/limactl
+# LIMACTL=/path/to/limactl also works
 ```
 
-Per-instance state defaults to `~/.rootcell/i/<repo-key>/<instance-key>`, where
-the keys are short hashes. This keeps vfkit Unix socket paths under macOS's
-limit. Set `ROOTCELL_STATE_DIR=/path/to/rootcell-state` to use a different
-persistent state root.
+Per-instance state defaults to `instances/<name>` under the current repo. Set
+`ROOTCELL_STATE_DIR=/path/to/rootcell-instances` to use a different persistent
+state root. rootcell does not override `LIMA_HOME`; Lima instances and user-v2
+networks are managed through the normal Lima home.
 
-vfkit is the supported VM runtime:
+Lima is the supported VM runtime:
 
 ```bash
 ./rootcell
 ```
 
-Image resolution is controlled by:
-
-```bash
-ROOTCELL_IMAGE_MANIFEST_URL=https://github.com/rootcell-ai/rootcell/releases/latest/download/manifest.json
-ROOTCELL_IMAGE_DIR=/path/to/local/rootcell-image-dist
-```
-
-`ROOTCELL_IMAGE_DIR` must contain `manifest.json` plus the image files named in
-that manifest. Image build definitions now live in `images/` and are exposed by
-this repository's root flake. The default manifest URL points at this
-repository's GitHub Release assets.
+The Lima provider pins the upstream `nixos-lima` AARCH64 qcow2 image and digest
+in the generated YAML instead of using Lima's template directly. This keeps the
+nixos-lima guest contract while avoiding the template's default host mounts.
 
 ## Daily Workflow
 
@@ -215,8 +206,7 @@ Network policy is per instance. On first run, `./rootcell` copies each tracked
 For most HTTPS access, add the host to both DNS and HTTPS, then reload:
 
 ```bash
-ROOTCELL_STATE_DIR="${ROOTCELL_STATE_DIR:-$HOME/.rootcell}"
-INSTANCE_DIR="$(find "$ROOTCELL_STATE_DIR/i" -maxdepth 3 -name instance.json -exec sh -c 'grep -q "\"name\": \"default\"" "$1" && dirname "$1"' sh {} \; | head -n1)"
+INSTANCE_DIR="${ROOTCELL_STATE_DIR:-$PWD/instances}/default"
 $EDITOR "$INSTANCE_DIR/proxy/allowed-dns.txt"
 $EDITOR "$INSTANCE_DIR/proxy/allowed-https.txt"
 ./rootcell allow
@@ -341,8 +331,8 @@ home.nix                 pi, Git, SSH, and developer tools for the agent VM
 network.nix              default inter-VM network settings
 .env.defaults            seed values for per-instance `.env`
 secrets.env.defaults     seed Keychain secret mappings for per-instance `secrets.env`
-~/.rootcell/
-                         per-instance state, allowlists, CA, SSH keys, generated files, and vfkit state
+instances/
+                         per-instance state, allowlists, CA, SSH keys, and generated files
 proxy/                   allowlists and mitmproxy/dnsmasq firewall code
   agent_spy.py           Bedrock Runtime formatter for `./rootcell spy`
   agent_spy_tui.py       Textual browser for `./rootcell spy --tui`
@@ -352,15 +342,19 @@ completions/             bash and zsh completion for `rootcell`
 
 ## VM Lifecycle
 
-Per-instance state lives under `~/.rootcell/i/<repo-key>/<instance-key>/` by
-default. vfkit state lives under that directory's `v/` subdirectory; the host
-control key and generated SSH config live under `ssh/`.
-The agent VM is reached through SSH ProxyJump via the firewall VM; no VSOCK
-device is attached on the vfkit path.
+Per-instance state lives under `instances/<name>/` by default. rootcell's
+provider metadata lives under `v/`; the host control key and generated SSH
+config live under `ssh/`. Lima uses its normal `LIMA_HOME`. The firewall VM has
+Lima VZ NAT for public egress plus the private Lima user-v2 network. The agent
+VM has only the private Lima user-v2 network.
+
+The host connects to the firewall through Lima's generated localhost SSH
+endpoint. The agent VM is reached through SSH ProxyJump via the firewall VM over
+the private user-v2 address.
 
 Use `./rootcell list` to show known VMs and their state. `./rootcell stop`
 stops the selected instance's VMs, and `./rootcell remove` stops the selected
-instance and deletes its vfkit VM state. Instance-local configuration such as
+instance and deletes its Lima VM state. Instance-local configuration such as
 allowlists, Keychain mappings, CA files, and subnet allocation remains in
 the instance state directory so the next start keeps the same instance
 settings.
@@ -380,16 +374,16 @@ ROOTCELL_SUBNET_POOL_END=192.168.254.0
 
 The first run also writes `<instance-dir>/state.json` with the
 instance's allocated `/24`. By default, rootcell chooses the first free subnet
-from `192.168.100.0/24` through `192.168.254.0/24`, uses `.2` for the firewall,
-and uses `.3` for the agent. Existing state is not recalculated if you later
+from `192.168.100.0/24` through `192.168.254.0/24`, uses `.10` for the firewall,
+and uses `.11` for the agent. Existing state is not recalculated if you later
 edit the pool values.
 
 To pin a new instance to a specific subnet before first run, set both IPs in
 that instance's `.env`:
 
 ```sh
-FIREWALL_IP=192.168.109.2
-AGENT_IP=192.168.109.3
+FIREWALL_IP=192.168.109.10
+AGENT_IP=192.168.109.11
 NETWORK_PREFIX=24
 ```
 
@@ -472,8 +466,7 @@ See formatted Bedrock Runtime requests and responses:
 Check that firewall services are listening:
 
 ```bash
-ROOTCELL_STATE_DIR="${ROOTCELL_STATE_DIR:-$HOME/.rootcell}"
-INSTANCE_DIR="$(find "$ROOTCELL_STATE_DIR/i" -maxdepth 3 -name instance.json -exec sh -c 'grep -q "\"name\": \"default\"" "$1" && dirname "$1"' sh {} \; | head -n1)"
+INSTANCE_DIR="${ROOTCELL_STATE_DIR:-$PWD/instances}/default"
 ssh -F "$INSTANCE_DIR/ssh/config" rootcell-firewall -- \
   "ss -tln '( sport = :8080 or sport = :8081 )' && ss -uln '( sport = :53 )'"
 ```

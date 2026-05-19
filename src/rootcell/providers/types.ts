@@ -16,9 +16,6 @@ export interface GuestNetworkConfig {
   readonly firewallPrivateInterface: string;
   readonly firewallEgressInterface: string;
   readonly firewallControlInterface?: string;
-  readonly agentPrivateMac?: string;
-  readonly firewallPrivateMac?: string;
-  readonly firewallControlMac?: string;
 }
 
 export interface VmNetworkAttachment {
@@ -64,6 +61,11 @@ export interface VmProvider<TAttachment extends VmNetworkAttachment = VmNetworkA
     readonly name: string;
     readonly network: TAttachment;
   }): Promise<{ readonly created: boolean }>;
+  finalizeNetworking?(input: {
+    readonly role: VmRole;
+    readonly name: string;
+    readonly network: TAttachment;
+  }): Promise<void>;
   forgetSshHostKey?(name: string): Promise<void>;
 
   exec(name: string, command: readonly string[], options?: ExecOptions): Promise<InheritedCommandResult>;

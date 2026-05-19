@@ -8,6 +8,7 @@ import type { GuestTransport } from "./types.ts";
 
 export interface ProxyJumpSshEndpoints {
   readonly firewallHost: string;
+  readonly firewallPort?: number;
   readonly agentHost: string;
   readonly identityPath: string;
   readonly knownHostsPath: string;
@@ -65,7 +66,11 @@ export class ProxyJumpSshTransport implements GuestTransport {
     if (host === null) {
       throw new Error(`unknown rootcell VM for SSH transport: ${name}`);
     }
-    forgetKnownHost(endpoints.knownHostsPath, host);
+    forgetKnownHost(
+      endpoints.knownHostsPath,
+      host,
+      name === this.config.firewallVm ? endpoints.firewallPort : undefined,
+    );
   }
 
   private sshArgs(name: string): readonly string[] {
@@ -94,6 +99,7 @@ export class ProxyJumpSshTransport implements GuestTransport {
     const content = sshConfig({
       user: this.config.guestUser,
       firewallHost: endpoints.firewallHost,
+      ...(endpoints.firewallPort === undefined ? {} : { firewallPort: endpoints.firewallPort }),
       agentHost: endpoints.agentHost,
       identityPath: endpoints.identityPath,
       knownHostsPath: endpoints.knownHostsPath,
@@ -103,20 +109,20 @@ export class ProxyJumpSshTransport implements GuestTransport {
   }
 }
 
-export function forgetKnownHost(knownHostsPath: string, host: string): void {
+export function forgetKnownHost(knownHostsPath: string, host: string, port?: number): void {
   if (!existsSync(knownHostsPath)) {
     return;
   }
   const original = readFileSync(knownHostsPath, "utf8");
   const lines = original.split(/\r?\n/);
-  const kept = lines.filter((line) => !knownHostsLineMatchesHost(line, host));
+  const kept = lines.filter((line) => !knownHostsLineMatchesHost(line, host, port));
   if (kept.length === lines.length) {
     return;
   }
   writeFileSync(knownHostsPath, kept.join("\n"), { encoding: "utf8", mode: 0o600 });
 }
 
-function knownHostsLineMatchesHost(line: string, host: string): boolean {
+function knownHostsLineMatchesHost(line: string, host: string, port?: number): boolean {
   const trimmed = line.trimStart();
   if (trimmed.length === 0 || trimmed.startsWith("#") || trimmed.startsWith("|")) {
     return false;
@@ -125,7 +131,7 @@ function knownHostsLineMatchesHost(line: string, host: string): boolean {
   if (marker === undefined) {
     return false;
   }
-  return marker.split(",").some((candidate) => candidate === host || candidate === `[${host}]:22`);
+  return marker.split(",").some((candidate) => candidate === host || candidate === `[${host}]:${String(port ?? 22)}`);
 }
 
 function inheritOptions(options: ExecOptions): { readonly allowFailure?: boolean; readonly ignoredOutput?: boolean } {
@@ -138,6 +144,7 @@ function inheritOptions(options: ExecOptions): { readonly allowFailure?: boolean
 export function sshConfig(input: {
   readonly user: string;
   readonly firewallHost: string;
+  readonly firewallPort?: number;
   readonly agentHost: string;
   readonly identityPath: string;
   readonly knownHostsPath: string;
@@ -153,6 +160,7 @@ export function sshConfig(input: {
   return [
     "Host rootcell-firewall",
     `  HostName ${input.firewallHost}`,
+    ...(input.firewallPort === undefined ? [] : [`  Port ${String(input.firewallPort)}`]),
     `  User ${input.user}`,
     `  IdentityFile ${input.identityPath}`,
     `  UserKnownHostsFile ${input.knownHostsPath}`,
