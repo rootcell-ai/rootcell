@@ -14,7 +14,7 @@ import {
   limaUserV2ReservedIps,
   MacOsLimaUserV2NetworkProvider,
 } from "./providers/macos-lima-user-v2-network.ts";
-import { limaYaml, NIXOS_LIMA_AARCH64_IMAGE, parseLimaVmState, userV2ProofScript } from "./providers/lima.ts";
+import { directSshConfig, limaYaml, NIXOS_LIMA_AARCH64_IMAGE, parseLimaVmState, userV2ProofScript } from "./providers/lima.ts";
 import {
   ImageStore,
   imageDownloadUrl,
@@ -477,7 +477,7 @@ describe("VM and network providers", () => {
     expect(limaNetworkListIncludes(JSON.stringify([{ Name: "other" }]), "rootcell-123456abcdef")).toBe(false);
   });
 
-  test("proxyjump ssh config uses direct firewall and jumped agent aliases", () => {
+  test("ssh config uses direct firewall and proxied agent aliases", () => {
     const configText = sshConfig({
       user: "luser",
       firewallHost: "127.0.0.1",
@@ -492,7 +492,7 @@ describe("VM and network providers", () => {
     expect(configText).toContain("Port 60022");
     expect(configText).toContain("Host rootcell-agent");
     expect(configText).toContain("HostName 192.168.109.11");
-    expect(configText).toContain("ProxyJump rootcell-firewall");
+    expect(configText).toContain("ProxyCommand ssh -F /dev/null -W %h:%p -p 60022 -l luser");
     expect(configText).toContain("IdentityFile /instance/ssh/rootcell_control_ed25519");
     expect(configText).toContain("BatchMode yes");
     expect(configText).toContain("PasswordAuthentication no");
@@ -502,6 +502,35 @@ describe("VM and network providers", () => {
     expect(configText).toContain("ControlMaster auto");
     expect(configText).toContain("ControlPersist 60s");
     expect(configText).toContain("ControlPath /state/rootcell-ssh-test/%C");
+  });
+
+  test("ssh configs quote paths with spaces", () => {
+    const identityPath = "/Users/jmp/Library/Mobile Documents/rootcell/ssh/rootcell_control_ed25519";
+    const knownHostsPath = "/Users/jmp/Library/Mobile Documents/rootcell/ssh/known_hosts";
+    const configText = sshConfig({
+      user: "luser",
+      firewallHost: "127.0.0.1",
+      firewallPort: 60022,
+      agentHost: "192.168.109.11",
+      identityPath,
+      knownHostsPath,
+    });
+    expect(configText).toContain(`IdentityFile "${identityPath}"`);
+    expect(configText).toContain(`UserKnownHostsFile "${knownHostsPath}"`);
+    expect(configText).toContain(`-i '${identityPath}'`);
+    expect(configText).toContain(`-o 'UserKnownHostsFile=${knownHostsPath}'`);
+    expect(configText).not.toContain("ProxyJump");
+
+    const bootstrapConfig = directSshConfig({
+      hostAlias: "rootcell-agent-bootstrap",
+      user: "luser",
+      host: "127.0.0.1",
+      port: 60022,
+      identityPath,
+      knownHostsPath,
+    });
+    expect(bootstrapConfig).toContain(`IdentityFile "${identityPath}"`);
+    expect(bootstrapConfig).toContain(`UserKnownHostsFile "${knownHostsPath}"`);
   });
 
   test("proxyjump known_hosts removal clears only the rotated VM host", () => {

@@ -66,14 +66,14 @@ describe.skipIf(!shouldRun)("macos-lima-user-v2 integration provider", { concurr
     }
   });
 
-  test("writes a ProxyJump SSH config for direct firewall and jumped agent access", () => {
+  test("writes an SSH config for direct firewall and proxied agent access", () => {
     const config = readFileSync(sshConfigPath(flow.repoDir), "utf8");
     expect(config).toContain("Host rootcell-firewall");
     expect(config).toContain("HostName 127.0.0.1");
     expect(config).toContain("Port ");
     expect(config).toContain("Host rootcell-agent");
     expect(config).toContain(`HostName ${AGENT_IP}`);
-    expect(config).toContain("ProxyJump rootcell-firewall");
+    expect(config).toContain("ProxyCommand ssh -F /dev/null -W %h:%p");
     expect(config).not.toContain("ControlPath");
   });
 
