@@ -155,15 +155,15 @@ export function sshConfig(input: {
     : [
       "  ControlMaster auto",
       "  ControlPersist 60s",
-      `  ControlPath ${input.controlPath}`,
+      `  ControlPath ${sshConfigValue(input.controlPath)}`,
     ];
   return [
     "Host rootcell-firewall",
-    `  HostName ${input.firewallHost}`,
+    `  HostName ${sshConfigValue(input.firewallHost)}`,
     ...(input.firewallPort === undefined ? [] : [`  Port ${String(input.firewallPort)}`]),
-    `  User ${input.user}`,
-    `  IdentityFile ${input.identityPath}`,
-    `  UserKnownHostsFile ${input.knownHostsPath}`,
+    `  User ${sshConfigValue(input.user)}`,
+    `  IdentityFile ${sshConfigValue(input.identityPath)}`,
+    `  UserKnownHostsFile ${sshConfigValue(input.knownHostsPath)}`,
     ...multiplexing,
     "  StrictHostKeyChecking accept-new",
     "  IdentitiesOnly yes",
@@ -176,11 +176,11 @@ export function sshConfig(input: {
     "  LogLevel ERROR",
     "",
     "Host rootcell-agent",
-    `  HostName ${input.agentHost}`,
-    `  User ${input.user}`,
-    "  ProxyJump rootcell-firewall",
-    `  IdentityFile ${input.identityPath}`,
-    `  UserKnownHostsFile ${input.knownHostsPath}`,
+    `  HostName ${sshConfigValue(input.agentHost)}`,
+    `  User ${sshConfigValue(input.user)}`,
+    `  ProxyCommand ${proxyCommand(input)}`,
+    `  IdentityFile ${sshConfigValue(input.identityPath)}`,
+    `  UserKnownHostsFile ${sshConfigValue(input.knownHostsPath)}`,
     ...multiplexing,
     "  StrictHostKeyChecking accept-new",
     "  IdentitiesOnly yes",
@@ -193,6 +193,58 @@ export function sshConfig(input: {
     "  LogLevel ERROR",
     "",
   ].join("\n");
+}
+
+export function sshConfigValue(value: string): string {
+  if (/^[A-Za-z0-9_./:=@%+,-]+$/.test(value)) {
+    return value;
+  }
+  if (/[\r\n]/.test(value)) {
+    throw new Error("SSH config values must not contain newlines");
+  }
+  return `"${value.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"")}"`;
+}
+
+function proxyCommand(input: {
+  readonly user: string;
+  readonly firewallHost: string;
+  readonly firewallPort?: number;
+  readonly identityPath: string;
+  readonly knownHostsPath: string;
+}): string {
+  return [
+    "ssh",
+    "-F",
+    "/dev/null",
+    "-W",
+    "%h:%p",
+    ...(input.firewallPort === undefined ? [] : ["-p", String(input.firewallPort)]),
+    "-l",
+    input.user,
+    "-i",
+    input.identityPath,
+    "-o",
+    `UserKnownHostsFile=${input.knownHostsPath}`,
+    "-o",
+    "StrictHostKeyChecking=accept-new",
+    "-o",
+    "IdentitiesOnly=yes",
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "PasswordAuthentication=no",
+    "-o",
+    "KbdInteractiveAuthentication=no",
+    "-o",
+    "ConnectTimeout=5",
+    "-o",
+    "ServerAliveInterval=5",
+    "-o",
+    "ServerAliveCountMax=3",
+    "-o",
+    "LogLevel=ERROR",
+    input.firewallHost,
+  ].map(shellQuote).join(" ");
 }
 
 function remoteCommand(command: readonly string[], options: ExecOptions): string {

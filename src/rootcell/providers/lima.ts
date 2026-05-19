@@ -5,7 +5,7 @@ import { z } from "zod";
 import { resolveHostTool } from "../host-tools.ts";
 import { runAsyncInherited, runCapture, runInherited } from "../process.ts";
 import { NonEmptyStringSchema, parseSchema, PositiveSafeIntegerSchema } from "../schema.ts";
-import { forgetKnownHost, ProxyJumpSshTransport, type ProxyJumpSshEndpoints } from "../transports/proxyjump-ssh.ts";
+import { forgetKnownHost, ProxyJumpSshTransport, sshConfigValue, type ProxyJumpSshEndpoints } from "../transports/proxyjump-ssh.ts";
 import type { RootcellConfig } from "../types.ts";
 import type { CommandResult, InheritedCommandResult } from "../types.ts";
 import type { LimaUserV2NetworkAttachment } from "./macos-lima-user-v2-network.ts";
@@ -615,7 +615,7 @@ function yamlString(value: string): string {
   return JSON.stringify(value);
 }
 
-function directSshConfig(input: {
+export function directSshConfig(input: {
   readonly hostAlias: string;
   readonly user: string;
   readonly host: string;
@@ -625,11 +625,11 @@ function directSshConfig(input: {
 }): string {
   return [
     `Host ${input.hostAlias}`,
-    `  HostName ${input.host}`,
+    `  HostName ${sshConfigValue(input.host)}`,
     `  Port ${String(input.port)}`,
-    `  User ${input.user}`,
-    `  IdentityFile ${input.identityPath}`,
-    `  UserKnownHostsFile ${input.knownHostsPath}`,
+    `  User ${sshConfigValue(input.user)}`,
+    `  IdentityFile ${sshConfigValue(input.identityPath)}`,
+    `  UserKnownHostsFile ${sshConfigValue(input.knownHostsPath)}`,
     "  StrictHostKeyChecking accept-new",
     "  NoHostAuthenticationForLocalhost yes",
     "  IdentitiesOnly yes",
