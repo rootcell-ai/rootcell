@@ -1,24 +1,23 @@
 import { randomBytes } from "node:crypto";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import { deriveVmNames } from "../../../instance.ts";
+import { NIXOS_LIMA_AARCH64_IMAGE } from "../../../providers/lima.ts";
 import { CLI_SMOKE_INSTANCE_PREFIX, findRepoDir } from "../../common/fixtures.ts";
 import { selectedIntegrationProvider } from "../../common/provider-spec.ts";
-import { macOsVfkitIntegrationProvider, readJson, removeVfkitInstanceState, vfkitPrivateLinkStatePath, vfkitStatePath } from "./provider.ts";
+import { limaStatePath, limaYamlPath, macOsLimaUserV2IntegrationProvider, readJson, removeLimaInstanceState } from "./provider.ts";
 
-const MACOS_UNIX_SOCKET_PATH_LIMIT = 104;
-const SOCKET_PATH_HEADROOM = 8;
-const VFKIT_SOCKET_PATH_LIMIT_WITH_HEADROOM = MACOS_UNIX_SOCKET_PATH_LIMIT - SOCKET_PATH_HEADROOM;
 const ROOTCELL_START_TIMEOUT_MS = 30 * 60_000;
 const ROOTCELL_COMMAND_TIMEOUT_MS = 3 * 60_000;
 const ROOTCELL_CLEANUP_TIMEOUT_MS = 5 * 60_000;
 const TEST_TIMEOUT_MS = ROOTCELL_START_TIMEOUT_MS + 10 * 60_000;
 
-const shouldRun = selectedIntegrationProvider().id === macOsVfkitIntegrationProvider.id;
+const shouldRun = selectedIntegrationProvider().id === macOsLimaUserV2IntegrationProvider.id;
 
-describe.skipIf(!shouldRun)("macos-vfkit CLI smoke", { concurrent: false }, () => {
+describe.skipIf(!shouldRun)("macos-lima-user-v2 CLI smoke", { concurrent: false }, () => {
   test("starts a fresh instance through ./rootcell and enforces egress policy", async () => {
-    await macOsVfkitIntegrationProvider.preflight();
+    await macOsLimaUserV2IntegrationProvider.preflight();
 
     const repoDir = findRepoDir(import.meta.url);
     const instance = randomSmokeInstance();
@@ -30,7 +29,7 @@ describe.skipIf(!shouldRun)("macos-vfkit CLI smoke", { concurrent: false }, () =
       const list = captureRootcell(repoDir, ["list", "--instance", instance]);
       expect(list.status, list.stderr).toBe(0);
       expectRunningVms(list.stdout, instance);
-      expectVfkitSocketPathsHaveHeadroom(repoDir, instance);
+      expectLimaStateAndYaml(repoDir, instance);
 
       const allowed = runRootcell(repoDir, [
         "--instance",
@@ -118,29 +117,29 @@ function expectRunningVms(output: string, instance: string): void {
   ]));
 }
 
-function expectVfkitSocketPathsHaveHeadroom(repoDir: string, instance: string): void {
+function expectLimaStateAndYaml(repoDir: string, instance: string): void {
   const names = deriveVmNames(instance);
-  const agent = readJson(vfkitStatePath(repoDir, names.agentVm, instance));
-  const firewall = readJson(vfkitStatePath(repoDir, names.firewallVm, instance));
-  const privateLink = readJson(vfkitPrivateLinkStatePath(repoDir, instance));
+  const agent = readJson(limaStatePath(repoDir, names.agentVm, instance));
+  const firewall = readJson(limaStatePath(repoDir, names.firewallVm, instance));
+  const agentYaml = readFileSync(limaYamlPath(repoDir, names.agentVm, instance), "utf8");
+  const firewallYaml = readFileSync(limaYamlPath(repoDir, names.firewallVm, instance), "utf8");
 
-  for (const path of [
-    agent.restSocketPath,
-    firewall.restSocketPath,
-    privateLink.agentSocketPath,
-    privateLink.firewallSocketPath,
-  ]) {
-    expect(typeof path).toBe("string");
-    if (typeof path !== "string") {
-      throw new Error(`expected vfkit socket path to be a string, got ${String(path)}`);
-    }
-    expect(path.length).toBeLessThan(VFKIT_SOCKET_PATH_LIMIT_WITH_HEADROOM);
-  }
+  expect(agent.provider).toBe("lima");
+  expect(agent.hasEgress).toBe(false);
+  expect(firewall.provider).toBe("lima");
+  expect(firewall.hasEgress).toBe(true);
+  expect(agentYaml).toContain(`location: "${NIXOS_LIMA_AARCH64_IMAGE.location}"`);
+  expect(agentYaml).toContain("mounts: []");
+  expect(agentYaml).toContain("overVsock: true");
+  expect(agentYaml).not.toContain("vzNAT");
+  expect(agentYaml).not.toContain("provision:");
+  expect(firewallYaml).toContain("vzNAT: true");
+  expect(firewallYaml).not.toContain("provision:");
 }
 
 async function removeSmokeInstance(repoDir: string, instance: string): Promise<void> {
   runRootcell(repoDir, ["remove", "--instance", instance], ROOTCELL_CLEANUP_TIMEOUT_MS);
-  await removeVfkitInstanceState(repoDir, instance);
+  await removeLimaInstanceState(repoDir, instance);
   const list = captureRootcell(repoDir, ["list", "--instance", instance]);
   if (list.status === 0) {
     const names = deriveVmNames(instance);

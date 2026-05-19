@@ -15,7 +15,12 @@
     services.openssh.enable = true;
 
     users.users.${username} = {
-      isNormalUser = true;
+      isSystemUser = true;
+      uid = lib.mkDefault 501;
+      home = lib.mkDefault "/home/${username}";
+      createHome = true;
+      homeMode = "0755";
+      group = "users";
       extraGroups = [ "wheel" ];
       shell = pkgs.bash;
       linger = true;
@@ -56,7 +61,15 @@
     };
 
     environment.enableAllTerminfo = true;
-    boot.kernelPackages = pkgs.linuxPackages_latest;
+    services.lima.enable = true;
+    networking.nat.enable = lib.mkForce false;
+
+    # Lima's hostagent probes `/bin/bash` even when the configured user shell is
+    # `/run/current-system/sw/bin/bash`.
+    system.activationScripts.rootcellLimaBinBash.text = ''
+      mkdir -p /bin
+      ln -sfn /run/current-system/sw/bin/bash /bin/bash
+    '';
 
     system.stateVersion = "25.11";
   };

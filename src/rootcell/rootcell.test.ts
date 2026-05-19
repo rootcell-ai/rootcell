@@ -8,8 +8,13 @@ import { buildConfig, formatVmList } from "./rootcell.ts";
 import { deriveVmNames, instancePaths, listRootcellVmInstanceNames, loadRootcellInstance, seedRootcellInstanceFiles } from "./instance.ts";
 import { runCapture } from "./process.ts";
 import { createProviderBundle } from "./providers/factory.ts";
-import { getMacAddressFor, MacOsVfkitNetworkProvider } from "./providers/macos-vfkit-network.ts";
-import { vfkitArgs, parseVfkitVmState, lookupDhcpLease, vfkitCloudInitUserData } from "./providers/vfkit.ts";
+import {
+  limaNetworkListIncludes,
+  limaUserV2NetworkName,
+  limaUserV2ReservedIps,
+  MacOsLimaUserV2NetworkProvider,
+} from "./providers/macos-lima-user-v2-network.ts";
+import { limaYaml, NIXOS_LIMA_AARCH64_IMAGE, parseLimaVmState, userV2ProofScript } from "./providers/lima.ts";
 import {
   ImageStore,
   imageDownloadUrl,
@@ -39,9 +44,6 @@ const DefaultSpyOptionsSchema = z.object({
   dedupe: z.literal(true),
   tui: z.literal(false),
 }).strict();
-
-const MACOS_UNIX_SOCKET_PATH_LIMIT = 104;
-const VFKIT_SOCKET_PATH_LIMIT_WITH_HEADROOM = MACOS_UNIX_SOCKET_PATH_LIMIT - 8;
 
 const ignoreLog = (): void => undefined;
 
@@ -222,39 +224,43 @@ describe("environment parsing", () => {
     expect(config).toEqual(expect.schemaMatching(RootcellConfigSchema));
     expect(config.agentVm).toBe("agent-dev");
     expect(config.firewallVm).toBe("firewall-dev");
-    expect(config.firewallIp).toBe("192.168.109.2");
-    expect(config.agentIp).toBe("192.168.109.3");
+    expect(config.firewallIp).toBe("192.168.109.10");
+    expect(config.agentIp).toBe("192.168.109.11");
     expect(config.imageManifestUrl).toBe("https://github.com/rootcell-ai/rootcell/releases/latest/download/manifest.json");
   });
 });
 
 describe("host tool resolution", () => {
-  const vfkitSpec = {
-    name: "vfkit",
-    envVar: "ROOTCELL_VFKIT",
+  const limaSpec = {
+    name: "limactl",
+    envVars: ["ROOTCELL_LIMACTL", "LIMACTL"],
     purpose: "to start test VMs",
   };
 
   test("prefers explicit environment overrides", () => {
-    expect(resolveHostTool(vfkitSpec, {
-      env: { ROOTCELL_VFKIT: "/opt/rootcell/bin/vfkit" },
+    expect(resolveHostTool(limaSpec, {
+      env: { ROOTCELL_LIMACTL: "/opt/rootcell/bin/limactl" },
       commandExists: () => false,
-    })).toBe("/opt/rootcell/bin/vfkit");
+    })).toBe("/opt/rootcell/bin/limactl");
+    expect(resolveHostTool(limaSpec, {
+      env: { LIMACTL: "/usr/local/bin/limactl" },
+      commandExists: () => false,
+    })).toBe("/usr/local/bin/limactl");
   });
 
   test("uses PATH before asking the user to install anything", () => {
-    expect(resolveHostTool(vfkitSpec, {
+    expect(resolveHostTool(limaSpec, {
       env: {},
-      commandExists: (command) => command === "vfkit",
-    })).toBe("vfkit");
+      commandExists: (command) => command === "limactl",
+    })).toBe("limactl");
   });
 
   test("missing tools produce package-manager instructions", () => {
-    expect(() => resolveHostTool(vfkitSpec, {
+    expect(() => resolveHostTool(limaSpec, {
       env: {},
       commandExists: () => false,
-    })).toThrow("brew install bun vfkit zstd python");
-    expect(() => resolveHostTool(vfkitSpec, {
+    })).toThrow("brew install bun lima");
+    expect(() => resolveHostTool(limaSpec, {
       env: {},
       commandExists: () => false,
     })).toThrow("nix shell .#hostTools --command ./rootcell");
@@ -263,8 +269,8 @@ describe("host tool resolution", () => {
   test("runtime host tools do not fall back to host-side nix builds", () => {
     for (const file of [
       "src/rootcell/images.ts",
-      "src/rootcell/providers/vfkit.ts",
-      "src/rootcell/providers/macos-vfkit-network.ts",
+      "src/rootcell/providers/lima.ts",
+      "src/rootcell/providers/macos-lima-user-v2-network.ts",
     ]) {
       expect(readFileSync(file, "utf8")).not.toMatch(/run(?:Capture|Inherited)\("nix"/);
     }
@@ -272,154 +278,220 @@ describe("host tool resolution", () => {
 });
 
 describe("VM and network providers", () => {
-  test("factory defaults to vfkit providers", () => {
+  test("factory defaults to Lima providers", () => {
     const providers = createProviderBundle(buildConfig("/repo", {}, fakeInstance("dev")), ignoreLog);
-    expect(providers.network.id).toBe("macos-vfkit");
-    expect(providers.vm.id).toBe("vfkit");
+    expect(providers.network.id).toBe("macos-lima-user-v2");
+    expect(providers.vm.id).toBe("lima");
   });
 
-  test("macOS vfkit provider exposes host-control and hostless-private attachments", () => {
+  test("macOS Lima user-v2 provider exposes egress firewall and private-only agent attachments", () => {
     const config = buildConfig("/repo", {}, fakeInstance("dev"));
-    const plan = new MacOsVfkitNetworkProvider(config, ignoreLog).plan();
+    const plan = new MacOsLimaUserV2NetworkProvider(config, ignoreLog).plan();
+    const networkName = limaUserV2NetworkName(config);
     expect(plan).toEqual(expect.schemaMatching(z.object({
-      provider: z.literal("macos-vfkit"),
+      provider: z.literal("macos-lima-user-v2"),
       guest: z.object({
-        firewallIp: z.literal("192.168.109.2"),
-        agentIp: z.literal("192.168.109.3"),
+        firewallIp: z.literal("192.168.109.10"),
+        agentIp: z.literal("192.168.109.11"),
         networkPrefix: z.literal(24),
         agentPrivateInterface: z.literal("enp0s1"),
-        firewallPrivateInterface: z.literal("enp0s2"),
-        firewallEgressInterface: z.literal("enp0s1"),
-        firewallControlInterface: z.literal("enp0s1"),
-        agentPrivateMac: z.string().regex(/^52:54:00:/),
-        firewallPrivateMac: z.string().regex(/^52:54:00:/),
-        firewallControlMac: z.string().regex(/^52:54:00:/),
+        firewallPrivateInterface: z.literal("enp0s1"),
+        firewallEgressInterface: z.literal("enp0s2"),
+        firewallControlInterface: z.literal("enp0s2"),
       }).strict(),
       vms: z.object({
         agent: z.object({
-          kind: z.literal("vfkit"),
+          kind: z.literal("lima-user-v2"),
           role: z.literal("agent"),
-          privateMac: z.string().regex(/^52:54:00:/),
-          privateSocketPath: z.string(),
-          useNat: z.literal(false),
+          limaInstance: z.literal("agent-dev"),
+          networkName: z.literal(networkName),
+          privateInterface: z.literal("enp0s1"),
+          privateIp: z.literal("192.168.109.11"),
+          gatewayIp: z.literal("192.168.109.2"),
+          dnsIp: z.literal("192.168.109.3"),
+          reservedIps: z.array(z.string()),
+          hasEgress: z.literal(false),
         }).strict(),
         firewall: z.object({
-          kind: z.literal("vfkit"),
+          kind: z.literal("lima-user-v2"),
           role: z.literal("firewall"),
-          privateMac: z.string().regex(/^52:54:00:/),
-          privateSocketPath: z.string(),
-          controlMac: z.string().regex(/^52:54:00:/),
-          useNat: z.literal(true),
+          limaInstance: z.literal("firewall-dev"),
+          networkName: z.literal(networkName),
+          privateInterface: z.literal("enp0s1"),
+          egressInterface: z.literal("enp0s2"),
+          privateIp: z.literal("192.168.109.10"),
+          gatewayIp: z.literal("192.168.109.2"),
+          dnsIp: z.literal("192.168.109.3"),
+          reservedIps: z.array(z.string()),
+          hasEgress: z.literal(true),
         }).strict(),
       }).strict(),
     }).strict()));
-    expect(plan.provider).toBe("macos-vfkit");
+    expect(plan.provider).toBe("macos-lima-user-v2");
     expect(plan.guest).toEqual({
-      firewallIp: "192.168.109.2",
-      agentIp: "192.168.109.3",
+      firewallIp: "192.168.109.10",
+      agentIp: "192.168.109.11",
       networkPrefix: 24,
       agentPrivateInterface: "enp0s1",
-      firewallPrivateInterface: "enp0s2",
-      firewallEgressInterface: "enp0s1",
-      firewallControlInterface: "enp0s1",
-      agentPrivateMac: plan.vms.agent.privateMac,
-      firewallPrivateMac: plan.vms.firewall.privateMac,
-      firewallControlMac: plan.vms.firewall.controlMac,
+      firewallPrivateInterface: "enp0s1",
+      firewallEgressInterface: "enp0s2",
+      firewallControlInterface: "enp0s2",
     });
-    expect(plan.vms.agent.kind).toBe("vfkit");
-    expect(plan.vms.agent.useNat).toBe(false);
-    expect(plan.vms.firewall.useNat).toBe(true);
-    expect(plan.vms.firewall.controlMac).toMatch(/^52:54:00:/);
-    expect(plan.vms.agent.privateSocketPath).toBe(join(config.instanceDir, "v", "n", "ag.sock"));
-    expect(plan.vms.firewall.privateSocketPath).toBe(join(config.instanceDir, "v", "n", "fw.sock"));
-    expect(plan.vms.agent.privateSocketPath.length).toBeLessThan(VFKIT_SOCKET_PATH_LIMIT_WITH_HEADROOM);
-    expect(plan.vms.firewall.privateSocketPath.length).toBeLessThan(VFKIT_SOCKET_PATH_LIMIT_WITH_HEADROOM);
+    expect(plan.vms.agent.kind).toBe("lima-user-v2");
+    expect(plan.vms.agent.hasEgress).toBe(false);
+    expect(plan.vms.firewall.hasEgress).toBe(true);
+    expect(plan.vms.agent.reservedIps).toEqual(["192.168.109.2", "192.168.109.3"]);
   });
 
-  test("keeps vfkit socket paths short for long repos and instance names", () => {
-    const repo = "/Users/jmp/Library/Mobile Documents/com~apple~CloudDocs/projects/rootcell-with-a-long-name";
-    const instanceName = `a${"b".repeat(31)}`;
-    const config = buildConfig(repo, {}, fakeInstance(instanceName, repo));
-    const plan = new MacOsVfkitNetworkProvider(config, ignoreLog).plan();
-
-    expect(plan.vms.agent.privateSocketPath.length).toBeLessThan(VFKIT_SOCKET_PATH_LIMIT_WITH_HEADROOM);
-    expect(plan.vms.firewall.privateSocketPath.length).toBeLessThan(VFKIT_SOCKET_PATH_LIMIT_WITH_HEADROOM);
-    expect(join(config.instanceDir, "v", "a", "rest.sock").length).toBeLessThan(VFKIT_SOCKET_PATH_LIMIT_WITH_HEADROOM);
-    expect(join(config.instanceDir, "v", "f", "rest.sock").length).toBeLessThan(VFKIT_SOCKET_PATH_LIMIT_WITH_HEADROOM);
-  });
-
-  test("vfkit MACs are stable per repo instance and distinct across worktrees", () => {
+  test("user-v2 network plan reserves Lima gateway and DNS IPs", () => {
     const config = buildConfig("/repo", {}, fakeInstance("dev"));
+    expect(limaUserV2ReservedIps(config)).toEqual({
+      gatewayIp: "192.168.109.2",
+      dnsIp: "192.168.109.3",
+      all: ["192.168.109.2", "192.168.109.3"],
+    });
+  });
+
+  test("Lima user-v2 network names are per repo instance and short for UNIX socket paths", () => {
+    const config = buildConfig("/repo", {}, fakeInstance("dev"));
+    const otherInstance = buildConfig("/repo", {}, fakeInstance("prod"));
     const otherWorktree = buildConfig("/other-repo", {}, fakeInstance("dev", "/other-repo"));
 
-    expect(getMacAddressFor(config, "firewall", "control")).toBe(getMacAddressFor(config, "firewall", "control"));
-    expect(getMacAddressFor(config, "firewall", "control")).not.toBe(getMacAddressFor(otherWorktree, "firewall", "control"));
+    expect(limaUserV2NetworkName(config)).toMatch(/^rootcell-[a-f0-9]{12}$/);
+    expect(limaUserV2NetworkName(config)).not.toBe(limaUserV2NetworkName(otherInstance));
+    expect(limaUserV2NetworkName(config)).not.toBe(limaUserV2NetworkName(otherWorktree));
   });
 
-  test("vfkit args include EFI, cloud-init, expected NICs, and no VSOCK", () => {
+  test("Lima YAML starts from upstream nixos-lima and applies Rootcell-only overrides", () => {
     const config = buildConfig("/repo", {}, fakeInstance("dev"));
-    const network = new MacOsVfkitNetworkProvider(config, ignoreLog).plan().vms.firewall;
-    const args = vfkitArgs({
+    const network = new MacOsLimaUserV2NetworkProvider(config, ignoreLog).plan().vms.firewall;
+    const yaml = limaYaml({
       role: "firewall",
-      diskPath: "/vm/firewall/disk.raw",
-      efiVariableStorePath: "/vm/firewall/efi",
-      restSocketPath: "/vm/firewall/rest.sock",
-      logPath: "/vm/firewall/serial.log",
-      cloudInitDir: "/vm/firewall/cloud-init",
+      user: "luser",
+      instanceName: "dev",
+      cpus: 2,
+      memoryGiB: 4,
+      diskGiB: 16,
       network,
+      firewallIp: "192.168.109.10",
+      agentIp: "192.168.109.11",
+      networkPrefix: "24",
     });
-    expect(args).toContain("efi,variable-store=/vm/firewall/efi,create");
-    expect(args).toContain(`virtio-net,nat,mac=${network.controlMac ?? ""}`);
-    expect(args).toContain("virtio-net,unixSocketPath=" + network.privateSocketPath + ",mac=" + network.privateMac);
-    expect(args.join(" ")).toContain("--cloud-init /vm/firewall/cloud-init/user-data,/vm/firewall/cloud-init/meta-data");
-    expect(args.join(" ")).not.toContain("vsock");
+    expect(yaml).toContain("Generated by rootcell from nixos-lima v0.0.5 nixos.yaml");
+    expect(yaml).toContain("# Template using latest released nixos-lima images");
+    expect(yaml).toContain(`  - location: "${NIXOS_LIMA_AARCH64_IMAGE.location}"`);
+    expect(yaml).toContain(`    digest: "${NIXOS_LIMA_AARCH64_IMAGE.digest}"`);
+    expect(yaml).toContain("mounts: []");
+    expect(yaml).not.toContain('location: "~"');
+    expect(yaml).not.toContain("/tmp/lima");
+    expect(yaml).toContain("containerd:\n  system: false\n  user: false");
+    expect(yaml).toContain("ssh:\n  overVsock: true");
+    expect(yaml).toContain("guestPort: 68");
+    expect(yaml).toContain("ignore: true");
+    expect(yaml).toContain("user:\n  name: \"luser\"\n  home: \"/home/luser\"");
+    expect(yaml).toContain("  - vzNAT: true");
+    expect(yaml).toContain('    interface: "enp0s2"');
+    expect(yaml).toContain(`  - lima: "${network.networkName}"`);
+    expect(yaml).toContain('    interface: "enp0s1"');
+    expect(yaml).not.toContain("macAddress:");
+    for (const removedRuntime of removedRuntimeNames()) {
+      expect(yaml).not.toContain(removedRuntime);
+    }
+    expect(yaml).not.toContain("file://");
+    expect(yaml).not.toContain("provision:");
+    expect(yaml).not.toContain("addr=192.");
+    expect(yaml).not.toContain("overVsock: false");
+    expect(yaml).not.toContain("hostResolver:");
+    expect(yaml).not.toContain("propagateProxyEnv:");
   });
 
-  test("vfkit cloud-init configures role private addresses before SSH", () => {
-    const agent = vfkitCloudInitUserData({
-      role: "agent",
+  test("Lima YAML uses the same nixos-lima image for agent and firewall", () => {
+    const config = buildConfig("/repo", {}, fakeInstance("dev"));
+    const plan = new MacOsLimaUserV2NetworkProvider(config, ignoreLog).plan();
+    const imageLines = [
+      `  - location: "${NIXOS_LIMA_AARCH64_IMAGE.location}"`,
+      `    arch: "${NIXOS_LIMA_AARCH64_IMAGE.arch}"`,
+      `    digest: "${NIXOS_LIMA_AARCH64_IMAGE.digest}"`,
+    ].join("\n");
+    const commonInput = {
       user: "luser",
-      publicKey: "ssh-ed25519 test",
       instanceName: "dev",
-      firewallIp: "192.168.109.2",
-      agentIp: "192.168.109.3",
+      firewallIp: "192.168.109.10",
+      agentIp: "192.168.109.11",
       networkPrefix: "24",
-      privateMac: "52:54:00:4e:1d:de",
-    });
-    expect(agent).toContain("for path in /sys/class/net/*");
-    expect(agent).toContain("MACAddress=52:54:00:4e:1d:de");
-    expect(agent).toContain("lock_passwd: false");
-    expect(agent).toContain("hashed_passwd:");
-    expect(agent).toContain("addr='192.168.109.3/24'");
-    expect(agent).toContain("ip route replace default via \"$gateway\"");
-    expect(agent).toContain("printf 'nameserver %s\\n' \"$gateway\" > /etc/resolv.conf");
+    };
 
-    const firewall = vfkitCloudInitUserData({
-      role: "firewall",
-      user: "luser",
-      publicKey: "ssh-ed25519 test",
-      instanceName: "dev",
-      firewallIp: "192.168.109.2",
-      agentIp: "192.168.109.3",
-      networkPrefix: "24",
-      privateMac: "52:54:00:c4:80:73",
+    const agentYaml = limaYaml({
+      ...commonInput,
+      role: "agent",
+      cpus: 8,
+      memoryGiB: 16,
+      diskGiB: 60,
+      network: plan.vms.agent,
     });
-    expect(firewall).toContain("MACAddress=52:54:00:c4:80:73");
-    expect(firewall).toContain("addr='192.168.109.2/24'");
+    const firewallYaml = limaYaml({
+      ...commonInput,
+      role: "firewall",
+      cpus: 2,
+      memoryGiB: 4,
+      diskGiB: 16,
+      network: plan.vms.firewall,
+    });
+
+    expect(agentYaml).toContain(imageLines);
+    expect(firewallYaml).toContain(imageLines);
+    expect(agentYaml).not.toContain("agent.raw");
+    expect(firewallYaml).not.toContain("firewall.raw");
+  });
+
+  test("rebuilt NixOS guests keep the Lima readiness contract", () => {
+    const commonModule = readFileSync("common.nix", "utf8");
+
+    expect(commonModule).toContain("isSystemUser = true;");
+    expect(commonModule).toContain("uid = lib.mkDefault 501;");
+    expect(commonModule).toContain('home = lib.mkDefault "/home/${username}";');
+    expect(commonModule).toContain("ln -sfn /run/current-system/sw/bin/bash /bin/bash");
+    expect(commonModule).toContain("services.lima.enable = true;");
+    expect(commonModule).toContain("networking.nat.enable = lib.mkForce false;");
+
+    const firewallModule = readFileSync("firewall-vm.nix", "utf8");
+    expect(firewallModule).toContain("systemd.network.wait-online.enable = false;");
+    expect(firewallModule).toContain("linkConfig.RequiredForOnline = false;");
+  });
+
+  test("user-v2 proof gate rejects extra agent interfaces and default-route bypasses", () => {
+    const script = userV2ProofScript({
+      agentIp: "192.168.109.11",
+      firewallIp: "192.168.109.10",
+      networkPrefix: "24",
+      agentPrivateInterface: "enp0s1",
+    });
+    expect(script).toContain("find /sys/class/net -mindepth 1 -maxdepth 1 ! -name lo");
+    expect(script).toContain("test \"$(ip route show default | wc -l | tr -d ' ')\" = 1");
+    expect(script).toContain("ip route show default | grep -q \"^default via $firewall_ip dev $iface\\b\"");
+    expect(script).toContain("! ip -4 -o addr show scope global | grep -v");
+  });
+
+  test("detects existing Lima networks from limactl JSON output", () => {
+    expect(limaNetworkListIncludes(JSON.stringify([{ name: "rootcell-123456abcdef" }]), "rootcell-123456abcdef")).toBe(true);
+    expect(limaNetworkListIncludes(JSON.stringify([{ Name: "other" }]), "rootcell-123456abcdef")).toBe(false);
   });
 
   test("proxyjump ssh config uses direct firewall and jumped agent aliases", () => {
     const configText = sshConfig({
       user: "luser",
-      firewallHost: "192.168.64.10",
-      agentHost: "192.168.109.3",
+      firewallHost: "127.0.0.1",
+      firewallPort: 60022,
+      agentHost: "192.168.109.11",
       identityPath: "/instance/ssh/rootcell_control_ed25519",
       knownHostsPath: "/instance/ssh/known_hosts",
       controlPath: "/state/rootcell-ssh-test/%C",
     });
     expect(configText).toContain("Host rootcell-firewall");
-    expect(configText).toContain("HostName 192.168.64.10");
+    expect(configText).toContain("HostName 127.0.0.1");
+    expect(configText).toContain("Port 60022");
     expect(configText).toContain("Host rootcell-agent");
+    expect(configText).toContain("HostName 192.168.109.11");
     expect(configText).toContain("ProxyJump rootcell-firewall");
     expect(configText).toContain("IdentityFile /instance/ssh/rootcell_control_ed25519");
     expect(configText).toContain("BatchMode yes");
@@ -437,17 +509,17 @@ describe("VM and network providers", () => {
     try {
       const path = join(dir, "known_hosts");
       writeFileSync(path, [
-        "192.168.64.12 ssh-ed25519 firewall",
-        "192.168.109.3 ssh-ed25519 old-agent",
-        "[192.168.109.3]:22 ssh-ed25519 bracketed-agent",
+        "[127.0.0.1]:60022 ssh-ed25519 firewall",
+        "192.168.109.11 ssh-ed25519 old-agent",
+        "[192.168.109.11]:22 ssh-ed25519 bracketed-agent",
         "github.com ssh-ed25519 github",
         "",
       ].join("\n"));
 
-      forgetKnownHost(path, "192.168.109.3");
+      forgetKnownHost(path, "192.168.109.11");
 
       const content = readFileSync(path, "utf8");
-      expect(content).toContain("192.168.64.12 ssh-ed25519 firewall");
+      expect(content).toContain("[127.0.0.1]:60022 ssh-ed25519 firewall");
       expect(content).not.toContain("old-agent");
       expect(content).not.toContain("bracketed-agent");
       expect(content).toContain("github.com ssh-ed25519 github");
@@ -456,63 +528,55 @@ describe("VM and network providers", () => {
     }
   });
 
-  test("vfkit state parser validates running state shape", () => {
-    const state = parseVfkitVmState({
-      provider: "vfkit",
-      name: "firewall-dev",
-      role: "firewall",
-      pid: 123,
-      diskPath: "/vm/disk.raw",
-      efiVariableStorePath: "/vm/efi",
-      restSocketPath: "/vm/rest.sock",
-      logPath: "/vm/serial.log",
-      privateMac: "52:54:00:00:00:01",
-      controlMac: "52:54:00:00:00:02",
-      firewallControlIp: "192.168.64.2",
-    });
-    expect(state).toEqual(expect.schemaMatching(z.object({
-      provider: z.literal("vfkit"),
-      name: z.literal("firewall-dev"),
-      role: z.literal("firewall"),
-      pid: z.literal(123),
-      diskPath: z.literal("/vm/disk.raw"),
-      efiVariableStorePath: z.literal("/vm/efi"),
-      restSocketPath: z.literal("/vm/rest.sock"),
-      logPath: z.literal("/vm/serial.log"),
-      privateMac: z.literal("52:54:00:00:00:01"),
-      controlMac: z.literal("52:54:00:00:00:02"),
-      firewallControlIp: z.literal("192.168.64.2"),
-    }).strict()));
-    expect(state.firewallControlIp).toBe("192.168.64.2");
-    expect(() => parseVfkitVmState({ provider: "unknown" })).toThrow("provider mismatch");
+  test("proxyjump known_hosts removal supports Lima localhost SSH ports", () => {
+    const dir = mkdtempSync(join(tmpdir(), "rootcell-known-hosts-"));
+    try {
+      const path = join(dir, "known_hosts");
+      writeFileSync(path, [
+        "[127.0.0.1]:60022 ssh-ed25519 old-firewall",
+        "[127.0.0.1]:60023 ssh-ed25519 other-vm",
+        "",
+      ].join("\n"));
+
+      forgetKnownHost(path, "127.0.0.1", 60022);
+
+      const content = readFileSync(path, "utf8");
+      expect(content).not.toContain("old-firewall");
+      expect(content).toContain("other-vm");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
-  test("macOS DHCP lease parser finds vfkit NAT IP by MAC", () => {
-    const repo = makeInstanceRepo();
-    const leases = join(repo, "leases");
-    try {
-      writeFileSync(leases, [
-        "name=firewall-vm",
-        "ip_address=192.168.64.8",
-        "hw_address=ff,not-the-mac",
-        "lease=0x1",
-        "",
-        "name=firewall",
-        "ip_address=192.168.64.9",
-        "hw_address=1,52:54:00:aa:bb:cc",
-        "",
-        "name=firewall-vm",
-        "ip_address=192.168.64.10",
-        "hw_address=ff,still-not-the-mac",
-        "lease=0x2",
-        "",
-      ].join("\n"), "utf8");
-      expect(lookupDhcpLease("52:54:00:aa:bb:cc", leases)).toBe("192.168.64.9");
-      expect(lookupDhcpLease("52:54:00:00:00:00", leases, "firewall-vm")).toBe("192.168.64.10");
-      expect(lookupDhcpLease("52:54:00:00:00:00", leases)).toBeNull();
-    } finally {
-      rmSync(repo, { recursive: true, force: true });
-    }
+  test("Lima state parser validates running state shape", () => {
+    const state = parseLimaVmState({
+      provider: "lima",
+      name: "firewall-dev",
+      role: "firewall",
+      privateInterface: "enp0s1",
+      egressInterface: "enp0s2",
+      privateIp: "192.168.109.10",
+      networkName: "rootcell-123456abcdef",
+      hasEgress: true,
+      limaInstance: "firewall-dev",
+      yamlPath: "/vm/lima.yaml",
+      sshLocalPort: 60022,
+    });
+    expect(state).toEqual(expect.schemaMatching(z.object({
+      provider: z.literal("lima"),
+      name: z.literal("firewall-dev"),
+      role: z.literal("firewall"),
+      privateInterface: z.literal("enp0s1"),
+      egressInterface: z.literal("enp0s2"),
+      privateIp: z.literal("192.168.109.10"),
+      networkName: z.literal("rootcell-123456abcdef"),
+      hasEgress: z.literal(true),
+      limaInstance: z.literal("firewall-dev"),
+      yamlPath: z.literal("/vm/lima.yaml"),
+      sshLocalPort: z.literal(60022),
+    }).strict()));
+    expect(state.sshLocalPort).toBe(60022);
+    expect(() => parseLimaVmState({ provider: "unknown" })).toThrow("provider mismatch");
   });
 
   test("formats VM state list", () => {
@@ -585,6 +649,11 @@ describe("instance state", () => {
     expect(deriveVmNames("dev")).toEqual({ agentVm: "agent-dev", firewallVm: "firewall-dev" });
   });
 
+  test("defaults instance state to cwd instances directory", () => {
+    expect(instancePaths("/repo", "default", {}).dir).toBe("/repo/instances/default");
+    expect(instancePaths("/repo", "dev", {}).dir).toBe("/repo/instances/dev");
+  });
+
   test("allocates stable unique /24 networks", () => {
     const repo = makeInstanceRepo();
     try {
@@ -601,27 +670,27 @@ describe("instance state", () => {
       expect(devInstance).toEqual(expect.schemaMatching(RootcellInstanceSchema));
 
       expect(defaultInstance.state.subnet).toBe("192.168.100.0");
-      expect(defaultInstance.state.firewallIp).toBe("192.168.100.2");
+      expect(defaultInstance.state.firewallIp).toBe("192.168.100.10");
       expect(devInstance.state.subnet).toBe("192.168.101.0");
-      expect(devInstance.state.agentIp).toBe("192.168.101.3");
+      expect(devInstance.state.agentIp).toBe("192.168.101.11");
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }
   });
 
-  test("honors explicit first-run .2/.3 subnet pins", () => {
+  test("honors explicit first-run .10/.11 subnet pins", () => {
     const repo = makeInstanceRepo();
     try {
       const env = {
         ...instanceEnv(repo),
-        FIREWALL_IP: "192.168.109.2",
-        AGENT_IP: "192.168.109.3",
+        FIREWALL_IP: "192.168.109.10",
+        AGENT_IP: "192.168.109.11",
         NETWORK_PREFIX: "24",
       };
       seedRootcellInstanceFiles(repo, "dev", ignoreLog, env);
       const instance = loadRootcellInstance(repo, "dev", env);
       expect(instance.state.subnet).toBe("192.168.109.0");
-      expect(instance.state.firewallIp).toBe("192.168.109.2");
+      expect(instance.state.firewallIp).toBe("192.168.109.10");
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }
@@ -641,7 +710,7 @@ describe("instance state", () => {
     }
   });
 
-  test("lists only instances with vfkit VM state", () => {
+  test("lists only instances with Lima VM state", () => {
     const repo = makeInstanceRepo();
     try {
       const env = instanceEnv(repo);
@@ -714,6 +783,10 @@ function stripTrailingBlankLine(text: string): string {
   return text.endsWith("\n\n") ? text.slice(0, -1) : text;
 }
 
+function removedRuntimeNames(): readonly string[] {
+  return [["vf", "kit"].join(""), ["socket", "_vmnet"].join("")];
+}
+
 function fakeInstance(name: string, repo = "/repo", env: NodeJS.ProcessEnv = {}): RootcellInstance {
   const paths = instancePaths(repo, name, env);
   return {
@@ -729,8 +802,8 @@ function fakeInstance(name: string, repo = "/repo", env: NodeJS.ProcessEnv = {})
       schemaVersion: 1,
       subnet: "192.168.109.0",
       networkPrefix: 24,
-      firewallIp: "192.168.109.2",
-      agentIp: "192.168.109.3",
+      firewallIp: "192.168.109.10",
+      agentIp: "192.168.109.11",
     },
   };
 }
@@ -755,8 +828,8 @@ function stateJson(name: string, prefix: string): string {
     schemaVersion: 1,
     subnet: `${prefix}.0`,
     networkPrefix: 24,
-    firewallIp: `${prefix}.2`,
-    agentIp: `${prefix}.3`,
+    firewallIp: `${prefix}.10`,
+    agentIp: `${prefix}.11`,
   }, null, 2)}\n`;
 }
 

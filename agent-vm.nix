@@ -7,10 +7,7 @@
 
 let
   net = import ./network.nix;
-  privateMatch =
-    if net ? agentPrivateMac
-    then { MACAddress = net.agentPrivateMac; }
-    else { Name = net.agentPrivateInterface; };
+  privateMatch = { Name = net.agentPrivateInterface; };
 in
 {
   imports = [ ./common.nix ];
@@ -21,15 +18,15 @@ in
   # anyway. All meaningful filtering happens in the firewall VM.
   networking.firewall.enable = false;
 
-  # Networking: only the per-instance private vfkit link is configured, so
+  # Networking: only the per-instance private Lima user-v2 link is configured, so
   # there is no direct host control path a root-capable agent could reconfigure
   # into egress.
   networking.useDHCP = false;
   networking.useNetworkd = true;
   systemd.network.enable = true;
   systemd.network.wait-online.enable = false;
-  # Cloud-init performs a MAC-matched bootstrap before provisioning, then this
-  # NixOS config owns the steady-state interface.
+  # Lima init performs a named-interface bootstrap before provisioning, then
+  # this NixOS config owns the steady-state interface.
   systemd.network.networks."10-enp0s1" = {
     matchConfig = privateMatch;
     networkConfig = {

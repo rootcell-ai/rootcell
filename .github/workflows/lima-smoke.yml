@@ -1,4 +1,4 @@
-name: vfkit Smoke Test
+name: Lima Smoke Test
 
 on:
   workflow_dispatch:
@@ -7,16 +7,16 @@ permissions:
   contents: read
 
 concurrency:
-  group: vfkit-smoke-${{ github.ref }}
+  group: lima-smoke-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  vfkit-smoke:
-    name: vfkit smoke
+  lima-smoke:
+    name: Lima smoke
     runs-on: blacksmith-6vcpu-macos-latest
     timeout-minutes: 60
     env:
-      ROOTCELL_INTEGRATION_PROVIDER: macos-vfkit
+      ROOTCELL_INTEGRATION_PROVIDER: macos-lima-user-v2
 
     steps:
       - name: Check out repository
@@ -44,15 +44,15 @@ jobs:
         timeout-minutes: 15
         run: nix shell .#hostTools --command bun install --frozen-lockfile
 
-      - name: Clean stale vfkit smoke state
+      - name: Clean stale Lima smoke state
         timeout-minutes: 5
         run: nix shell .#hostTools --command bun run test:integration:teardown
 
-      - name: Run vfkit smoke test
+      - name: Run Lima smoke test
         timeout-minutes: 45
-        run: nix shell .#hostTools --command bun run test:integration:vfkit-smoke
+        run: nix shell .#hostTools --command bun run test:integration:lima-smoke
 
-      - name: Teardown vfkit smoke state
+      - name: Teardown Lima smoke state
         if: always()
         timeout-minutes: 5
         run: nix shell .#hostTools --command bun run test:integration:teardown

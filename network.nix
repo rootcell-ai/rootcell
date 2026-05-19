@@ -16,22 +16,21 @@ let
     # IP of the firewall VM on the private inter-VM network. The agent VM uses
     # this as its default route, DNS server, and SSH proxy.
     #
-    # Keep .1 free for host-side or control-plane addresses if the private link
-    # implementation changes later.
-    firewallIp = "192.168.100.2";
+    # Lima user-v2 reserves low addresses for gateway/DNS. Keep rootcell guests
+    # away from that range.
+    firewallIp = "192.168.100.10";
 
     # IP of the agent VM on the same private network.
-    agentIp = "192.168.100.3";
+    agentIp = "192.168.100.11";
 
     # Subnet prefix length for the inter-VM network.
     networkPrefix = 24;
 
-    # Fallback interface names used when rootcell has not generated
-    # per-instance MAC-address metadata.
+    # Stock Lima/VZ presents the user-v2 NIC first, before the NAT NIC.
     agentPrivateInterface = "enp0s1";
-    firewallPrivateInterface = "enp0s2";
-    firewallEgressInterface = "enp0s1";
-    firewallControlInterface = "enp0s1";
+    firewallPrivateInterface = "enp0s1";
+    firewallEgressInterface = "enp0s2";
+    firewallControlInterface = "enp0s2";
   };
 
   override =

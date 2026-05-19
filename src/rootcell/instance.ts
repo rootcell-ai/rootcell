@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import {
   chmodSync,
   copyFileSync,
@@ -9,8 +8,7 @@ import {
   readdirSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { parseSchema } from "./schema.ts";
 import {
   InstanceStateSchema,
@@ -170,32 +168,15 @@ function pathsFromDir(name: string, dir: string): InstancePaths {
 
 export function rootcellRuntimeDir(repoDir: string, instanceName: string, env: NodeJS.ProcessEnv = process.env): string {
   const name = validateInstanceName(instanceName);
-  return join(rootcellInstancesRoot(repoDir, env), instanceRuntimeKey(name));
+  return join(rootcellInstancesRoot(repoDir, env), name);
 }
 
 export function rootcellInstancesRoot(repoDir: string, env: NodeJS.ProcessEnv = process.env): string {
-  const root = configuredStateRoot(env);
-  return join(root, "i", repoRuntimeKey(repoDir));
-}
-
-function repoRuntimeKey(repoDir: string): string {
-  return createHash("sha256").update(resolve(repoDir)).digest("hex").slice(0, 16);
-}
-
-function instanceRuntimeKey(instanceName: string): string {
-  return createHash("sha256").update(validateInstanceName(instanceName)).digest("hex").slice(0, 16);
-}
-
-function configuredStateRoot(env: NodeJS.ProcessEnv): string {
   const configured = env.ROOTCELL_STATE_DIR;
   if (configured !== undefined && configured.length > 0) {
     return configured;
   }
-  const home = env.HOME !== undefined && env.HOME.length > 0 ? env.HOME : homedir();
-  if (home.length > 0) {
-    return join(home, ".rootcell");
-  }
-  throw new Error("rootcell needs HOME or ROOTCELL_STATE_DIR to choose a persistent state directory");
+  return join(repoDir, "instances");
 }
 
 function ensureInstanceState(repoDir: string, paths: InstancePaths, env: NodeJS.ProcessEnv): InstanceState {
@@ -320,7 +301,7 @@ function allocateState(env: NodeJS.ProcessEnv, used: ReadonlySet<string>): Insta
       continue;
     }
     const prefix = subnet.slice(0, subnet.lastIndexOf("."));
-    return baseState(subnet, `${prefix}.2`, `${prefix}.3`);
+    return baseState(subnet, `${prefix}.10`, `${prefix}.11`);
   }
   throw new Error(`rootcell subnet pool is exhausted (${formatIpv4(start)}/24 through ${formatIpv4(end)}/24)`);
 }
@@ -377,8 +358,8 @@ function validateSubnetAndHosts(subnet: string, firewallIp: string, agentIp: str
   if (subnet24(firewallInt) !== subnetInt || subnet24(agentInt) !== subnetInt) {
     throw new Error(`invalid rootcell subnet for ${name}: firewall and agent IPs must be inside ${subnet}/24`);
   }
-  if ((firewallInt & 0xff) !== 2 || (agentInt & 0xff) !== 3) {
-    throw new Error(`invalid rootcell subnet for ${name}: firewall must use .2 and agent must use .3`);
+  if ((firewallInt & 0xff) !== 10 || (agentInt & 0xff) !== 11) {
+    throw new Error(`invalid rootcell subnet for ${name}: firewall must use .10 and agent must use .11`);
   }
 }
 

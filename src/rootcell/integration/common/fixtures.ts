@@ -7,8 +7,8 @@ export const LIFECYCLE_INSTANCE = "lifecycle-test";
 export const CLI_SMOKE_INSTANCE_PREFIX = "cli-smoke-";
 export const AGENT_VM_NAME = "agent-test";
 export const FIREWALL_VM_NAME = "firewall-test";
-export const FIREWALL_IP = "192.168.109.2";
-export const AGENT_IP = "192.168.109.3";
+export const FIREWALL_IP = "192.168.109.10";
+export const AGENT_IP = "192.168.109.11";
 export const NETWORK_PREFIX = "24";
 
 export const defaultSpyOptions = {
