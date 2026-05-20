@@ -342,7 +342,6 @@ proxy/                   allowlists and mitmproxy/dnsmasq firewall code
   agent_spy.py           Bedrock Runtime formatter for `./rootcell spy`
   agent_spy_tui.py       Textual browser for `./rootcell spy --tui`
 pi/agent/                global pi instructions, skills, and extensions
-completions/             bash and zsh completion for `rootcell`
 ```
 
 ## VM Lifecycle
@@ -426,11 +425,9 @@ Do not put provider keys in `home.nix`; the Nix store is world-readable.
 
 ### Shell Completions
 
-`rootcell completion` prints the yargs-generated completion script. The checked-in
-files under `completions/` are generated from that command; refresh them with
-`bun run completions` after changing commands or options. The generated scripts
-register `rootcell`, so put `rootcell` on `PATH` before sourcing or installing
-them.
+`rootcell completion` prints the yargs-generated completion script. Generate it
+from the installed `rootcell` command so completions stay in sync with the
+version on `PATH`.
 
 For zsh, after `compinit`:
 
