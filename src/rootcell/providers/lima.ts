@@ -149,19 +149,18 @@ export class LimaVmProvider implements VmProvider<LimaUserV2NetworkAttachment> {
     const status = await this.status(input.name);
     switch (status.state) {
       case "running":
-        this.refreshVmState(input);
-        await this.waitForLimaSsh(input.name);
+        await this.waitForLimaSsh(input);
         return { created: false };
       case "stopped":
         this.log(`starting ${input.name} Lima VM...`);
         this.startVm(input);
-        await this.waitForLimaSsh(input.name);
+        await this.waitForLimaSsh(input);
         return { created: false };
       case "missing":
         this.log(`${input.name} Lima VM not found; creating from nixos-lima image...`);
         this.createVm(input);
+        await this.waitForLimaSsh(input);
         await this.forgetSshHostKey(input.name);
-        await this.waitForLimaSsh(input.name);
         return { created: true };
       case "unexpected":
         throw new Error(`${input.name} VM in unexpected state: ${status.detail}`);
@@ -293,12 +292,13 @@ export class LimaVmProvider implements VmProvider<LimaUserV2NetworkAttachment> {
   }
 
   private bootstrapSshPort(name: string): number {
-    return this.readVmState(name)?.sshLocalPort ?? this.sshLocalPort(name);
+    const port = this.sshLocalPort(name);
+    this.updateVmSshLocalPort(name, port);
+    return port;
   }
 
   private startVm(input: { readonly role: VmRole; readonly name: string; readonly network: LimaUserV2NetworkAttachment }): void {
     runInherited(this.ensureLimactl(), ["--tty=false", "start", input.name]);
-    this.refreshVmState(input);
   }
 
   private refreshVmState(
@@ -344,25 +344,35 @@ export class LimaVmProvider implements VmProvider<LimaUserV2NetworkAttachment> {
     return path;
   }
 
-  private async waitForLimaSsh(name: string): Promise<void> {
+  private async waitForLimaSsh(input: {
+    readonly role: VmRole;
+    readonly name: string;
+    readonly network: LimaUserV2NetworkAttachment;
+  }): Promise<void> {
     let lastError = "";
     for (let attempt = 0; attempt < 300; attempt += 1) {
-      const result = await this.execBootstrapCapture(name, ["true"], {
-        allowFailure: true,
-      });
-      if (result.status === 0) {
+      let result: CommandResult | null = null;
+      try {
+        result = await this.execBootstrapCapture(input.name, ["true"], {
+          allowFailure: true,
+        });
+      } catch (error) {
+        lastError = messageFromUnknown(error);
+      }
+      if (result?.status === 0) {
+        this.refreshVmState(input);
         return;
       }
-      const message = `${result.stderr}${result.stdout}`.trim();
+      const message = result === null ? lastError : `${result.stderr}${result.stdout}`.trim();
       if (message.length > 0) {
         lastError = message;
       }
       if (/Operation not permitted/i.test(message)) {
-        throw new Error(`host cannot connect to Lima SSH endpoint for ${name}: ${message}`);
+        throw new Error(`host cannot connect to Lima SSH endpoint for ${input.name}: ${message}`);
       }
       await sleep(500);
     }
-    throw new Error(`timeout waiting for SSH transport to ${name}${lastError.length === 0 ? "" : `: ${lastError}`}`);
+    throw new Error(`timeout waiting for SSH transport to ${input.name}${lastError.length === 0 ? "" : `: ${lastError}`}`);
   }
 
   private async waitForFinalSsh(name: string): Promise<void> {
@@ -407,7 +417,7 @@ export class LimaVmProvider implements VmProvider<LimaUserV2NetworkAttachment> {
   }
 
   private transportEndpoints(): ProxyJumpSshEndpoints {
-    const firewall = this.readVmState(this.config.firewallVm);
+    const firewall = this.refreshVmSshLocalPort(this.config.firewallVm) ?? this.readVmState(this.config.firewallVm);
     if (firewall?.sshLocalPort === undefined) {
       throw new Error("firewall Lima SSH local port is not known yet");
     }
@@ -480,6 +490,24 @@ export class LimaVmProvider implements VmProvider<LimaUserV2NetworkAttachment> {
 
   private writeVmState(name: string, state: LimaVmState): void {
     writeFileSync(this.statePath(name), `${JSON.stringify(state, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  }
+
+  private refreshVmSshLocalPort(name: string): LimaVmState | null {
+    const port = this.sshLocalPort(name);
+    return this.updateVmSshLocalPort(name, port);
+  }
+
+  private updateVmSshLocalPort(name: string, port: number): LimaVmState | null {
+    const state = this.readVmState(name);
+    if (state === null) {
+      return null;
+    }
+    if (state.sshLocalPort === port) {
+      return state;
+    }
+    const updated = { ...state, sshLocalPort: port };
+    this.writeVmState(name, updated);
+    return updated;
   }
 
   private vmDir(name: string): string {
@@ -663,6 +691,10 @@ function shellQuote(value: string): string {
     return value;
   }
   return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function messageFromUnknown(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function sleep(milliseconds: number): Promise<void> {

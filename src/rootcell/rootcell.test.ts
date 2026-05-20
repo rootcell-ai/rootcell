@@ -14,7 +14,7 @@ import {
   limaUserV2ReservedIps,
   MacOsLimaUserV2NetworkProvider,
 } from "./providers/macos-lima-user-v2-network.ts";
-import { directSshConfig, limaYaml, NIXOS_LIMA_AARCH64_IMAGE, parseLimaVmState, userV2ProofScript } from "./providers/lima.ts";
+import { directSshConfig, LimaVmProvider, limaYaml, NIXOS_LIMA_AARCH64_IMAGE, parseLimaVmState, userV2ProofScript } from "./providers/lima.ts";
 import {
   ImageStore,
   imageDownloadUrl,
@@ -26,7 +26,7 @@ import {
 } from "./images.ts";
 import { forgetKnownHost, sshConfig } from "./transports/proxyjump-ssh.ts";
 import { dnsmasqAllowlistConfig, generatedLineCount } from "../bin/reload.ts";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -735,6 +735,82 @@ describe("VM and network providers", () => {
     }).strict()));
     expect(state.sshLocalPort).toBe(60022);
     expect(() => parseLimaVmState({ provider: "unknown" })).toThrow("provider mismatch");
+  });
+
+  test("Lima transport refreshes stale firewall SSH local ports", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rootcell-lima-port-test-"));
+    const oldPath = process.env.PATH;
+    const oldLimactl = process.env.ROOTCELL_LIMACTL;
+    try {
+      const bin = join(dir, "bin");
+      mkdirSync(bin, { recursive: true });
+      const limactl = join(bin, "limactl");
+      writeFileSync(limactl, [
+        "#!/bin/sh",
+        "if [ \"$1\" = \"list\" ] && [ \"$2\" = \"--format\" ] && [ \"$3\" = \"{{.SSHLocalPort}}\" ]; then",
+        "  printf '61000\\n'",
+        "  exit 0",
+        "fi",
+        "echo unexpected limactl \"$@\" >&2",
+        "exit 1",
+        "",
+      ].join("\n"), "utf8");
+      chmodSync(limactl, 0o755);
+      const ssh = join(bin, "ssh");
+      writeFileSync(ssh, [
+        "#!/bin/sh",
+        "config=",
+        "while [ \"$#\" -gt 0 ]; do",
+        "  if [ \"$1\" = \"-F\" ]; then",
+        "    config=$2",
+        "    shift 2",
+        "    continue",
+        "  fi",
+        "  shift",
+        "done",
+        "if grep -q 'Port 61000' \"$config\"; then",
+        "  exit 0",
+        "fi",
+        "echo stale SSH port >&2",
+        "exit 255",
+        "",
+      ].join("\n"), "utf8");
+      chmodSync(ssh, 0o755);
+
+      process.env.ROOTCELL_LIMACTL = limactl;
+      process.env.PATH = `${bin}:${oldPath ?? ""}`;
+      const config = buildConfig(dir, {}, fakeInstance("dev", dir));
+      const stateDir = join(config.instanceDir, "v", "f");
+      mkdirSync(stateDir, { recursive: true });
+      const statePath = join(stateDir, "state.json");
+      writeFileSync(statePath, `${JSON.stringify({
+        provider: "lima",
+        name: config.firewallVm,
+        role: "firewall",
+        limaInstance: config.firewallVm,
+        yamlPath: join(stateDir, "lima.yaml"),
+        privateInterface: "enp0s1",
+        egressInterface: "enp0s2",
+        privateIp: config.firewallIp,
+        networkName: limaUserV2NetworkName(config),
+        hasEgress: true,
+        sshLocalPort: 60000,
+      }, null, 2)}\n`, "utf8");
+
+      const provider = new LimaVmProvider(config, ignoreLog);
+      const result = await provider.execCapture(config.firewallVm, ["true"], { allowFailure: true });
+
+      expect(result.status).toBe(0);
+      expect(parseLimaVmState(JSON.parse(readFileSync(statePath, "utf8"))).sshLocalPort).toBe(61000);
+    } finally {
+      process.env.PATH = oldPath;
+      if (oldLimactl === undefined) {
+        delete process.env.ROOTCELL_LIMACTL;
+      } else {
+        process.env.ROOTCELL_LIMACTL = oldLimactl;
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("formats VM state list", () => {
