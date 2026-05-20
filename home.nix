@@ -5,8 +5,8 @@
 #
 # Pi reads provider keys from the env. DON'T put them in this file — the
 # Nix store is world-readable. Configure secret entries in secrets.env; `rootcell`
-# reads those macOS Keychain secrets on the host and exports them on
-# guest sessions.
+# reads those provider-backed secrets on the host and exports them on guest
+# sessions.
 
 let
   net = import ./network.nix;

@@ -33,10 +33,12 @@ import {
   ParsedRootcellRunArgsSchema,
   RootcellConfigSchema,
   RootcellInstanceSchema,
-  SecretMappingSchema,
   type ParsedRootcellRunArgs,
   type RootcellInstance,
 } from "./types.ts";
+import { MacOsKeychainSecretProvider } from "./secrets/macos-keychain.ts";
+import { StaticSecretProviderRegistry } from "./secrets/registry.ts";
+import { SecretEnvMappingSchema } from "./secrets/types.ts";
 
 const EmptyStringArraySchema = z.array(z.string()).length(0);
 const DefaultSpyOptionsSchema = z.object({
@@ -207,14 +209,37 @@ describe("environment parsing", () => {
   });
 
   test("validates secret mappings", () => {
-    const mappings = parseSecretMappings("AWS_BEARER_TOKEN_BEDROCK=aws-bedrock-api-key\n");
-    expect(mappings).toEqual(expect.schemaMatching(z.array(SecretMappingSchema)));
+    const mappings = parseSecretMappings([
+      "AWS_BEARER_TOKEN_BEDROCK=macos-keychain:aws-bedrock-api-key",
+      "AWS_SECRET_ACCESS_KEY=aws-prod:arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/key",
+      "ONEPASSWORD_TOKEN=1password:op://Private/token/password",
+      "",
+    ].join("\n"));
+    expect(mappings).toEqual(expect.schemaMatching(z.array(SecretEnvMappingSchema)));
     expect(mappings).toEqual([
-      { envName: "AWS_BEARER_TOKEN_BEDROCK", service: "aws-bedrock-api-key" },
+      {
+        envName: "AWS_BEARER_TOKEN_BEDROCK",
+        secret: { providerId: "macos-keychain", reference: "aws-bedrock-api-key" },
+      },
+      {
+        envName: "AWS_SECRET_ACCESS_KEY",
+        secret: {
+          providerId: "aws-prod",
+          reference: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/key",
+        },
+      },
+      {
+        envName: "ONEPASSWORD_TOKEN",
+        secret: { providerId: "1password", reference: "op://Private/token/password" },
+      },
     ]);
-    expect(() => parseSecretMappings("1BAD=service\n")).toThrow("invalid secret environment variable name");
+    expect(() => parseSecretMappings("1BAD=macos-keychain:service\n")).toThrow("invalid secret environment variable name");
     expect(() => parseSecretMappings("BAD\n")).toThrow("invalid secret entry");
-    expect(() => parseSecretMappings("BAD=\n")).toThrow("empty Keychain service name");
+    expect(() => parseSecretMappings("BAD=\n")).toThrow("empty secret reference");
+    expect(() => parseSecretMappings("BAD=service\n")).toThrow("must include a provider id");
+    expect(() => parseSecretMappings("BAD=:service\n")).toThrow("empty secret provider id");
+    expect(() => parseSecretMappings("BAD=bad/id:service\n")).toThrow("invalid secret provider id");
+    expect(() => parseSecretMappings("BAD=macos-keychain:\n")).toThrow("empty secret reference");
   });
 
   test("builds config from instance state", () => {
@@ -277,11 +302,96 @@ describe("host tool resolution", () => {
   });
 });
 
+describe("secret providers", () => {
+  test("registry routes provider-qualified references", async () => {
+    const calls: string[] = [];
+    const registry = new StaticSecretProviderRegistry([
+      {
+        id: "macos-keychain",
+        read: (reference) => {
+          calls.push(`macos-keychain:${reference}`);
+          return Promise.resolve(`mac:${reference}`);
+        },
+      },
+      {
+        id: "aws-prod",
+        read: (reference) => {
+          calls.push(`aws-prod:${reference}`);
+          return Promise.resolve(`prod:${reference}`);
+        },
+      },
+      {
+        id: "aws-dev",
+        read: (reference) => {
+          calls.push(`aws-dev:${reference}`);
+          return Promise.resolve(`dev:${reference}`);
+        },
+      },
+    ]);
+
+    await expect(registry.read({ providerId: "macos-keychain", reference: "service" })).resolves.toBe("mac:service");
+    await expect(registry.read({ providerId: "aws-prod", reference: "secret/name" })).resolves.toBe("prod:secret/name");
+    await expect(registry.read({ providerId: "aws-dev", reference: "secret/name" })).resolves.toBe("dev:secret/name");
+    expect(calls).toEqual([
+      "macos-keychain:service",
+      "aws-prod:secret/name",
+      "aws-dev:secret/name",
+    ]);
+  });
+
+  test("registry rejects unknown or duplicate secret providers", async () => {
+    const registry = new StaticSecretProviderRegistry([
+      { id: "macos-keychain", read: () => Promise.resolve("secret") },
+    ]);
+
+    await expect(registry.read({ providerId: "missing", reference: "do-not-print" })).rejects.toThrow("unknown secret provider 'missing'");
+    try {
+      await registry.read({ providerId: "missing", reference: "do-not-print" });
+      throw new Error("expected secret lookup to fail");
+    } catch (error) {
+      expect(error instanceof Error ? error.message : String(error)).not.toContain("do-not-print");
+    }
+    expect(() => new StaticSecretProviderRegistry([
+      { id: "aws-prod", read: () => Promise.resolve("one") },
+      { id: "aws-prod", read: () => Promise.resolve("two") },
+    ])).toThrow("duplicate secret provider id");
+  });
+
+  test("macOS Keychain provider reads generic passwords", async () => {
+    const calls: { command: string; args: readonly string[]; allowFailure: boolean | undefined }[] = [];
+    const provider = new MacOsKeychainSecretProvider("macos-keychain", (command, args, options) => {
+      calls.push({ command, args, allowFailure: options?.allowFailure });
+      return { status: 0, stdout: "secret-value\n", stderr: "" };
+    });
+
+    await expect(provider.read("aws-bedrock-api-key")).resolves.toBe("secret-value");
+    expect(calls).toEqual([
+      {
+        command: "security",
+        args: ["find-generic-password", "-s", "aws-bedrock-api-key", "-w"],
+        allowFailure: true,
+      },
+    ]);
+  });
+
+  test("macOS Keychain provider reports missing secrets with add guidance", async () => {
+    const provider = new MacOsKeychainSecretProvider("macos-keychain", () => ({
+      status: 44,
+      stdout: "",
+      stderr: "not found",
+    }));
+
+    await expect(provider.read("anthropic-api-key")).rejects.toThrow("macOS Keychain secret not found");
+    await expect(provider.read("anthropic-api-key")).rejects.toThrow("security add-generic-password");
+  });
+});
+
 describe("VM and network providers", () => {
   test("factory defaults to Lima providers", () => {
     const providers = createProviderBundle(buildConfig("/repo", {}, fakeInstance("dev")), ignoreLog);
     expect(providers.network.id).toBe("macos-lima-user-v2");
     expect(providers.vm.id).toBe("lima");
+    expect(providers.secrets.ids).toEqual(["macos-keychain"]);
   });
 
   test("macOS Lima user-v2 provider exposes egress firewall and private-only agent attachments", () => {
@@ -864,7 +974,7 @@ function makeInstanceRepo(): string {
   const repo = mkdtempSync(join(tmpdir(), "rootcell-instance-test-"));
   mkdirSync(join(repo, "proxy"), { recursive: true });
   writeFileSync(join(repo, ".env.defaults"), "AWS_REGION=us-east-1\n", "utf8");
-  writeFileSync(join(repo, "secrets.env.defaults"), "AWS_BEARER_TOKEN_BEDROCK=aws-bedrock-api-key\n", "utf8");
+  writeFileSync(join(repo, "secrets.env.defaults"), "AWS_BEARER_TOKEN_BEDROCK=macos-keychain:aws-bedrock-api-key\n", "utf8");
   for (const file of ["allowed-https.txt", "allowed-ssh.txt", "allowed-dns.txt"]) {
     writeFileSync(join(repo, "proxy", `${file}.defaults`), "\n", "utf8");
   }

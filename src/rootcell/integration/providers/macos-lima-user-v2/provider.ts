@@ -18,6 +18,8 @@ import {
 } from "../../../providers/macos-lima-user-v2-network.ts";
 import type { ProviderBundle } from "../../../providers/types.ts";
 import { preflightMacOsLimaUserV2Integration } from "./preflight.ts";
+import { MacOsKeychainSecretProvider } from "../../../secrets/macos-keychain.ts";
+import { StaticSecretProviderRegistry } from "../../../secrets/registry.ts";
 
 const JsonObjectSchema = z.record(z.string(), z.unknown());
 
@@ -39,6 +41,9 @@ export function createBundle(
   return {
     network: new MacOsLimaUserV2NetworkProvider(config, log),
     vm: new LimaVmProvider(config, log),
+    secrets: new StaticSecretProviderRegistry([
+      new MacOsKeychainSecretProvider(),
+    ]),
   };
 }
 
