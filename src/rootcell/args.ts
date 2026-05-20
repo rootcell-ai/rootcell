@@ -28,6 +28,10 @@ interface SpyArgs extends GlobalArgs {
   readonly tui?: boolean;
 }
 
+interface EditArgs extends GlobalArgs {
+  readonly allowlist?: string;
+}
+
 type ParserArgv<T> = Argv<T>;
 
 function subcommandDescription(name: RootcellSubcommand): string {
@@ -137,6 +141,18 @@ function createParser(args: readonly string[]): Argv<GuestArgs & SpyArgs> {
     .command(...rootcellSubcommand("stop"))
     .command(...rootcellSubcommand("remove"))
     .command(
+      "edit <allowlist>",
+      subcommandDescription("edit"),
+      (argv: ParserArgv<EditArgs>) => argv
+        .positional("allowlist", {
+          choices: ["http", "https", "dns", "ssh"],
+          describe: "allowlist to edit",
+          type: "string",
+        })
+        .demandCommand(0, 0)
+        .strictOptions(),
+    )
+    .command(
       "spy",
       subcommandDescription("spy"),
       (argv: ParserArgv<SpyArgs>) => argv
@@ -171,6 +187,8 @@ function createParser(args: readonly string[]): Argv<GuestArgs & SpyArgs> {
     .example("$0", "open an interactive shell inside the agent VM")
     .example("$0 pi", "run pi inside the agent VM")
     .example("$0 -- nix flake update", "run any command inside the agent VM")
+    .example("$0 edit http", "edit the HTTPS allowlist for the default instance")
+    .example("$0 --instance dev edit dns", "edit the DNS allowlist for the dev instance")
     .example("$0 --instance dev allow", "reload allowlists for the dev instance")
     .example("$0 list", "list rootcell VMs and their current state")
     .example("$0 stop --instance dev", "stop the dev instance VMs")
@@ -195,11 +213,12 @@ export function parseRootcellArgs(args: readonly string[]): ParsedRootcellArgs {
 
   const subcommand = parsedSubcommand(argv);
   if (subcommand !== undefined) {
+    const rest = subcommand === "edit" ? [argString((argv as ArgumentsCamelCase<EditArgs>).allowlist)] : [];
     return parseSchema(ParsedRootcellRunArgsSchema, {
       kind: "run",
       instanceName: instanceName(argv),
       subcommand,
-      rest: [],
+      rest,
       spyOptions: subcommand === "spy"
         ? parseSchema(SpyOptionsSchema, {
           raw: argv.raw ?? false,

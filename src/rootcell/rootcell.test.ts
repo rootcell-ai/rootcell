@@ -4,7 +4,7 @@ import { parseRootcellArgs } from "./args.ts";
 import { ROOTCELL_SUBCOMMANDS } from "./metadata.ts";
 import { loadDotEnv, parseSecretMappings } from "./env.ts";
 import { resolveHostTool } from "./host-tools.ts";
-import { buildConfig, formatVmList } from "./rootcell.ts";
+import { buildConfig, formatVmList, rootcellMain } from "./rootcell.ts";
 import { deriveVmNames, instancePaths, listRootcellVmInstanceNames, loadRootcellInstance, seedRootcellInstanceFiles } from "./instance.ts";
 import { runCapture } from "./process.ts";
 import { createProviderBundle } from "./providers/factory.ts";
@@ -103,6 +103,41 @@ describe("rootcell argument parsing", () => {
       rest: [],
       spyOptions: { raw: false, dedupe: true, tui: false },
     });
+  });
+
+  test("parses edit allowlist subcommands", () => {
+    const http = runArgs(["edit", "http"]);
+    expectRunArgs(http);
+    expect(http).toEqual({
+      kind: "run",
+      instanceName: "default",
+      subcommand: "edit",
+      rest: ["http"],
+      spyOptions: { raw: false, dedupe: true, tui: false },
+    });
+
+    const dns = runArgs(["--instance", "dev", "edit", "dns"]);
+    expectRunArgs(dns);
+    expect(dns).toEqual({
+      kind: "run",
+      instanceName: "dev",
+      subcommand: "edit",
+      rest: ["dns"],
+      spyOptions: { raw: false, dedupe: true, tui: false },
+    });
+
+    const ssh = runArgs(["edit", "ssh", "-i", "dev"]);
+    expectRunArgs(ssh);
+    expect(ssh).toEqual({
+      kind: "run",
+      instanceName: "dev",
+      subcommand: "edit",
+      rest: ["ssh"],
+      spyOptions: { raw: false, dedupe: true, tui: false },
+    });
+
+    expect(() => parseRootcellArgs(["edit"])).toThrow();
+    expect(() => parseRootcellArgs(["edit", "smtp"])).toThrow();
   });
 
   test("parses pass-through guest commands", () => {
@@ -1117,6 +1152,40 @@ describe("instance state", () => {
   });
 });
 
+describe("rootcell edit command", () => {
+  test("opens the selected instance allowlist in EDITOR", async () => {
+    const repo = makeInstanceRepo();
+    const oldRootcellStateDir = process.env.ROOTCELL_STATE_DIR;
+    const oldEditor = process.env.EDITOR;
+    const oldRecord = process.env.ROOTCELL_EDITOR_RECORD;
+    try {
+      mkdirSync(join(repo, "completions"), { recursive: true });
+      mkdirSync(join(repo, "src", "bin"), { recursive: true });
+      writeFileSync(join(repo, "flake.nix"), "{}\n", "utf8");
+
+      const editor = join(repo, "editor.sh");
+      const record = join(repo, "opened.txt");
+      writeFileSync(editor, "#!/bin/sh\nprintf '%s\\n' \"$1\" > \"$ROOTCELL_EDITOR_RECORD\"\n", "utf8");
+      chmodSync(editor, 0o700);
+
+      process.env.ROOTCELL_STATE_DIR = join(repo, ".state");
+      process.env.EDITOR = editor;
+      process.env.ROOTCELL_EDITOR_RECORD = record;
+
+      const status = await rootcellMain(["--instance", "dev", "edit", "dns"], join(repo, "src", "bin", "rootcell.ts"));
+
+      expect(status).toBe(0);
+      expect(readFileSync(record, "utf8").trim()).toBe(join(repo, ".state", "dev", "proxy", "allowed-dns.txt"));
+      expect(readFileSync(join(repo, ".state", "dev", "proxy", "allowed-dns.txt"), "utf8")).toBe("\n");
+    } finally {
+      restoreEnv("ROOTCELL_STATE_DIR", oldRootcellStateDir);
+      restoreEnv("EDITOR", oldEditor);
+      restoreEnv("ROOTCELL_EDITOR_RECORD", oldRecord);
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("reload helper", () => {
   test("generates dnsmasq server entries from non-comment lines", () => {
     const config = dnsmasqAllowlistConfig("# comment\n\nexample.com\n*.example.org\n");
@@ -1211,6 +1280,14 @@ function makeInstanceRepo(): string {
     writeFileSync(join(repo, "proxy", `${file}.defaults`), "\n", "utf8");
   }
   return repo;
+}
+
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) {
+    Reflect.deleteProperty(process.env, name);
+    return;
+  }
+  process.env[name] = value;
 }
 
 function stateJson(name: string, prefix: string): string {

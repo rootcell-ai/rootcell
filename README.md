@@ -182,6 +182,9 @@ nixos-lima guest contract while avoiding the template's default host mounts.
 ./rootcell                        # open a bash shell inside the agent VM
 ./rootcell pi                     # run pi directly
 ./rootcell -- nix flake update    # run any command inside the agent VM
+./rootcell edit http              # edit the HTTPS allowlist in $EDITOR
+./rootcell edit dns               # edit the DNS allowlist in $EDITOR
+./rootcell edit ssh               # edit the SSH allowlist in $EDITOR
 ./rootcell allow                  # reload network allowlists after editing them
 ./rootcell provision              # rebuild/re-provision after VM Nix or pi config edits
 ./rootcell pubkey                 # print the agent VM's SSH public key
@@ -193,6 +196,7 @@ nixos-lima guest contract while avoiding the template's default host mounts.
 ./rootcell spy --tui              # browse Bedrock Runtime traffic interactively
 
 ./rootcell --instance dev         # open the dev instance shell
+./rootcell --instance dev edit dns  # edit the dev instance DNS allowlist
 ./rootcell --instance dev allow   # reload only the dev instance allowlists
 ```
 
@@ -208,9 +212,8 @@ Network policy is per instance. On first run, `./rootcell` copies each tracked
 For most HTTPS access, add the host to both DNS and HTTPS, then reload:
 
 ```bash
-INSTANCE_DIR="${ROOTCELL_STATE_DIR:-$PWD/instances}/default"
-$EDITOR "$INSTANCE_DIR/proxy/allowed-dns.txt"
-$EDITOR "$INSTANCE_DIR/proxy/allowed-https.txt"
+./rootcell edit dns
+./rootcell edit http
 ./rootcell allow
 ```
 
