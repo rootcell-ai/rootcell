@@ -89,6 +89,7 @@ in
   systemd.network.networks."10-egress" = {
     matchConfig = egressMatch;
     networkConfig.DHCP = "ipv4";
+    dns = net.firewallUpstreamDns;
   };
 
   # Private Lima user-v2 link to the agent VM.

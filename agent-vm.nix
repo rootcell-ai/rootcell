@@ -35,7 +35,7 @@ in
       LinkLocalAddressing = "no";
     };
     address = [ "${net.agentIp}/${toString net.networkPrefix}" ];
-    routes = [ { Gateway = net.firewallIp; } ];
+    routes = [ { Gateway = net.agentDefaultGatewayIp; } ];
     dns = [ net.firewallIp ];
   };
 

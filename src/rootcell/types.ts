@@ -7,6 +7,49 @@ import {
 } from "./schema.ts";
 import { AwsSecretsManagerSecretProviderConfigSchema } from "./secrets/aws-secrets-manager-config.ts";
 
+export const RootcellVmProviderIdSchema = z.enum(["lima", "aws-ec2"]);
+
+export type RootcellVmProviderId = z.infer<typeof RootcellVmProviderIdSchema>;
+
+const AwsControlCidrSchema = z.string().refine(
+  (value) => value === "auto" || isIpv4Cidr(value),
+  { message: "must be 'auto' or an IPv4 CIDR block" },
+);
+
+export const AwsEc2ConfigSchema = z.object({
+  profile: NonEmptyStringSchema,
+  region: NonEmptyStringSchema,
+  controlCidr: AwsControlCidrSchema,
+  agentInstanceType: NonEmptyStringSchema,
+  firewallInstanceType: NonEmptyStringSchema,
+  agentRootVolumeGiB: z.number().int().positive(),
+  firewallRootVolumeGiB: z.number().int().positive(),
+  nixosAmiOwnerId: NonEmptyStringSchema,
+  nixosAmiNamePattern: NonEmptyStringSchema,
+}).strict();
+
+export type AwsEc2Config = Readonly<z.infer<typeof AwsEc2ConfigSchema>>;
+
+function isIpv4Cidr(value: string): boolean {
+  const parts = value.split("/");
+  if (parts.length !== 2) {
+    return false;
+  }
+  const [address, prefix] = parts;
+  if (address === undefined || prefix === undefined || !/^[0-9]+$/.test(prefix)) {
+    return false;
+  }
+  const prefixLength = Number(prefix);
+  if (!Number.isInteger(prefixLength) || prefixLength < 0 || prefixLength > 32) {
+    return false;
+  }
+  const octets = address.split(".");
+  if (octets.length !== 4) {
+    return false;
+  }
+  return octets.every((octet) => /^[0-9]+$/.test(octet) && Number(octet) <= 255);
+}
+
 export const CommandResultSchema = z.object({
   status: NonNegativeSafeIntegerSchema,
   stdout: z.string(),
@@ -40,6 +83,8 @@ export const RootcellConfigSchema = z.object({
   imageManifestUrl: NonEmptyStringSchema,
   imageDir: NonEmptyStringSchema.optional(),
   awsSecretsManagerProviders: z.array(AwsSecretsManagerSecretProviderConfigSchema),
+  vmProvider: RootcellVmProviderIdSchema,
+  awsEc2: AwsEc2ConfigSchema.optional(),
 });
 
 export type RootcellConfig = Readonly<z.infer<typeof RootcellConfigSchema>>;

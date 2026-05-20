@@ -1,5 +1,6 @@
 import type { RootcellConfig } from "../../types.ts";
 import type { ProviderBundle, VmNetworkAttachment } from "../../providers/types.ts";
+import { awsEc2IntegrationProvider } from "../providers/aws-ec2/provider.ts";
 import { macOsLimaUserV2IntegrationProvider } from "../providers/macos-lima-user-v2/provider.ts";
 
 export interface IntegrationProviderSpec<TAttachment extends VmNetworkAttachment = VmNetworkAttachment> {
@@ -14,6 +15,7 @@ export interface IntegrationProviderSpec<TAttachment extends VmNetworkAttachment
 }
 
 const providers = [
+  awsEc2IntegrationProvider,
   macOsLimaUserV2IntegrationProvider,
 ] as const satisfies readonly IntegrationProviderSpec[];
 

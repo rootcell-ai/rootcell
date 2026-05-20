@@ -13,6 +13,8 @@
 
 let
   defaults = {
+    provider = "lima";
+
     # IP of the firewall VM on the private inter-VM network. The agent VM uses
     # this as its default route, DNS server, and SSH proxy.
     #
@@ -23,6 +25,11 @@ let
     # IP of the agent VM on the same private network.
     agentIp = "192.168.100.11";
 
+    # Default gateway inside the agent VM. Lima uses the firewall's private IP.
+    # AWS uses the VPC subnet router, whose private route table sends default
+    # traffic to the firewall ENI.
+    agentDefaultGatewayIp = "192.168.100.10";
+
     # Subnet prefix length for the inter-VM network.
     networkPrefix = 24;
 
@@ -31,6 +38,11 @@ let
     firewallPrivateInterface = "enp0s1";
     firewallEgressInterface = "enp0s2";
     firewallControlInterface = "enp0s2";
+
+    # Optional static upstream resolvers for the firewall VM. Lima normally
+    # gets this from DHCP. AWS disables VPC DNS for the rootcell VPC, so the
+    # firewall receives explicit public upstream resolvers instead.
+    firewallUpstreamDns = [];
   };
 
   override =
