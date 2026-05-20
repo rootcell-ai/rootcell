@@ -18,6 +18,7 @@ import {
 } from "../../../providers/macos-lima-user-v2-network.ts";
 import type { ProviderBundle } from "../../../providers/types.ts";
 import { preflightMacOsLimaUserV2Integration } from "./preflight.ts";
+import { AwsSecretsManagerSecretProvider } from "../../../secrets/aws-secrets-manager.ts";
 import { MacOsKeychainSecretProvider } from "../../../secrets/macos-keychain.ts";
 import { StaticSecretProviderRegistry } from "../../../secrets/registry.ts";
 
@@ -43,6 +44,7 @@ export function createBundle(
     vm: new LimaVmProvider(config, log),
     secrets: new StaticSecretProviderRegistry([
       new MacOsKeychainSecretProvider(),
+      ...config.awsSecretsManagerProviders.map((providerConfig) => new AwsSecretsManagerSecretProvider(providerConfig)),
     ]),
   };
 }
@@ -142,6 +144,7 @@ function limaCleanupConfig(repoDir: string, instance: string, env: NodeJS.Proces
     agentIp: "192.168.109.11",
     networkPrefix: "24",
     imageManifestUrl: "https://example.invalid/manifest.json",
+    awsSecretsManagerProviders: [],
   };
 }
 

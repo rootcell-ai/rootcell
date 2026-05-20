@@ -39,6 +39,12 @@ import {
 import { MacOsKeychainSecretProvider } from "./secrets/macos-keychain.ts";
 import { StaticSecretProviderRegistry } from "./secrets/registry.ts";
 import { SecretEnvMappingSchema } from "./secrets/types.ts";
+import { AwsSecretsManagerSecretProvider } from "./secrets/aws-secrets-manager.ts";
+import {
+  AWS_SECRETS_MANAGER_PROVIDERS_ENV,
+  parseAwsSecretsManagerProviderConfigs,
+  resolveAwsSecretsManagerRegion,
+} from "./secrets/aws-secrets-manager-config.ts";
 
 const EmptyStringArraySchema = z.array(z.string()).length(0);
 const DefaultSpyOptionsSchema = z.object({
@@ -211,7 +217,7 @@ describe("environment parsing", () => {
   test("validates secret mappings", () => {
     const mappings = parseSecretMappings([
       "AWS_BEARER_TOKEN_BEDROCK=macos-keychain:aws-bedrock-api-key",
-      "AWS_SECRET_ACCESS_KEY=aws-prod:arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/key",
+      "AWS_SECRET_ACCESS_KEY=aws-prod:prod-key-a1b2c3",
       "ONEPASSWORD_TOKEN=1password:op://Private/token/password",
       "",
     ].join("\n"));
@@ -225,7 +231,7 @@ describe("environment parsing", () => {
         envName: "AWS_SECRET_ACCESS_KEY",
         secret: {
           providerId: "aws-prod",
-          reference: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/key",
+          reference: "prod-key-a1b2c3",
         },
       },
       {
@@ -252,6 +258,22 @@ describe("environment parsing", () => {
     expect(config.firewallIp).toBe("192.168.109.10");
     expect(config.agentIp).toBe("192.168.109.11");
     expect(config.imageManifestUrl).toBe("https://github.com/rootcell-ai/rootcell/releases/latest/download/manifest.json");
+    expect(config.awsSecretsManagerProviders).toEqual([]);
+  });
+
+  test("builds config with AWS Secrets Manager providers", () => {
+    const config = buildConfig("/repo", {
+      [AWS_SECRETS_MANAGER_PROVIDERS_ENV]: JSON.stringify({
+        "aws-prod": { aws_profile: "prod", aws_region: "us-east-1" },
+        "aws-dev": { aws_profile: "dev" },
+      }),
+    }, fakeInstance("dev"));
+
+    expect(config).toEqual(expect.schemaMatching(RootcellConfigSchema));
+    expect(config.awsSecretsManagerProviders).toEqual([
+      { id: "aws-prod", awsProfile: "prod", awsRegion: "us-east-1" },
+      { id: "aws-dev", awsProfile: "dev" },
+    ]);
   });
 });
 
@@ -357,6 +379,128 @@ describe("secret providers", () => {
     ])).toThrow("duplicate secret provider id");
   });
 
+  test("parses AWS Secrets Manager provider configuration", () => {
+    expect(parseAwsSecretsManagerProviderConfigs({})).toEqual([]);
+    expect(parseAwsSecretsManagerProviderConfigs({ [AWS_SECRETS_MANAGER_PROVIDERS_ENV]: "" })).toEqual([]);
+    expect(parseAwsSecretsManagerProviderConfigs({
+      [AWS_SECRETS_MANAGER_PROVIDERS_ENV]: JSON.stringify({
+        "aws-prod": { aws_profile: "prod", aws_region: "us-east-1" },
+        "aws-dev": { aws_profile: "dev" },
+      }),
+    })).toEqual([
+      { id: "aws-prod", awsProfile: "prod", awsRegion: "us-east-1" },
+      { id: "aws-dev", awsProfile: "dev" },
+    ]);
+
+    expect(() => parseAwsSecretsManagerProviderConfigs({ [AWS_SECRETS_MANAGER_PROVIDERS_ENV]: "[]" })).toThrow("must be a JSON object");
+    expect(() => parseAwsSecretsManagerProviderConfigs({ [AWS_SECRETS_MANAGER_PROVIDERS_ENV]: "{" })).toThrow("must be valid JSON");
+    expect(() => parseAwsSecretsManagerProviderConfigs({
+      [AWS_SECRETS_MANAGER_PROVIDERS_ENV]: JSON.stringify({ "bad/id": { aws_profile: "prod" } }),
+    })).toThrow("invalid AWS Secrets Manager provider id");
+    expect(() => parseAwsSecretsManagerProviderConfigs({
+      [AWS_SECRETS_MANAGER_PROVIDERS_ENV]: JSON.stringify({ "aws-prod": { aws_region: "us-east-1" } }),
+    })).toThrow("aws_profile");
+  });
+
+  test("resolves AWS Secrets Manager regions from provider config, AWS config, and environment", () => {
+    const dir = mkdtempSync(join(tmpdir(), "rootcell-aws-"));
+    try {
+      const configPath = join(dir, "config");
+      const credentialsPath = join(dir, "credentials");
+      writeFileSync(configPath, [
+        "[default]",
+        "region = us-east-2",
+        "[profile prod]",
+        "region = us-west-2",
+        "",
+      ].join("\n"), "utf8");
+      writeFileSync(credentialsPath, [
+        "[fallback]",
+        "region = ap-south-1",
+        "",
+      ].join("\n"), "utf8");
+      const env: NodeJS.ProcessEnv = {
+        AWS_CONFIG_FILE: configPath,
+        AWS_SHARED_CREDENTIALS_FILE: credentialsPath,
+      };
+
+      expect(resolveAwsSecretsManagerRegion({ id: "aws-prod", awsProfile: "prod", awsRegion: "eu-central-1" }, env)).toBe("eu-central-1");
+      expect(resolveAwsSecretsManagerRegion({ id: "aws-prod", awsProfile: "prod" }, env)).toBe("us-west-2");
+      expect(resolveAwsSecretsManagerRegion({ id: "aws-default", awsProfile: "default" }, env)).toBe("us-east-2");
+      expect(resolveAwsSecretsManagerRegion({ id: "aws-fallback", awsProfile: "fallback" }, env)).toBe("ap-south-1");
+      expect(resolveAwsSecretsManagerRegion({ id: "aws-env", awsProfile: "missing" }, {
+        ...env,
+        AWS_REGION: "ca-central-1",
+      })).toBe("ca-central-1");
+      expect(() => resolveAwsSecretsManagerRegion({ id: "aws-missing", awsProfile: "missing" }, env)).toThrow("has no region");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("AWS Secrets Manager provider reads SecretString by exact secret id", async () => {
+    const profiles: string[] = [];
+    const clientConfigs: { readonly region: string }[] = [];
+    const commands: unknown[] = [];
+    const provider = new AwsSecretsManagerSecretProvider(
+      { id: "aws-prod", awsProfile: "prod", awsRegion: "us-east-1" },
+      {
+        credentialFactory: (profile) => {
+          profiles.push(profile);
+          return { accessKeyId: "access", secretAccessKey: "secret" };
+        },
+        clientFactory: (clientConfig) => {
+          clientConfigs.push({ region: clientConfig.region });
+          return {
+            send: (command) => {
+              commands.push(command.input);
+              return Promise.resolve({ SecretString: "secret-value", $metadata: {} });
+            },
+          };
+        },
+      },
+    );
+
+    await expect(provider.read("bedrock-token-a1b2c3")).resolves.toBe("secret-value");
+    expect(profiles).toEqual(["prod"]);
+    expect(clientConfigs).toEqual([{ region: "us-east-1" }]);
+    expect(commands).toEqual([{ SecretId: "bedrock-token-a1b2c3" }]);
+  });
+
+  test("AWS Secrets Manager provider rejects ARN, binary, and missing string secrets", async () => {
+    const arnProvider = new AwsSecretsManagerSecretProvider(
+      { id: "aws-prod", awsProfile: "prod", awsRegion: "us-east-1" },
+      {
+        clientFactory: () => {
+          throw new Error("client should not be created for ARN references");
+        },
+      },
+    );
+    await expect(arnProvider.read("arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/key")).rejects.toThrow("not ARNs");
+
+    const binaryProvider = new AwsSecretsManagerSecretProvider(
+      { id: "aws-prod", awsProfile: "prod", awsRegion: "us-east-1" },
+      {
+        credentialFactory: () => ({ accessKeyId: "access", secretAccessKey: "secret" }),
+        clientFactory: () => ({
+          send: () => Promise.resolve({ SecretBinary: new Uint8Array([1]), $metadata: {} }),
+        }),
+      },
+    );
+    await expect(binaryProvider.read("binary-secret-a1b2c3")).rejects.toThrow("SecretBinary");
+
+    const missingProvider = new AwsSecretsManagerSecretProvider(
+      { id: "aws-prod", awsProfile: "prod", awsRegion: "us-east-1" },
+      {
+        credentialFactory: () => ({ accessKeyId: "access", secretAccessKey: "secret" }),
+        clientFactory: () => ({
+          send: () => Promise.resolve({ $metadata: {} }),
+        }),
+      },
+    );
+    await expect(missingProvider.read("missing-secret-a1b2c3")).rejects.toThrow("returned no SecretString");
+  });
+
   test("macOS Keychain provider reads generic passwords", async () => {
     const calls: { command: string; args: readonly string[]; allowFailure: boolean | undefined }[] = [];
     const provider = new MacOsKeychainSecretProvider("macos-keychain", (command, args, options) => {
@@ -392,6 +536,18 @@ describe("VM and network providers", () => {
     expect(providers.network.id).toBe("macos-lima-user-v2");
     expect(providers.vm.id).toBe("lima");
     expect(providers.secrets.ids).toEqual(["macos-keychain"]);
+  });
+
+  test("factory registers configured AWS Secrets Manager providers", () => {
+    const config = buildConfig("/repo", {
+      [AWS_SECRETS_MANAGER_PROVIDERS_ENV]: JSON.stringify({
+        "aws-prod": { aws_profile: "prod", aws_region: "us-east-1" },
+        "aws-dev": { aws_profile: "dev" },
+      }),
+    }, fakeInstance("dev"));
+    const providers = createProviderBundle(config, ignoreLog);
+
+    expect(providers.secrets.ids).toEqual(["macos-keychain", "aws-prod", "aws-dev"]);
   });
 
   test("macOS Lima user-v2 provider exposes egress firewall and private-only agent attachments", () => {
