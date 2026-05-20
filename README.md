@@ -4,32 +4,40 @@
 
 Give the agent root in the cell, not on your host.
 
-rootcell gives a coding agent a disposable local VM where it can use root without
+rootcell gives a coding agent disposable NixOS VMs where it can use root without
 touching your host filesystem. All outbound traffic passes through a separate
 firewall VM with DNS, HTTPS, and SSH allowlists. HTTPS is routed through a
 transparent decrypting proxy, so rootcell can enforce host policy and
 `./rootcell spy` can show formatted Bedrock Runtime traffic when you need to see
 what the agent is sending.
 
+rootcell is provider-backed: the same agent/firewall model can run locally on
+macOS with Lima or remotely in AWS EC2.
+
 ## Current Scope
 
-rootcell is early and intentionally narrow. Today it targets:
+rootcell is early and intentionally narrow. Today it supports:
 
-- **Host OS:** macOS hosts.
-- **LLM provider:** Amazon Bedrock / Bedrock Runtime.
-- **Coding harness:** [Pi](https://pi.dev) inside the agent VM.
+| Area | Current support |
+| --- | --- |
+| VM providers | `lima` for local macOS + Lima, and `aws-ec2` for AWS EC2 |
+| Guest OS | AARCH64 NixOS agent and firewall VMs |
+| Coding harness | [Pi](https://pi.dev) inside the agent VM |
+| Network policy | DNS, HTTPS, and SSH egress through the firewall VM |
+| Secrets | Host-side secret providers, including macOS Keychain and AWS Secrets Manager |
 
-The agent and firewall environments are NixOS VMs, but the host-side lifecycle,
-networking, default Keychain-backed secrets provider, and VM lifecycle currently
-assume macOS.
+Provider-specific setup and operational details live in:
+
+- [macOS + Lima provider](src/rootcell/providers/macos-lima-user-v2/README.md)
+- [AWS EC2 provider](src/rootcell/providers/aws-ec2/README.md)
 
 ## Why This Exists
 
 Coding agents are most useful when they can run commands, install tools, and edit
 files. That's a lot of trust to hand to a process with network access.
 
-rootcell gives you a local workspace where an agent can exercise root inside the
-VM without receiving broad access to your Mac:
+rootcell gives you a workspace where an agent can exercise root inside the VM
+without receiving broad access to your host:
 
 - A fresh NixOS VM for the agent's shell and tools.
 - No host-home mount in the agent VM.
@@ -39,8 +47,8 @@ VM without receiving broad access to your Mac:
 - Provider secrets read from host-side secret providers at runtime, not stored
   in the VM or the Nix store.
 
-Use it when you want the agent to go wild inside the VM, while keeping
-an explicit network boundary around the work.
+Use it when you want the agent to do real work inside a VM while keeping an
+explicit network boundary around that work.
 
 ## How It Works
 
@@ -48,22 +56,32 @@ an explicit network boundary around the work.
 flowchart LR
   Internet(("Internet"))
   Host["Host<br/>repo, secrets, ./rootcell"]
+  Provider["VM provider<br/>Lima or AWS EC2"]
   Firewall["Firewall VM<br/>DNS, HTTPS, SSH policy"]
   Agent["Agent VM<br/>shell, tools, workspace"]
 
+  Host -->|creates, provisions, enters| Provider
+  Provider --> Firewall
+  Provider --> Agent
   Host -->|SSH to firewall| Firewall
-  Firewall -->|SSH ProxyJump leg to agent<br/>over Lima user-v2| Agent
-  Agent -->|DNS, HTTPS, SSH egress<br/>over Lima user-v2| Firewall
+  Firewall -->|private SSH leg to agent| Agent
+  Agent -->|DNS, HTTPS, SSH egress| Firewall
   Firewall -->|allowlisted egress| Internet
 ```
 
 rootcell deliberately does not use a direct Host-to-Agent path. Host sessions
 reach the agent by connecting to the firewall first; SSH ProxyJump then carries
-the agent session through the firewall to the agent across the private Lima
-user-v2 link. The agent VM also uses that same private user-v2 link for all DNS,
-HTTPS, and SSH egress; it has no direct route to the Internet.
+the agent session through the provider's private network path. The agent VM also
+uses that private path for all DNS, HTTPS, and SSH egress; it has no direct
+public route.
 
-The two VMs have different jobs:
+The provider owns how those VMs and networks exist:
+
+- macOS + Lima uses two local Lima VMs and a Lima user-v2 private network.
+- AWS EC2 uses two EC2 instances, a dedicated VPC, and Terraform-managed
+  networking.
+
+The two VMs have the same roles in either provider:
 
 | Piece | What it does |
 | --- | --- |
@@ -74,7 +92,7 @@ The two VMs have different jobs:
 Rootcell supports named instances. Plain `./rootcell` uses the `default`
 instance and creates VMs named `agent` and `firewall`. `./rootcell --instance
 dev` creates `agent-dev` and `firewall-dev`, with separate CA material,
-allowlists, secret mappings, and a separate private VM link.
+allowlists, secret mappings, provider state, and private network configuration.
 
 HTTPS egress is transparent from inside the agent VM. A normal command like
 `curl https://github.com` either works because the host is allowlisted, or fails
@@ -86,95 +104,82 @@ Cleartext HTTP is denied. All egress is expected to be HTTPS or SSH.
 
 ## Quick Start
 
-You need:
+You need the common host tools:
 
-- macOS with [Lima](https://lima-vm.io/) using Apple's Virtualization Framework.
-- [Bun](https://bun.sh) and Lima's `limactl` on the host `PATH`.
-- macOS command-line tools used by rootcell: `curl`, `ssh`, `scp`,
-  `ssh-keygen`, `openssl`, and `security`.
-- Amazon Bedrock credentials stored in macOS Keychain.
+- [Bun](https://bun.sh) for the TypeScript CLI.
+- `curl`, `ssh`, `scp`, `ssh-keygen`, and `openssl`.
+- Provider-specific tools from the provider README.
 
-rootcell currently provisions AARCH64 NixOS guests from the pinned upstream
-`nixos-lima` qcow2 image. Intel hosts require the architecture changes
-described in [Changing Architecture](#changing-architecture).
-
-The agent and firewall run as NixOS VMs. Provisioning uses Nix inside those VMs,
-but you do not need Nix installed on the macOS host unless you choose the Nix
-setup below.
-
-### Homebrew Setup
+On macOS with Homebrew:
 
 ```bash
-chmod +x ./rootcell
-
 brew tap oven-sh/bun
-brew install bun lima
-bun install --frozen-lockfile
+brew install bun
+brew install lima       # for the macOS + Lima provider
+brew install terraform  # for the AWS EC2 provider
 
-# Store the default Bedrock provider key in Keychain.
-security add-generic-password -a "$USER" -s aws-bedrock-api-key -w "<your-key>"
-
-# Start rootcell.
-./rootcell
-```
-
-### Nix Setup
-
-From the repository root:
-
-```bash
 chmod +x ./rootcell
-
-nix profile install .#hostTools
 bun install --frozen-lockfile
+```
 
+Choose a provider before first use.
+
+### macOS + Lima
+
+The local Lima provider is the default:
+
+```bash
 # Store the default Bedrock provider key in Keychain.
 security add-generic-password -a "$USER" -s aws-bedrock-api-key -w "<your-key>"
 
 ./rootcell
 ```
 
-For a one-off shell instead of a profile install:
+See [macOS + Lima provider](src/rootcell/providers/macos-lima-user-v2/README.md)
+for Lima requirements, Nix host-tool setup, state layout, and architecture
+notes.
+
+### AWS EC2
+
+Create or edit the instance `.env` before the first run:
 
 ```bash
-nix shell .#hostTools --command bun install --frozen-lockfile
-nix shell .#hostTools --command ./rootcell
+mkdir -p instances/aws-dev
+cp .env.defaults instances/aws-dev/.env
+cat >> instances/aws-dev/.env <<'EOF'
+ROOTCELL_VM_PROVIDER=aws-ec2
+ROOTCELL_AWS_PROFILE=your-profile
+ROOTCELL_AWS_REGION=us-east-1
+ROOTCELL_AWS_CONTROL_CIDR=auto
+EOF
+
+./rootcell --instance aws-dev
 ```
 
-If your host Nix install has not enabled flakes and the new CLI yet, add
-`--extra-experimental-features 'nix-command flakes'` to the host-side `nix`
-commands above.
+See [AWS EC2 provider](src/rootcell/providers/aws-ec2/README.md) for Terraform
+layout, AWS resource ownership, AMI selection, and IAM isolation details.
 
-First run lets Lima download the pinned upstream `nixos-lima` AARCH64 image,
-creates rootcell's Lima VMs, and provisions them. rootcell writes its own Lima
-YAML and keeps host filesystem mounts disabled with `mounts: []`. Later runs
-normally take seconds.
+First run creates the provider resources and provisions both VMs. Provisioning
+uses Nix inside the VMs, but you do not need Nix installed on the host unless
+you choose a Nix-based host-tool setup for the Lima provider.
 
-### Host Runtime
+Later runs normally take seconds unless the VMs were stopped or provisioning
+inputs changed.
 
-rootcell does not install or build host tools at runtime. It expects `bun` and
-`limactl` to be available from your chosen package manager.
-For non-standard paths, set:
+## Host Runtime
+
+rootcell does not install or build host tools at runtime. It expects provider
+tools to be available from your chosen package manager or an override
+environment variable:
 
 ```bash
-ROOTCELL_LIMACTL=/path/to/limactl
-# LIMACTL=/path/to/limactl also works
+ROOTCELL_LIMACTL=/path/to/limactl      # Lima provider
+ROOTCELL_TERRAFORM=/path/to/terraform  # AWS EC2 provider
 ```
 
 Per-instance state defaults to `instances/<name>` under the current repo. Set
 `ROOTCELL_STATE_DIR=/path/to/rootcell-instances` to use a different persistent
-state root. rootcell does not override `LIMA_HOME`; Lima instances and user-v2
-networks are managed through the normal Lima home.
-
-Lima is the supported VM runtime:
-
-```bash
-./rootcell
-```
-
-The Lima provider pins the upstream `nixos-lima` AARCH64 qcow2 image and digest
-in the generated YAML instead of using Lima's template directly. This keeps the
-nixos-lima guest contract while avoiding the template's default host mounts.
+state root.
 
 ## Daily Workflow
 
@@ -190,14 +195,14 @@ nixos-lima guest contract while avoiding the template's default host mounts.
 ./rootcell pubkey                 # print the agent VM's SSH public key
 ./rootcell list                   # list rootcell VMs and their current state
 ./rootcell stop --instance dev    # stop the dev instance VMs
-./rootcell remove --instance dev  # stop dev and delete its VM state
+./rootcell remove --instance dev  # stop dev and delete its provider VM state
 ./rootcell spy                    # tail formatted Bedrock Runtime traffic
 ./rootcell spy --raw              # include sanitized raw JSON bodies too
 ./rootcell spy --tui              # browse Bedrock Runtime traffic interactively
 
-./rootcell --instance dev         # open the dev instance shell
+./rootcell --instance dev           # open the dev instance shell
 ./rootcell --instance dev edit dns  # edit the dev instance DNS allowlist
-./rootcell --instance dev allow   # reload only the dev instance allowlists
+./rootcell --instance dev allow     # reload only the dev instance allowlists
 ```
 
 ## Allowing Network Access
@@ -226,9 +231,10 @@ github.com ^(GET|POST) /rootcell-ai/(rootcell|docs|website)\.git/
 ```
 
 For Git over SSH, add the host to the instance's `allowed-ssh.txt` and run
-`./rootcell allow`. GitHub, GitLab, Bitbucket, and Azure DevOps are included in the
-default SSH allowlist. Git-over-SSH cannot be scoped to individual repositories
-by HTTPS request regexes because the firewall only sees `CONNECT host:22`.
+`./rootcell allow`. GitHub, GitLab, Bitbucket, and Azure DevOps are included in
+the default SSH allowlist. Git-over-SSH cannot be scoped to individual
+repositories by HTTPS request regexes because the firewall only sees
+`CONNECT host:22`.
 
 Reloading allowlists takes about a second and does not rebuild either VM. To
 reset a live allowlist to project defaults, delete the live file and run
@@ -290,13 +296,15 @@ complete data-loss-prevention system.
 
 What it does:
 
-- Keeps the host filesystem out of the VM by avoiding default host mounts.
+- Keeps the host filesystem out of the VM by avoiding host-home mounts.
 - Gives the agent VM only a private link to the firewall VM.
 - Routes DNS through a suffix allowlist.
 - Intercepts HTTPS at the firewall and checks TLS SNI, HTTP `Host`, and optional
   request regexes.
 - Validates the upstream certificate before sending bytes onward.
 - Denies cleartext HTTP instead of allowlisting unauthenticated `Host` headers.
+- Reads mapped secrets on the host at session start and injects them as process
+  environment variables only for the command being run.
 
 What remains your responsibility:
 
@@ -313,21 +321,24 @@ Known technical gaps and operational debugging notes live in
 
 ## Roadmap
 
-rootcell's current goal is to make the narrow macOS + Bedrock + Pi path solid
-before broadening the support matrix. Planned expansion includes:
+rootcell's current goal is to harden the shared agent/firewall contract across
+the supported Lima and AWS providers. Planned expansion includes:
 
-- **Host compatibility:** support both macOS and Linux hosts.
-- **LLM providers:** add OpenAI and Anthropic alongside Amazon Bedrock.
+- **Host compatibility:** broaden host support beyond the current macOS-focused
+  development path.
+- **LLM providers:** add first-class OpenAI and Anthropic workflows alongside
+  Amazon Bedrock.
 - **Coding harnesses:** support Codex CLI and Claude Code CLI alongside Pi.
 
-The long-term shape is a provider- and harness-pluggable local VM boundary, with
-the same explicit network policy model across supported hosts.
+The long-term shape is a provider- and harness-pluggable VM boundary, with the
+same explicit network policy model across supported hosts.
 
 ## Project Layout
 
 ```text
 rootcell                 host entry point for VM lifecycle and commands
 src/                     Bun TypeScript implementation for migrated entrypoints
+src/rootcell/providers/  VM, network, and provider-specific README files
 flake.nix                Nix inputs, guest VM configs, and optional host tools
 common.nix               shared NixOS config for both VMs
 agent-vm.nix             agent VM network and trust-store config
@@ -348,40 +359,44 @@ pi/agent/                global pi instructions, skills, and extensions
 
 Per-instance state lives under `instances/<name>/` by default. rootcell's
 provider metadata lives under `v/`; the host control key and generated SSH
-config live under `ssh/`. Lima uses its normal `LIMA_HOME`. The firewall VM has
-Lima VZ NAT for public egress plus the private Lima user-v2 network. The agent
-VM has only the private Lima user-v2 network.
+config live under `ssh/`.
 
-The host connects to the firewall through Lima's generated localhost SSH
-endpoint. The agent VM is reached through SSH ProxyJump via the firewall VM over
-the private user-v2 address.
+Provider state is intentionally provider-specific:
+
+- macOS + Lima writes generated Lima YAML and VM state under `v/a/` and `v/f/`
+  and keeps Lima's own VM state under normal `LIMA_HOME`.
+- AWS EC2 writes a generated Terraform module and Terraform state under
+  `v/aws-ec2/`.
 
 Use `./rootcell list` to show known VMs and their state. `./rootcell stop`
 stops the selected instance's VMs, and `./rootcell remove` stops the selected
-instance and deletes its Lima VM state. Instance-local configuration such as
-allowlists, secret mappings, CA files, and subnet allocation remains in
-the instance state directory so the next start keeps the same instance
-settings.
+instance and deletes its provider VM state or cloud resources. Instance-local
+configuration such as allowlists, secret mappings, CA files, and subnet
+allocation remains in the instance state directory so the next start keeps the
+same instance settings.
 
 ## Configuration
 
 ### Environment
 
-`./rootcell` seeds `<instance-dir>/.env` from `.env.defaults` on
-first run. Edit that file for instance-local settings such as:
+`./rootcell` seeds `<instance-dir>/.env` from `.env.defaults` on first run. Edit
+that file for instance-local settings such as:
 
 ```sh
-AWS_REGION=us-west-2
-ROOTCELL_AWS_SECRETS_MANAGER_PROVIDERS={"aws-prod":{"aws_profile":"prod","aws_region":"us-west-2"},"aws-dev":{"aws_profile":"dev"}}
+ROOTCELL_VM_PROVIDER=lima
 ROOTCELL_SUBNET_POOL_START=192.168.100.0
 ROOTCELL_SUBNET_POOL_END=192.168.254.0
+ROOTCELL_AWS_SECRETS_MANAGER_PROVIDERS={"aws-prod":{"aws_profile":"prod","aws_region":"us-west-2"},"aws-dev":{"aws_profile":"dev"}}
 ```
 
-The first run also writes `<instance-dir>/state.json` with the
-instance's allocated `/24`. By default, rootcell chooses the first free subnet
-from `192.168.100.0/24` through `192.168.254.0/24`, uses `.10` for the firewall,
-and uses `.11` for the agent. Existing state is not recalculated if you later
-edit the pool values.
+`ROOTCELL_VM_PROVIDER` defaults to `lima`. Set it to `aws-ec2` and add the
+required AWS provider variables when using AWS.
+
+The first run also writes `<instance-dir>/state.json` with the instance's
+allocated `/24`. By default, rootcell chooses the first free subnet from
+`192.168.100.0/24` through `192.168.254.0/24`, uses `.10` for the firewall, and
+uses `.11` for the agent. Existing state is not recalculated if you later edit
+the pool values.
 
 To pin a new instance to a specific subnet before first run, set both IPs in
 that instance's `.env`:
@@ -391,6 +406,10 @@ FIREWALL_IP=192.168.109.10
 AGENT_IP=192.168.109.11
 NETWORK_PREFIX=24
 ```
+
+Provider-specific environment variables are documented in the provider READMEs.
+
+### Secrets
 
 `./rootcell` also seeds `<instance-dir>/secrets.env` from
 `secrets.env.defaults` on first run. This file maps agent VM environment
@@ -403,7 +422,7 @@ AWS_BEARER_TOKEN_BEDROCK=macos-keychain:aws-bedrock-api-key
 OTHER_TOKEN=aws-prod:other-token-a1b2c3
 ```
 
-For example, to inject an additional `ANTHROPIC_API_KEY`:
+For macOS Keychain-backed secrets:
 
 ```sh
 security add-generic-password -a "$USER" -s anthropic-api-key -w "<your-key>"
@@ -418,8 +437,8 @@ omitted, rootcell uses the region configured for that AWS profile in
 reference is the secret resource name only, such as `name-a1b2c3`, not the full
 ARN.
 
-If you want to use Anthropic or OpenAI subscriptions, you can log in from
-inside the VM.
+If you want to use Anthropic or OpenAI subscriptions, you can log in from inside
+the VM.
 
 Do not put provider keys in `home.nix`; the Nix store is world-readable.
 
@@ -441,16 +460,6 @@ For bash:
 rootcell completion >> ~/.bashrc
 ```
 
-### Changing Architecture
-
-The default configuration is for Apple Silicon hosts with `aarch64-linux`
-guests. For Intel Macs or x86 Linux guests, update these together:
-
-- `system` in `flake.nix`
-- The pi release tarball URL and hash in `home.nix`
-- The pinned upstream `nixos-lima` image URL, architecture, and digest in
-  `src/rootcell/providers/lima.ts`
-
 ### Multiple Instances
 
 Named instances are isolated from each other:
@@ -461,7 +470,7 @@ Named instances are isolated from each other:
 ```
 
 Each instance gets its own VMs, state directory, CA, allowlists, secret mapping
-file, control SSH key, private-link state, and `/24`.
+file, control SSH key, private network state, and `/24`.
 
 The `default` instance still seeds from legacy repo-local `.env`, `secrets.env`,
 `proxy/allowed-*.txt`, and `pki/` files when present. Named instances seed from
