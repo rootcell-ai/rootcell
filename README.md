@@ -370,6 +370,7 @@ first run. Edit that file for instance-local settings such as:
 
 ```sh
 AWS_REGION=us-west-2
+ROOTCELL_AWS_SECRETS_MANAGER_PROVIDERS={"aws-prod":{"aws_profile":"prod","aws_region":"us-west-2"},"aws-dev":{"aws_profile":"dev"}}
 ROOTCELL_SUBNET_POOL_START=192.168.100.0
 ROOTCELL_SUBNET_POOL_END=192.168.254.0
 ```
@@ -397,6 +398,7 @@ secrets may come from different providers:
 
 ```sh
 AWS_BEARER_TOKEN_BEDROCK=macos-keychain:aws-bedrock-api-key
+OTHER_TOKEN=aws-prod:other-token-a1b2c3
 ```
 
 For example, to inject an additional `ANTHROPIC_API_KEY`:
@@ -405,6 +407,14 @@ For example, to inject an additional `ANTHROPIC_API_KEY`:
 security add-generic-password -a "$USER" -s anthropic-api-key -w "<your-key>"
 echo 'ANTHROPIC_API_KEY=macos-keychain:anthropic-api-key' >> "$INSTANCE_DIR/secrets.env"
 ```
+
+AWS Secrets Manager providers are registered in `<instance-dir>/.env` with
+`ROOTCELL_AWS_SECRETS_MANAGER_PROVIDERS`. The JSON object keys are provider ids;
+each value includes `aws_profile` and optional `aws_region`. If `aws_region` is
+omitted, rootcell uses the region configured for that AWS profile in
+`~/.aws/config`, then `AWS_REGION` or `AWS_DEFAULT_REGION`. The `secrets.env`
+reference is the secret resource name only, such as `name-a1b2c3`, not the full
+ARN.
 
 If you want to use Anthropic or OpenAI subscriptions, you can log in from
 inside the VM.

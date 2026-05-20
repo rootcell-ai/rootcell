@@ -5,6 +5,7 @@ import {
   NonEmptyStringSchema,
   NonNegativeSafeIntegerSchema,
 } from "./schema.ts";
+import { AwsSecretsManagerSecretProviderConfigSchema } from "./secrets/aws-secrets-manager-config.ts";
 
 export const CommandResultSchema = z.object({
   status: NonNegativeSafeIntegerSchema,
@@ -38,6 +39,7 @@ export const RootcellConfigSchema = z.object({
   networkPrefix: NonEmptyStringSchema,
   imageManifestUrl: NonEmptyStringSchema,
   imageDir: NonEmptyStringSchema.optional(),
+  awsSecretsManagerProviders: z.array(AwsSecretsManagerSecretProviderConfigSchema),
 });
 
 export type RootcellConfig = Readonly<z.infer<typeof RootcellConfigSchema>>;
