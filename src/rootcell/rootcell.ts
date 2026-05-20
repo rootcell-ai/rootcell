@@ -423,6 +423,7 @@ exit 1
   }
 
   private async syncAllowlists(): Promise<void> {
+    await this.waitForFirewallSsh();
     for (const file of ["allowed-https.txt", "allowed-ssh.txt", "allowed-dns.txt"]) {
       await this.providers.vm.copyToGuest(
         this.config.firewallVm,
@@ -431,6 +432,28 @@ exit 1
       );
     }
     await this.providers.vm.exec(this.config.firewallVm, ["sudo", "/etc/agent-vm/reload.sh"]);
+  }
+
+  private async waitForFirewallSsh(): Promise<void> {
+    let lastError = "";
+    for (let attempt = 0; attempt < 120; attempt += 1) {
+      try {
+        const result = await this.providers.vm.execCapture(this.config.firewallVm, ["true"], {
+          allowFailure: true,
+        });
+        if (result.status === 0) {
+          return;
+        }
+        const message = `${result.stderr}${result.stdout}`.trim();
+        if (message.length > 0) {
+          lastError = message;
+        }
+      } catch (error) {
+        lastError = messageFromUnknown(error);
+      }
+      await sleep(500);
+    }
+    throw new Error(`timeout waiting for SSH transport to ${this.config.firewallVm}${lastError.length === 0 ? "" : `: ${lastError}`}`);
   }
 
   private ensureCa(): void {
