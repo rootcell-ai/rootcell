@@ -2,7 +2,6 @@ import type { SpawnSyncReturns } from "node:child_process";
 import { z } from "zod";
 import { isRootcellSubcommand, type RootcellSubcommand } from "./metadata.ts";
 import {
-  EnvironmentVariableNameSchema,
   NonEmptyStringSchema,
   NonNegativeSafeIntegerSchema,
 } from "./schema.ts";
@@ -96,13 +95,6 @@ export const InstanceStateSchema = z.object({
 });
 
 export type InstanceState = Readonly<z.infer<typeof InstanceStateSchema>>;
-
-export const SecretMappingSchema = z.object({
-  envName: EnvironmentVariableNameSchema,
-  service: NonEmptyStringSchema,
-});
-
-export type SecretMapping = Readonly<z.infer<typeof SecretMappingSchema>>;
 
 export const RootcellInstanceSchema = z.object({
   name: NonEmptyStringSchema,

@@ -1,4 +1,5 @@
 import type { CommandResult, InheritedCommandResult } from "../types.ts";
+import type { SecretProviderRegistry } from "../secrets/types.ts";
 
 export type VmRole = "agent" | "firewall";
 
@@ -77,4 +78,5 @@ export interface VmProvider<TAttachment extends VmNetworkAttachment = VmNetworkA
 export interface ProviderBundle<TAttachment extends VmNetworkAttachment = VmNetworkAttachment> {
   readonly network: NetworkProvider<TAttachment>;
   readonly vm: VmProvider<TAttachment>;
+  readonly secrets: SecretProviderRegistry;
 }

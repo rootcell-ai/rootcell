@@ -20,7 +20,8 @@ rootcell is early and intentionally narrow. Today it targets:
 - **Coding harness:** [Pi](https://pi.dev) inside the agent VM.
 
 The agent and firewall environments are NixOS VMs, but the host-side lifecycle,
-networking, Keychain integration, and VM lifecycle currently assume macOS.
+networking, default Keychain-backed secrets provider, and VM lifecycle currently
+assume macOS.
 
 ## Why This Exists
 
@@ -35,8 +36,8 @@ VM without receiving broad access to your Mac:
 - A separate firewall VM with the only public internet route.
 - DNS, HTTPS, and SSH allowlists you can review and hot-reload.
 - A per-VM SSH key for Git pushes.
-- Provider secrets read from macOS Keychain at runtime, not stored in the VM or
-  the Nix store.
+- Provider secrets read from host-side secret providers at runtime, not stored
+  in the VM or the Nix store.
 
 Use it when you want the agent to go wild inside the VM, while keeping
 an explicit network boundary around the work.
@@ -73,7 +74,7 @@ The two VMs have different jobs:
 Rootcell supports named instances. Plain `./rootcell` uses the `default`
 instance and creates VMs named `agent` and `firewall`. `./rootcell --instance
 dev` creates `agent-dev` and `firewall-dev`, with separate CA material,
-allowlists, Keychain mappings, and a separate private VM link.
+allowlists, secret mappings, and a separate private VM link.
 
 HTTPS egress is transparent from inside the agent VM. A normal command like
 `curl https://github.com` either works because the host is allowlisted, or fails
@@ -331,7 +332,7 @@ firewall-vm.nix          firewall VM services and nftables rules
 home.nix                 pi, Git, SSH, and developer tools for the agent VM
 network.nix              default inter-VM network settings
 .env.defaults            seed values for per-instance `.env`
-secrets.env.defaults     seed Keychain secret mappings for per-instance `secrets.env`
+secrets.env.defaults     seed provider-qualified secret mappings for per-instance `secrets.env`
 instances/
                          per-instance state, allowlists, CA, SSH keys, and generated files
 proxy/                   allowlists and mitmproxy/dnsmasq firewall code
@@ -356,7 +357,7 @@ the private user-v2 address.
 Use `./rootcell list` to show known VMs and their state. `./rootcell stop`
 stops the selected instance's VMs, and `./rootcell remove` stops the selected
 instance and deletes its Lima VM state. Instance-local configuration such as
-allowlists, Keychain mappings, CA files, and subnet allocation remains in
+allowlists, secret mappings, CA files, and subnet allocation remains in
 the instance state directory so the next start keeps the same instance
 settings.
 
@@ -390,18 +391,19 @@ NETWORK_PREFIX=24
 
 `./rootcell` also seeds `<instance-dir>/secrets.env` from
 `secrets.env.defaults` on first run. This file maps agent VM environment
-variable names to macOS Keychain service names; it does not contain the secret
-values themselves:
+variable names to provider-qualified secret references; it does not contain the
+secret values themselves. The provider id is required on each line, so different
+secrets may come from different providers:
 
 ```sh
-AWS_BEARER_TOKEN_BEDROCK=aws-bedrock-api-key
+AWS_BEARER_TOKEN_BEDROCK=macos-keychain:aws-bedrock-api-key
 ```
 
 For example, to inject an additional `ANTHROPIC_API_KEY`:
 
 ```sh
 security add-generic-password -a "$USER" -s anthropic-api-key -w "<your-key>"
-echo 'ANTHROPIC_API_KEY=anthropic-api-key' >> "$INSTANCE_DIR/secrets.env"
+echo 'ANTHROPIC_API_KEY=macos-keychain:anthropic-api-key' >> "$INSTANCE_DIR/secrets.env"
 ```
 
 If you want to use Anthropic or OpenAI subscriptions, you can log in from
@@ -448,7 +450,7 @@ Named instances are isolated from each other:
 ./rootcell --instance review
 ```
 
-Each instance gets its own VMs, state directory, CA, allowlists, Keychain mapping
+Each instance gets its own VMs, state directory, CA, allowlists, secret mapping
 file, control SSH key, private-link state, and `/24`.
 
 The `default` instance still seeds from legacy repo-local `.env`, `secrets.env`,

@@ -184,7 +184,7 @@ export class RootcellApp<TAttachment extends VmNetworkAttachment> {
       return 0;
     }
 
-    const injectedSecretEnv = this.readKeychainSecrets();
+    const injectedSecretEnv = await this.readSecretEnv();
     const command = rest.length === 0 ? ["bash", "-l"] : [...rest];
     return await this.providers.vm.execInteractive(this.config.agentVm, command, {
       allowFailure: true,
@@ -767,36 +767,22 @@ nix run .#home-manager -- switch --flake .#${this.config.guestUser}
     }
   }
 
-  private readKeychainSecrets(): string[] {
+  private async readSecretEnv(): Promise<string[]> {
     const path = this.config.secretsPath;
     if (!existsSync(path)) {
       return [];
     }
-    let mappings;
-    try {
-      mappings = parseSecretMappings(readFileSync(path, "utf8"));
-    } catch (error) {
-      log(messageFromUnknown(error));
-      process.exit(1);
-    }
+    const mappings = parseSecretMappings(readFileSync(path, "utf8"));
 
     const injected: string[] = [];
     for (const mapping of mappings) {
-      const value = runCapture("security", ["find-generic-password", "-s", mapping.service, "-w"], {
-        allowFailure: true,
-      });
-      if (value.status !== 0) {
-        const serviceArg = shellQuote(mapping.service);
-        process.stderr.write(`rootcell: Keychain secret not found for ${mapping.envName}.
-
-Add it with:
-  security add-generic-password -a "$USER" -s ${serviceArg} -w "<secret>"
-
-Then re-run.
-`);
-        process.exit(1);
+      let value;
+      try {
+        value = await this.providers.secrets.read(mapping.secret);
+      } catch (error) {
+        throw new Error(`secret lookup failed for ${mapping.envName} (${mapping.secret.providerId}): ${messageFromUnknown(error)}`, { cause: error });
       }
-      injected.push(`${mapping.envName}=${value.stdout.replace(/\r?\n$/, "")}`);
+      injected.push(`${mapping.envName}=${value}`);
     }
     return injected;
   }
