@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { resolveHostTool } from "../host-tools.ts";
-import { runCapture, runInherited } from "../process.ts";
+import { runCapture } from "../process.ts";
 import type { RootcellConfig } from "../types.ts";
 import type { NetworkPlan, NetworkProvider, VmNetworkAttachment, VmRole } from "./types.ts";
 
@@ -100,16 +100,22 @@ export class MacOsLimaUserV2NetworkProvider implements NetworkProvider<LimaUserV
 
   private ensureNetwork(): void {
     const limactl = this.ensureLimactl();
-    const listed = runCapture(limactl, ["network", "list", "--json"], {
+    const networkName = limaUserV2NetworkName(this.config);
+    const listedJson = runCapture(limactl, ["--tty=false", "network", "list", "--json"], {
       allowFailure: true,
     });
-    const networkName = limaUserV2NetworkName(this.config);
+    if (listedJson.status === 0 && limaNetworkListIncludes(listedJson.stdout, networkName)) {
+      return;
+    }
+    const listed = runCapture(limactl, ["--tty=false", "network", "list"], {
+      allowFailure: true,
+    });
     if (listed.status === 0 && limaNetworkListIncludes(listed.stdout, networkName)) {
       return;
     }
     this.log(`creating Lima user-v2 network for instance '${this.config.instanceName}'...`);
     const gateway = `${limaUserV2ReservedIps(this.config).gatewayIp}/${this.config.networkPrefix}`;
-    runInherited(limactl, [
+    const createArgs = [
       "--tty=false",
       "network",
       "create",
@@ -118,7 +124,13 @@ export class MacOsLimaUserV2NetworkProvider implements NetworkProvider<LimaUserV
       "user-v2",
       "--gateway",
       gateway,
-    ]);
+    ];
+    const created = runCapture(limactl, createArgs, { allowFailure: true });
+    if (created.status === 0 || networkAlreadyExists(created.stdout + created.stderr)) {
+      return;
+    }
+    const output = (created.stderr + created.stdout).trim();
+    throw new Error(output.length > 0 ? output : `command failed (${String(created.status)}): ${[limactl, ...createArgs].join(" ")}`);
   }
 
   private ensureLimactl(): string {
@@ -158,12 +170,44 @@ export function limaUserV2ReservedIps(config: RootcellConfig): {
 }
 
 export function limaNetworkListIncludes(stdout: string, name: string): boolean {
+  if (limaNetworkJsonIncludes(stdout, name)) {
+    return true;
+  }
+  return limaNetworkTableIncludes(stdout, name);
+}
+
+function limaNetworkJsonIncludes(stdout: string, name: string): boolean {
+  const values = parseJsonValues(stdout);
+  for (const value of values) {
+    if (jsonValueIncludesNetworkName(value, name)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function parseJsonValues(stdout: string): readonly unknown[] {
   let raw: unknown;
   try {
     raw = JSON.parse(stdout);
   } catch {
-    return false;
+    const values: unknown[] = [];
+    for (const line of stdout.split(/\r?\n/)) {
+      if (line.trim().length === 0) {
+        continue;
+      }
+      try {
+        values.push(JSON.parse(line));
+      } catch {
+        return [];
+      }
+    }
+    return values;
   }
+  return [raw];
+}
+
+function jsonValueIncludesNetworkName(raw: unknown, name: string): boolean {
   const stack: unknown[] = [raw];
   while (stack.length > 0) {
     const value = stack.pop();
@@ -186,6 +230,24 @@ export function limaNetworkListIncludes(stdout: string, name: string): boolean {
   return false;
 }
 
+function limaNetworkTableIncludes(stdout: string, name: string): boolean {
+  for (const line of stdout.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0 || /^NAME\s+MODE\b/i.test(trimmed)) {
+      continue;
+    }
+    const [networkName] = trimmed.split(/\s+/, 1);
+    if (networkName === name) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function networkMissing(output: string): boolean {
   return /not found|does not exist|no such/i.test(output);
+}
+
+function networkAlreadyExists(output: string): boolean {
+  return /already exists/i.test(output);
 }
