@@ -27,6 +27,13 @@ import { RootcellConfigSchema, type RootcellConfig, type RootcellInstance, type 
 
 const GUEST_USER = "luser";
 
+const EDIT_ALLOWLIST_FILES = {
+  http: "allowed-https.txt",
+  https: "allowed-https.txt",
+  dns: "allowed-dns.txt",
+  ssh: "allowed-ssh.txt",
+} as const;
+
 const VM_FILES: VmFileSet = {
   agent: [
     "flake.nix",
@@ -889,6 +896,32 @@ async function runLifecycleCommand(
   return 0;
 }
 
+function runEditCommand(
+  repoDir: string,
+  env: NodeJS.ProcessEnv,
+  instanceName: string,
+  editTarget: string | undefined,
+): number {
+  const file = editTarget === undefined ? undefined : EDIT_ALLOWLIST_FILES[editTarget as keyof typeof EDIT_ALLOWLIST_FILES];
+  if (file === undefined) {
+    log(`unknown allowlist '${editTarget ?? ""}' (expected http, dns, or ssh)`);
+    return 2;
+  }
+  const editor = env.EDITOR;
+  if (editor === undefined || editor.length === 0) {
+    log("EDITOR is not set; set EDITOR to edit allowlists.");
+    return 1;
+  }
+
+  seedRootcellInstanceFiles(repoDir, instanceName, log, env);
+  const path = join(instancePaths(repoDir, instanceName, env).proxyDir, file);
+  log(`opening ${path}`);
+  return runInherited("sh", ["-c", "exec $EDITOR \"$1\"", "sh", path], {
+    allowFailure: true,
+    env,
+  }).status;
+}
+
 function missingVmEntries(instanceName: string): readonly VmListEntry[] {
   const vmNames = deriveVmNames(instanceName);
   return [
@@ -917,6 +950,9 @@ export async function rootcellMain(args: readonly string[], importMetaPath: stri
     }
     if (parsed.subcommand === "stop" || parsed.subcommand === "remove") {
       return await runLifecycleCommand(repoDir, process.env, parsed.subcommand, parsed.instanceName);
+    }
+    if (parsed.subcommand === "edit") {
+      return runEditCommand(repoDir, process.env, parsed.instanceName, parsed.rest[0]);
     }
 
     seedRootcellInstanceFiles(repoDir, parsed.instanceName, log);
