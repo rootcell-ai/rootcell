@@ -477,6 +477,25 @@ describe("VM and network providers", () => {
     expect(limaNetworkListIncludes(JSON.stringify([{ Name: "other" }]), "rootcell-123456abcdef")).toBe(false);
   });
 
+  test("detects existing Lima networks from Lima 2 JSON-lines output", () => {
+    const output = [
+      JSON.stringify({ name: "bridged", mode: "bridged" }),
+      JSON.stringify({ name: "rootcell-123456abcdef", mode: "user-v2", gateway: "192.168.100.2" }),
+    ].join("\n");
+    expect(limaNetworkListIncludes(output, "rootcell-123456abcdef")).toBe(true);
+  });
+
+  test("detects existing Lima networks from limactl table output", () => {
+    const output = [
+      "NAME                     MODE       GATEWAY             INTERFACE",
+      "bridged                  bridged    -                   en0",
+      "rootcell-123456abcdef    user-v2    192.168.100.2/24    -",
+      "shared                   shared     192.168.105.1/24    -",
+    ].join("\n");
+    expect(limaNetworkListIncludes(output, "rootcell-123456abcdef")).toBe(true);
+    expect(limaNetworkListIncludes(output, "rootcell-fedcba654321")).toBe(false);
+  });
+
   test("ssh config uses direct firewall and proxied agent aliases", () => {
     const configText = sshConfig({
       user: "luser",
