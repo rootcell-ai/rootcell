@@ -20,7 +20,7 @@ export const defaultSpyOptions = {
 export function findRepoDir(importMetaUrl: string): string {
   let dir = dirname(resolve(fileURLToPath(importMetaUrl)));
   for (;;) {
-    if (existsSync(resolve(dir, "flake.nix")) && existsSync(resolve(dir, "completions"))) {
+    if (existsSync(resolve(dir, "flake.nix")) && existsSync(resolve(dir, "src/rootcell"))) {
       return dir;
     }
     const parent = dirname(dir);

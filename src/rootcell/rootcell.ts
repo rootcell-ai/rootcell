@@ -84,7 +84,7 @@ function shellQuote(value: string): string {
 function repoDirFromImportMeta(importMetaPath: string): string {
   let dir = dirname(resolve(importMetaPath));
   for (;;) {
-    if (existsSync(join(dir, "flake.nix")) && existsSync(join(dir, "completions"))) {
+    if (existsSync(join(dir, "flake.nix")) && existsSync(join(dir, "src/rootcell"))) {
       return dir;
     }
     const parent = dirname(dir);

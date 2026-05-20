@@ -45,17 +45,6 @@ jobs:
       - name: Run TypeScript unit tests
         run: bun run test
 
-      - name: Check remaining shell syntax
-        run: bash -n completions/rootcell.bash
-
-      - name: Install ShellCheck
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y shellcheck
-
-      - name: Run ShellCheck
-        run: shellcheck --severity=warning completions/rootcell.bash
-
       - name: Compile Python modules
         run: python3 -m compileall proxy
 

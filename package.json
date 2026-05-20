@@ -3,7 +3,6 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "completions": "SHELL=/bin/bash ./rootcell completion | sed '${/^$/d;}' > completions/rootcell.bash && SHELL=/bin/zsh ./rootcell completion | sed '${/^$/d;}' > completions/rootcell.zsh",
     "typecheck": "tsc --noEmit",
     "lint": "eslint \"src/**/*.{ts,js,mjs,cjs}\" eslint.config.ts vitest.config.ts",
     "test": "vitest --project unit --run",
