@@ -1023,6 +1023,16 @@ describe("VM and network providers", () => {
     expect(readme).toContain("http_tokens");
   });
 
+  test("macOS Lima README documents provider selection, layout, networking, and host isolation", () => {
+    const readme = readFileSync("src/rootcell/providers/macos-lima-user-v2/README.md", "utf8");
+    expect(readme).toContain("ROOTCELL_VM_PROVIDER=lima");
+    expect(readme).toContain("macos-lima-user-v2");
+    expect(readme).toContain("<instance-dir>/v/");
+    expect(readme).toContain("user-v2 network");
+    expect(readme).toContain("mounts: []");
+    expect(readme).toContain("LIMA_HOME/_config/user");
+  });
+
   test("detects existing Lima networks from limactl JSON output", () => {
     expect(limaNetworkListIncludes(JSON.stringify([{ name: "rootcell-123456abcdef" }]), "rootcell-123456abcdef")).toBe(true);
     expect(limaNetworkListIncludes(JSON.stringify([{ Name: "other" }]), "rootcell-123456abcdef")).toBe(false);
