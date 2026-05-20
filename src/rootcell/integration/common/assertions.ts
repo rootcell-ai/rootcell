@@ -31,7 +31,7 @@ export async function expectSpyWiring(flow: IntegrationFlow): Promise<void> {
 export async function expectPrivateNetworkRouting(flow: IntegrationFlow): Promise<void> {
   const network = flow.providers.network.plan().guest;
   await flow.agentSh(`ip -4 -o addr show ${network.agentPrivateInterface} | grep -q '${network.agentIp}/'`);
-  await flow.agentSh(`ip route show default | grep -q '^default via ${network.firewallIp} dev ${network.agentPrivateInterface}'`);
+  await flow.agentSh(`ip route show default | grep -q '^default via ${network.agentDefaultGatewayIp ?? network.firewallIp} dev ${network.agentPrivateInterface}'`);
   await flow.firewallSh(`ip -4 -o addr show ${network.firewallPrivateInterface} | grep -q '${network.firewallIp}/'`);
   await flow.agentSh(`dig @${network.firewallIp} +short +time=3 +tries=1 github.com | grep -qE '^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$'`);
 }

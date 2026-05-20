@@ -145,6 +145,7 @@ function limaCleanupConfig(repoDir: string, instance: string, env: NodeJS.Proces
     networkPrefix: "24",
     imageManifestUrl: "https://example.invalid/manifest.json",
     awsSecretsManagerProviders: [],
+    vmProvider: "lima",
   };
 }
 

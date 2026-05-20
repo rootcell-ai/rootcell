@@ -12,11 +12,13 @@ export type VmStatus =
 export interface GuestNetworkConfig {
   readonly firewallIp: string;
   readonly agentIp: string;
+  readonly agentDefaultGatewayIp?: string;
   readonly networkPrefix: 24;
   readonly agentPrivateInterface: string;
   readonly firewallPrivateInterface: string;
   readonly firewallEgressInterface: string;
   readonly firewallControlInterface?: string;
+  readonly firewallUpstreamDns?: readonly string[];
 }
 
 export interface VmNetworkAttachment {
@@ -37,6 +39,7 @@ export interface NetworkProvider<TAttachment extends VmNetworkAttachment = VmNet
   remove(): Promise<void>;
   ensureReady(input: {
     readonly affectedVms: readonly string[];
+    readonly force?: boolean;
     readonly stopVmIfRunning: (name: string) => Promise<void>;
   }): Promise<void>;
 }

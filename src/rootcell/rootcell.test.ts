@@ -7,6 +7,15 @@ import { resolveHostTool } from "./host-tools.ts";
 import { buildConfig, formatVmList } from "./rootcell.ts";
 import { deriveVmNames, instancePaths, listRootcellVmInstanceNames, loadRootcellInstance, seedRootcellInstanceFiles } from "./instance.ts";
 import { runCapture } from "./process.ts";
+import { parseAwsEc2Config } from "./providers/aws-ec2-config.ts";
+import { AwsEc2NetworkProvider, awsVpcRouterIp } from "./providers/aws-ec2-network.ts";
+import {
+  AwsEc2TerraformProject,
+  awsEc2TerraformMain,
+  ownershipTags,
+  type TerraformRunner,
+} from "./providers/aws-ec2-terraform.ts";
+import type { AwsEc2Api, AwsS3ObjectRef } from "./providers/aws-ec2-aws.ts";
 import { createProviderBundle } from "./providers/factory.ts";
 import {
   limaNetworkListIncludes,
@@ -275,6 +284,61 @@ describe("environment parsing", () => {
       { id: "aws-dev", awsProfile: "dev" },
     ]);
   });
+
+  test("requires explicit AWS EC2 provider profile and region", () => {
+    expect(() => buildConfig("/repo", {
+      ROOTCELL_VM_PROVIDER: "aws-ec2",
+      ROOTCELL_AWS_PROFILE: "dev",
+    }, fakeInstance("dev"))).toThrow("ROOTCELL_AWS_REGION is required");
+
+    const config = buildConfig("/repo", {
+      ROOTCELL_VM_PROVIDER: "aws-ec2",
+      ROOTCELL_AWS_PROFILE: "dev",
+      ROOTCELL_AWS_REGION: "us-east-1",
+    }, fakeInstance("dev"));
+
+    expect(config.vmProvider).toBe("aws-ec2");
+    expect(config.awsEc2).toEqual({
+      profile: "dev",
+      region: "us-east-1",
+      controlCidr: "auto",
+      agentInstanceType: "t4g.2xlarge",
+      firewallInstanceType: "t4g.small",
+      agentRootVolumeGiB: 60,
+      firewallRootVolumeGiB: 16,
+      nixosAmiOwnerId: "427812963091",
+      nixosAmiNamePattern: "nixos/25.11*",
+    });
+  });
+
+  test("parses AWS EC2 provider overrides", () => {
+    expect(parseAwsEc2Config({
+      ROOTCELL_AWS_PROFILE: "prod",
+      ROOTCELL_AWS_REGION: "us-west-2",
+      ROOTCELL_AWS_CONTROL_CIDR: "198.51.100.10/32",
+      ROOTCELL_AWS_AGENT_INSTANCE_TYPE: "t4g.xlarge",
+      ROOTCELL_AWS_FIREWALL_INSTANCE_TYPE: "t4g.nano",
+      ROOTCELL_AWS_AGENT_ROOT_VOLUME_GIB: "80",
+      ROOTCELL_AWS_FIREWALL_ROOT_VOLUME_GIB: "20",
+      ROOTCELL_AWS_NIXOS_AMI_OWNER_ID: "123456789012",
+      ROOTCELL_AWS_NIXOS_AMI_NAME_PATTERN: "nixos/unstable*",
+    })).toEqual({
+      profile: "prod",
+      region: "us-west-2",
+      controlCidr: "198.51.100.10/32",
+      agentInstanceType: "t4g.xlarge",
+      firewallInstanceType: "t4g.nano",
+      agentRootVolumeGiB: 80,
+      firewallRootVolumeGiB: 20,
+      nixosAmiOwnerId: "123456789012",
+      nixosAmiNamePattern: "nixos/unstable*",
+    });
+    expect(() => parseAwsEc2Config({
+      ROOTCELL_AWS_PROFILE: "prod",
+      ROOTCELL_AWS_REGION: "us-west-2",
+      ROOTCELL_AWS_CONTROL_CIDR: "999.51.100.10/32",
+    })).toThrow("IPv4 CIDR");
+  });
 });
 
 describe("host tool resolution", () => {
@@ -538,6 +602,13 @@ describe("VM and network providers", () => {
     expect(providers.secrets.ids).toEqual(["macos-keychain"]);
   });
 
+  test("factory selects AWS EC2 providers from instance environment", () => {
+    const providers = createProviderBundle(buildConfig("/repo", awsEc2Env(), fakeInstance("dev")), ignoreLog);
+    expect(providers.network.id).toBe("aws-ec2");
+    expect(providers.vm.id).toBe("aws-ec2");
+    expect(providers.secrets.ids).toEqual(["macos-keychain"]);
+  });
+
   test("factory registers configured AWS Secrets Manager providers", () => {
     const config = buildConfig("/repo", {
       [AWS_SECRETS_MANAGER_PROVIDERS_ENV]: JSON.stringify({
@@ -607,6 +678,33 @@ describe("VM and network providers", () => {
     expect(plan.vms.agent.hasEgress).toBe(false);
     expect(plan.vms.firewall.hasEgress).toBe(true);
     expect(plan.vms.agent.reservedIps).toEqual(["192.168.109.2", "192.168.109.3"]);
+  });
+
+  test("AWS EC2 provider exposes public firewall and private-only agent attachments", () => {
+    const config = buildConfig("/repo", awsEc2Env(), fakeInstance("dev"));
+    const plan = new AwsEc2NetworkProvider(config, ignoreLog).plan();
+    expect(plan.provider).toBe("aws-ec2");
+    expect(plan.guest).toEqual({
+      firewallIp: "192.168.109.10",
+      agentIp: "192.168.109.11",
+      agentDefaultGatewayIp: "192.168.109.1",
+      networkPrefix: 24,
+      agentPrivateInterface: "ens5",
+      firewallPrivateInterface: "ens6",
+      firewallEgressInterface: "ens5",
+      firewallControlInterface: "ens5",
+      firewallUpstreamDns: ["1.1.1.1", "8.8.8.8"],
+    });
+    expect(plan.vms.agent).toEqual({
+      kind: "aws-ec2",
+      role: "agent",
+      privateInterface: "ens5",
+      privateIp: "192.168.109.11",
+      hasPublicControlInterface: false,
+      hasEgress: false,
+    });
+    expect(plan.vms.firewall.hasPublicControlInterface).toBe(true);
+    expect(awsVpcRouterIp(config)).toBe("192.168.109.1");
   });
 
   test("user-v2 network plan reserves Lima gateway and DNS IPs", () => {
@@ -717,7 +815,8 @@ describe("VM and network providers", () => {
     expect(commonModule).toContain("uid = lib.mkDefault 501;");
     expect(commonModule).toContain('home = lib.mkDefault "/home/${username}";');
     expect(commonModule).toContain("ln -sfn /run/current-system/sw/bin/bash /bin/bash");
-    expect(commonModule).toContain("services.lima.enable = true;");
+    expect(commonModule).toContain("services.lima.enable = !isAwsEc2;");
+    expect(commonModule).toContain("/virtualisation/amazon-image.nix");
     expect(commonModule).toContain("networking.nat.enable = lib.mkForce false;");
 
     const firewallModule = readFileSync("firewall-vm.nix", "utf8");
@@ -736,6 +835,157 @@ describe("VM and network providers", () => {
     expect(script).toContain("test \"$(ip route show default | wc -l | tr -d ' ')\" = 1");
     expect(script).toContain("ip route show default | grep -q \"^default via $firewall_ip dev $iface\\b\"");
     expect(script).toContain("! ip -4 -o addr show scope global | grep -v");
+  });
+
+  test("generated AWS EC2 Terraform keeps IAM, IMDS, tagging, and networking invariants", () => {
+    const hcl = awsEc2TerraformMain();
+    expect(hcl).toContain('RootcellManaged      = "true"');
+    expect(hcl).toContain("RootcellInstanceName = var.instance_name");
+    expect(hcl).toContain('enable_dns_support   = false');
+    expect(hcl).toContain('enable_dns_hostnames = false');
+    expect(hcl).toContain('http_tokens                 = "required"');
+    expect(hcl).toContain("http_put_response_hop_limit = 1");
+    expect(hcl).toContain('instance_metadata_tags      = "disabled"');
+    expect(hcl).toContain("source_dest_check   = false");
+    expect(hcl).toContain("network_interface_id   = aws_network_interface.firewall_private.id");
+    expect(hcl).toContain("resource \"aws_ec2_instance_state\" \"agent\"");
+    expect(hcl).toContain("data \"aws_ami\" \"nixos_arm64\"");
+    expect(hcl).toContain('values = ["arm64"]');
+    expect(hcl).toContain("user_data     = local.rootcell_bootstrap_user_data");
+    expect(hcl).not.toContain("aws_s3_object");
+    expect(hcl).not.toContain("aws_ebs_snapshot_import");
+    expect(hcl).not.toContain("iam_instance_profile");
+    expect(hcl).not.toContain("aws_iam_role");
+    expect(hcl).not.toContain("aws_iam_instance_profile");
+    expect(hcl).not.toMatch(/RootcellProvider|RootcellInstanceId/);
+  });
+
+  test("AWS ownership tags are limited to managed flag and instance name", () => {
+    expect(ownershipTags("dev")).toEqual({
+      RootcellManaged: "true",
+      RootcellInstanceName: "dev",
+    });
+  });
+
+  test("AWS EC2 remove verifies Terraform state tags for EC2 resources", async () => {
+    const repo = makeInstanceRepo();
+    try {
+      const env = {
+        ...instanceEnv(repo),
+        ...awsEc2Env(),
+      };
+      const config = buildConfig(repo, env, fakeInstance("dev", repo, env));
+      const terraformDir = join(config.instanceDir, "v", "aws-ec2", "terraform");
+      mkdirSync(terraformDir, { recursive: true });
+      writeFileSync(join(terraformDir, "terraform.tfstate"), `${JSON.stringify({
+        resources: [
+          {
+            type: "aws_instance",
+            instances: [{
+              attributes: {
+                id: "i-agent",
+                root_block_device: [{ volume_id: "vol-agent-root" }],
+              },
+            }],
+          },
+          {
+            type: "aws_route",
+            instances: [{ attributes: { id: "ignored-route" } }],
+          },
+          {
+            type: "aws_key_pair",
+            instances: [{ attributes: { id: "rootcell-dev-key" } }],
+          },
+        ],
+      }, null, 2)}\n`, "utf8");
+      const api = new FakeAwsEc2Api();
+      const project = new AwsEc2TerraformProject(config, ignoreLog, {
+        runner: new RecordingTerraformRunner(),
+        api,
+      });
+
+      await project.verifyTerraformStateTags();
+
+      expect(api.taggedResourceIds).toEqual(["i-agent", "vol-agent-root"]);
+      expect(api.taggedKeyPairs).toEqual(["rootcell-dev-key"]);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("normal AWS EC2 ensureReady reads metadata without applying Terraform", async () => {
+    const repo = makeInstanceRepo();
+    try {
+      const config = buildConfig(repo, {
+        ...instanceEnv(repo),
+        ...awsEc2Env(),
+        ROOTCELL_AWS_CONTROL_CIDR: "198.51.100.10/32",
+      }, fakeInstance("dev", repo, instanceEnv(repo)));
+      const awsDir = join(config.instanceDir, "v", "aws-ec2");
+      mkdirSync(awsDir, { recursive: true });
+      writeFileSync(join(awsDir, "metadata.json"), `${JSON.stringify({
+        schemaVersion: 1,
+        rootcellInstanceId: "instance-a1b2",
+        accountId: "123456789012",
+        region: "us-east-1",
+        terraformDir: join(awsDir, "terraform"),
+        outputs: fakeAwsOutputs("198.51.100.10/32"),
+      }, null, 2)}\n`, "utf8");
+      const runner = new RecordingTerraformRunner();
+      const project = new AwsEc2TerraformProject(config, ignoreLog, {
+        runner,
+        api: new FakeAwsEc2Api(),
+      });
+
+      await project.ensureApplied({ force: false });
+
+      expect(runner.calls).toEqual([]);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("normal AWS EC2 entry reports auto-control CIDR drift without applying Terraform", async () => {
+    const repo = makeInstanceRepo();
+    try {
+      const env = {
+        ...instanceEnv(repo),
+        ...awsEc2Env(),
+        ROOTCELL_AWS_CONTROL_CIDR: "198.51.100.20/32",
+      };
+      const config = buildConfig(repo, env, fakeInstance("dev", repo, env));
+      const awsDir = join(config.instanceDir, "v", "aws-ec2");
+      mkdirSync(awsDir, { recursive: true });
+      writeFileSync(join(awsDir, "metadata.json"), `${JSON.stringify({
+        schemaVersion: 1,
+        rootcellInstanceId: "instance-a1b2",
+        accountId: "123456789012",
+        region: "us-east-1",
+        terraformDir: join(awsDir, "terraform"),
+        outputs: fakeAwsOutputs("198.51.100.10/32"),
+      }, null, 2)}\n`, "utf8");
+      const runner = new RecordingTerraformRunner();
+      const project = new AwsEc2TerraformProject(config, ignoreLog, {
+        runner,
+        api: new FakeAwsEc2Api(),
+      });
+
+      await expect(project.ensureApplied({ force: false })).rejects.toThrow("run rootcell --instance dev provision");
+      expect(runner.calls).toEqual([]);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("AWS EC2 README documents Terraform layout, upstream AMI, tags, and credential isolation", () => {
+    const readme = readFileSync("src/rootcell/providers/aws-ec2/README.md", "utf8");
+    expect(readme).toContain("<instance-dir>/v/aws-ec2/");
+    expect(readme).toContain("official upstream NixOS ARM64 AMI");
+    expect(readme).toContain("427812963091");
+    expect(readme).toContain("RootcellManaged=true");
+    expect(readme).toContain("RootcellInstanceName=<instance-name>");
+    expect(readme).toContain("does not attach an IAM instance profile");
+    expect(readme).toContain("http_tokens");
   });
 
   test("detects existing Lima networks from limactl JSON output", () => {
@@ -1202,6 +1452,14 @@ function instanceEnv(repo: string): NodeJS.ProcessEnv {
   return { ROOTCELL_STATE_DIR: join(repo, ".state") };
 }
 
+function awsEc2Env(): NodeJS.ProcessEnv {
+  return {
+    ROOTCELL_VM_PROVIDER: "aws-ec2",
+    ROOTCELL_AWS_PROFILE: "dev",
+    ROOTCELL_AWS_REGION: "us-east-1",
+  };
+}
+
 function makeInstanceRepo(): string {
   const repo = mkdtempSync(join(tmpdir(), "rootcell-instance-test-"));
   mkdirSync(join(repo, "proxy"), { recursive: true });
@@ -1246,4 +1504,73 @@ function fakeManifest(): Record<string, unknown> {
       { ...image, role: "builder", fileName: "builder.raw.zst", url: "https://example.invalid/builder.raw.zst" },
     ],
   };
+}
+
+function fakeAwsOutputs(controlCidr: string): Record<string, string> {
+  return {
+    agent_instance_id: "i-agent",
+    firewall_instance_id: "i-firewall",
+    firewall_public_ip: "203.0.113.10",
+    agent_private_ip: "192.168.109.11",
+    firewall_private_ip: "192.168.109.10",
+    nixos_ami_id: "ami-nixos",
+    nixos_ami_name: "nixos/25.11-aarch64-linux",
+    applied_control_cidr: controlCidr,
+  };
+}
+
+class RecordingTerraformRunner implements TerraformRunner {
+  readonly calls: string[] = [];
+
+  init(): void {
+    this.calls.push("init");
+  }
+
+  apply(): void {
+    this.calls.push("apply");
+  }
+
+  destroy(): void {
+    this.calls.push("destroy");
+  }
+
+  outputJson(): string {
+    this.calls.push("output");
+    return JSON.stringify(Object.fromEntries(
+      Object.entries(fakeAwsOutputs("198.51.100.10/32")).map(([key, value]) => [key, { value }]),
+    ));
+  }
+}
+
+class FakeAwsEc2Api implements AwsEc2Api {
+  readonly taggedResourceIds: string[] = [];
+  readonly taggedS3Objects: AwsS3ObjectRef[] = [];
+  readonly taggedKeyPairs: string[] = [];
+
+  accountId(): Promise<string> {
+    return Promise.resolve("123456789012");
+  }
+
+  instanceStatus(): Promise<"missing" | "running" | "stopped" | "unexpected"> {
+    return Promise.resolve("running");
+  }
+
+  assertTagged(resourceIds: readonly string[]): Promise<void> {
+    this.taggedResourceIds.push(...resourceIds);
+    return Promise.resolve();
+  }
+
+  assertKeyPairsTagged(keyNames: readonly string[]): Promise<void> {
+    this.taggedKeyPairs.push(...keyNames);
+    return Promise.resolve();
+  }
+
+  assertS3ObjectsTagged(objects: readonly AwsS3ObjectRef[]): Promise<void> {
+    this.taggedS3Objects.push(...objects);
+    return Promise.resolve();
+  }
+
+  deleteS3Prefix(): Promise<void> {
+    return Promise.resolve();
+  }
 }

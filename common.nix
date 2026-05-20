@@ -4,10 +4,16 @@
 # that are genuinely VM-specific (hostname, networking, firewall policy,
 # services) live in agent-vm.nix and firewall-vm.nix respectively.
 
+let
+  net = import ./network.nix;
+  isAwsEc2 = (net.provider or "lima") == "aws-ec2";
+in
 {
   imports = [
     # Required for the guest to boot under virtio VM runtimes.
     (modulesPath + "/profiles/qemu-guest.nix")
+  ] ++ lib.optionals isAwsEc2 [
+    (modulesPath + "/virtualisation/amazon-image.nix")
   ];
 
   config = {
@@ -42,13 +48,13 @@
       options = "--delete-older-than 14d";
     };
 
-    boot.loader.grub = {
+    boot.loader.grub = lib.mkIf (!isAwsEc2) {
       device = lib.mkDefault "nodev";
       efiSupport = lib.mkDefault true;
       efiInstallAsRemovable = lib.mkDefault true;
     };
 
-    fileSystems."/boot" = {
+    fileSystems."/boot" = lib.mkIf (!isAwsEc2) {
       device = lib.mkDefault "/dev/vda1";
       fsType = lib.mkDefault "vfat";
     };
@@ -61,7 +67,7 @@
     };
 
     environment.enableAllTerminfo = true;
-    services.lima.enable = true;
+    services.lima.enable = !isAwsEc2;
     networking.nat.enable = lib.mkForce false;
 
     # Lima's hostagent probes `/bin/bash` even when the configured user shell is

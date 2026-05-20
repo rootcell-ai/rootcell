@@ -131,7 +131,8 @@ function instanceHasVmState(repoDir: string, instanceName: string, env: NodeJS.P
   const paths = instancePaths(repoDir, instanceName, env);
   return existsSync(join(paths.dir, "v", "a"))
     || existsSync(join(paths.dir, "v", "f"))
-    || existsSync(join(paths.dir, "v", "n"));
+    || existsSync(join(paths.dir, "v", "n"))
+    || existsSync(join(paths.dir, "v", "aws-ec2"));
 }
 
 function rootcellInstanceFromPaths(paths: InstancePaths, state: InstanceState): RootcellInstance {
