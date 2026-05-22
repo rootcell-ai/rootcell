@@ -591,6 +591,7 @@ resource "aws_route" "private_default" {
   route_table_id         = aws_route_table.private.id
   destination_cidr_block = "0.0.0.0/0"
   network_interface_id   = aws_network_interface.firewall_private.id
+  depends_on             = [aws_network_interface_attachment.firewall_private]
 }
 
 resource "aws_route_table_association" "private" {
@@ -748,14 +749,8 @@ resource "aws_instance" "firewall" {
   key_name      = aws_key_pair.control.key_name
   user_data     = local.rootcell_bootstrap_user_data
 
-  network_interface {
+  primary_network_interface {
     network_interface_id = aws_network_interface.firewall_public.id
-    device_index         = 0
-  }
-
-  network_interface {
-    network_interface_id = aws_network_interface.firewall_private.id
-    device_index         = 1
   }
 
   metadata_options {
@@ -774,15 +769,20 @@ resource "aws_instance" "firewall" {
   tags = local.rootcell_tags
 }
 
+resource "aws_network_interface_attachment" "firewall_private" {
+  instance_id          = aws_instance.firewall.id
+  network_interface_id = aws_network_interface.firewall_private.id
+  device_index         = 1
+}
+
 resource "aws_instance" "agent" {
   ami           = data.aws_ami.nixos_arm64.id
   instance_type = var.agent_instance_type
   key_name      = aws_key_pair.control.key_name
   user_data     = local.rootcell_bootstrap_user_data
 
-  network_interface {
+  primary_network_interface {
     network_interface_id = aws_network_interface.agent.id
-    device_index         = 0
   }
 
   metadata_options {
@@ -804,6 +804,7 @@ resource "aws_instance" "agent" {
 resource "aws_ec2_instance_state" "firewall" {
   instance_id = aws_instance.firewall.id
   state       = var.desired_instance_state
+  depends_on  = [aws_network_interface_attachment.firewall_private]
 }
 
 resource "aws_ec2_instance_state" "agent" {

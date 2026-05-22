@@ -925,10 +925,15 @@ describe("VM and network providers", () => {
     expect(hcl).toContain('instance_metadata_tags      = "disabled"');
     expect(hcl).toContain("source_dest_check   = false");
     expect(hcl).toContain("network_interface_id   = aws_network_interface.firewall_private.id");
+    expect(hcl).toContain('resource "aws_network_interface_attachment" "firewall_private"');
+    expect(hcl).toContain("primary_network_interface");
+    expect(hcl).toContain("depends_on             = [aws_network_interface_attachment.firewall_private]");
+    expect(hcl).toContain("depends_on  = [aws_network_interface_attachment.firewall_private]");
     expect(hcl).toContain("resource \"aws_ec2_instance_state\" \"agent\"");
     expect(hcl).toContain("data \"aws_ami\" \"nixos_arm64\"");
     expect(hcl).toContain('values = ["arm64"]');
     expect(hcl).toContain("user_data     = local.rootcell_bootstrap_user_data");
+    expect(hcl).not.toContain("  network_interface {");
     expect(hcl).not.toContain("aws_s3_object");
     expect(hcl).not.toContain("aws_ebs_snapshot_import");
     expect(hcl).not.toContain("iam_instance_profile");
