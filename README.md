@@ -78,7 +78,7 @@ public route.
 The provider owns how those VMs and networks exist:
 
 - macOS + Lima uses two local Lima VMs and a Lima user-v2 private network.
-- AWS EC2 uses two EC2 instances, a dedicated VPC, and Terraform-managed
+- AWS EC2 uses two EC2 instances, a dedicated VPC, and OpenTofu-managed
   networking.
 
 The two VMs have the same roles in either provider:
@@ -116,7 +116,7 @@ On macOS with Homebrew:
 brew tap oven-sh/bun
 brew install bun
 brew install lima       # for the macOS + Lima provider
-brew install terraform  # for the AWS EC2 provider
+brew install opentofu   # for the AWS EC2 provider
 
 chmod +x ./rootcell
 bun install --frozen-lockfile
@@ -152,8 +152,9 @@ Initialize the instance `.env` before the first run:
 ./rootcell -i aws-dev
 ```
 
-See [AWS EC2 provider](src/rootcell/providers/aws-ec2/README.md) for Terraform
-layout, AWS resource ownership, AMI selection, and IAM isolation details.
+See [AWS EC2 provider](src/rootcell/providers/aws-ec2/README.md) for the
+OpenTofu/Terraform layout, AWS resource ownership, AMI selection, and IAM
+isolation details.
 
 First run creates the provider resources and provisions both VMs. Provisioning
 uses Nix inside the VMs, but you do not need Nix installed on the host unless
@@ -170,8 +171,12 @@ environment variable:
 
 ```bash
 ROOTCELL_LIMACTL=/path/to/limactl      # Lima provider
-ROOTCELL_TERRAFORM=/path/to/terraform  # AWS EC2 provider
+ROOTCELL_TERRAFORM=/path/to/tofu       # AWS EC2 provider
 ```
+
+The AWS EC2 provider uses OpenTofu's `tofu` command by default. Set
+`ROOTCELL_TERRAFORM=/path/to/terraform` if you want to use a Terraform binary
+you installed yourself.
 
 Per-instance state defaults to `instances/<name>` under the current repo. Set
 `ROOTCELL_STATE_DIR=/path/to/rootcell-instances` to use a different persistent
@@ -365,7 +370,7 @@ Provider state is intentionally provider-specific:
 
 - macOS + Lima writes generated Lima YAML and VM state under `v/a/` and `v/f/`
   and keeps Lima's own VM state under normal `LIMA_HOME`.
-- AWS EC2 writes a generated Terraform module and Terraform state under
+- AWS EC2 writes a generated Terraform-compatible module and state under
   `v/aws-ec2/`.
 
 Use `./rootcell list` to show known VMs and their state. `./rootcell stop`

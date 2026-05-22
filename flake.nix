@@ -55,6 +55,7 @@
             paths = [
               p.bun
               p.lima
+              p.opentofu
             ];
           };
         });
