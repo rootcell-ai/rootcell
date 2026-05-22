@@ -122,6 +122,26 @@ chmod +x ./rootcell
 bun install --frozen-lockfile
 ```
 
+On macOS with Nix:
+
+```bash
+nix profile install .#hostTools
+
+chmod +x ./rootcell
+bun install --frozen-lockfile
+```
+
+For a one-off shell instead of a profile install:
+
+```bash
+nix shell .#hostTools --command bun install --frozen-lockfile
+nix shell .#hostTools --command ./rootcell
+```
+
+If your host Nix install has not enabled flakes and the new CLI yet, add
+`--extra-experimental-features 'nix-command flakes'` to the host-side `nix`
+commands above.
+
 Choose a provider before first use.
 
 ### macOS + Lima
