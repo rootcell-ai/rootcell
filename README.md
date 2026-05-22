@@ -129,6 +129,8 @@ Choose a provider before first use.
 The local Lima provider is the default:
 
 ```bash
+./rootcell --init-env macos-lima
+
 # Store the default Bedrock provider key in Keychain.
 security add-generic-password -a "$USER" -s aws-bedrock-api-key -w "<your-key>"
 
@@ -141,19 +143,13 @@ notes.
 
 ### AWS EC2
 
-Create or edit the instance `.env` before the first run:
+Initialize the instance `.env` before the first run:
 
 ```bash
-mkdir -p instances/aws-dev
-cp .env.defaults instances/aws-dev/.env
-cat >> instances/aws-dev/.env <<'EOF'
-ROOTCELL_VM_PROVIDER=aws-ec2
-ROOTCELL_AWS_PROFILE=your-profile
-ROOTCELL_AWS_REGION=us-east-1
-ROOTCELL_AWS_CONTROL_CIDR=auto
-EOF
+./rootcell -i aws-dev --init-env aws-ec2
+./rootcell -i aws-dev edit env
 
-./rootcell --instance aws-dev
+./rootcell -i aws-dev
 ```
 
 See [AWS EC2 provider](src/rootcell/providers/aws-ec2/README.md) for Terraform
@@ -187,6 +183,7 @@ state root.
 ./rootcell                        # open a bash shell inside the agent VM
 ./rootcell pi                     # run pi directly
 ./rootcell -- nix flake update    # run any command inside the agent VM
+./rootcell edit env               # edit the instance .env in $EDITOR
 ./rootcell edit http              # edit the HTTPS allowlist in $EDITOR
 ./rootcell edit dns               # edit the DNS allowlist in $EDITOR
 ./rootcell edit ssh               # edit the SSH allowlist in $EDITOR
@@ -199,8 +196,11 @@ state root.
 ./rootcell spy                    # tail formatted Bedrock Runtime traffic
 ./rootcell spy --raw              # include sanitized raw JSON bodies too
 ./rootcell spy --tui              # browse Bedrock Runtime traffic interactively
+./rootcell -i aws-dev --init-env aws-ec2     # initialize a provider-specific instance .env
+./rootcell -i local --init-env macos-lima    # initialize an explicit local Lima .env
 
 ./rootcell --instance dev           # open the dev instance shell
+./rootcell --instance dev edit env  # edit the dev instance environment
 ./rootcell --instance dev edit dns  # edit the dev instance DNS allowlist
 ./rootcell --instance dev allow     # reload only the dev instance allowlists
 ```
@@ -379,8 +379,25 @@ same instance settings.
 
 ### Environment
 
-`./rootcell` seeds `<instance-dir>/.env` from `.env.defaults` on first run. Edit
-that file for instance-local settings such as:
+Use `./rootcell -i <name> --init-env <provider-type>` to create the selected
+instance directory, seed allowlists and secret mappings, and write a
+provider-specific `<instance-dir>/.env`:
+
+```bash
+./rootcell -i local --init-env macos-lima
+./rootcell -i aws-dev --init-env aws-ec2
+```
+
+The supported provider types are `macos-lima` and `aws-ec2`. `macos-lima`
+writes `ROOTCELL_VM_PROVIDER=lima`; `aws-ec2` writes `ROOTCELL_VM_PROVIDER=aws-ec2`
+plus `ROOTCELL_AWS_PROFILE`, `ROOTCELL_AWS_REGION`, and
+`ROOTCELL_AWS_CONTROL_CIDR`. The AWS profile and region default from your
+current host environment when available, otherwise to `default` and `us-east-1`.
+
+Normal `./rootcell` entry also seeds `<instance-dir>/.env` from `.env.defaults`
+on first run if it does not already exist. Edit that file for instance-local
+settings such as these, or run `./rootcell -i <name> edit env` to open it in
+`$EDITOR`:
 
 ```sh
 ROOTCELL_VM_PROVIDER=lima
