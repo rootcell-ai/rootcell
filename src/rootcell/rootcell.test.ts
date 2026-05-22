@@ -4,6 +4,7 @@ import { parseRootcellArgs } from "./args.ts";
 import { ROOTCELL_SUBCOMMANDS } from "./metadata.ts";
 import { loadDotEnv, parseSecretMappings } from "./env.ts";
 import { resolveHostTool } from "./host-tools.ts";
+import { initRootcellInstanceEnv } from "./init-env.ts";
 import { buildConfig, formatVmList, rootcellMain } from "./rootcell.ts";
 import { deriveVmNames, instancePaths, listRootcellVmInstanceNames, loadRootcellInstance, seedRootcellInstanceFiles } from "./instance.ts";
 import { runCapture } from "./process.ts";
@@ -114,7 +115,17 @@ describe("rootcell argument parsing", () => {
     });
   });
 
-  test("parses edit allowlist subcommands", () => {
+  test("parses edit subcommands", () => {
+    const env = runArgs(["edit", "env"]);
+    expectRunArgs(env);
+    expect(env).toEqual({
+      kind: "run",
+      instanceName: "default",
+      subcommand: "edit",
+      rest: ["env"],
+      spyOptions: { raw: false, dedupe: true, tui: false },
+    });
+
     const http = runArgs(["edit", "http"]);
     expectRunArgs(http);
     expect(http).toEqual({
@@ -222,6 +233,21 @@ describe("rootcell argument parsing", () => {
 
   test("rejects unknown spy flags", () => {
     expect(() => parseRootcellArgs(["spy", "--bogus"])).toThrow("Unknown argument: bogus");
+  });
+
+  test("parses init-env provider mode", () => {
+    expect(parseRootcellArgs(["-i", "aws-test", "--init-env", "aws-ec2"])).toEqual({
+      kind: "init-env",
+      instanceName: "aws-test",
+      providerType: "aws-ec2",
+    });
+    expect(parseRootcellArgs(["--instance=local", "--init-env", "macos-lima"])).toEqual({
+      kind: "init-env",
+      instanceName: "local",
+      providerType: "macos-lima",
+    });
+    expect(() => parseRootcellArgs(["--init-env", "aws-ec2", "list"])).toThrow("--init-env cannot be combined");
+    expect(() => parseRootcellArgs(["--init-env", "unknown"])).toThrow();
   });
 
   test("rejects unknown rootcell flags before commands", () => {
@@ -1410,6 +1436,80 @@ describe("instance state", () => {
       rmSync(repo, { recursive: true, force: true });
     }
   });
+
+  test("initializes AWS EC2 instance environment", () => {
+    const repo = makeInstanceRepo();
+    try {
+      const result = initRootcellInstanceEnv(repo, "aws-test", "aws-ec2", ignoreLog, {
+        AWS_PROFILE: "sandbox",
+        AWS_REGION: "us-west-2",
+      });
+
+      expect(result.envPath).toBe(join(repo, "instances", "aws-test", ".env"));
+      expect(readFileSync(result.envPath, "utf8")).toBe([
+        "AWS_REGION=us-east-1",
+        "",
+        "# Provider initialized by rootcell --init-env aws-ec2.",
+        "ROOTCELL_VM_PROVIDER=aws-ec2",
+        "ROOTCELL_AWS_PROFILE=sandbox",
+        "ROOTCELL_AWS_REGION=us-west-2",
+        "ROOTCELL_AWS_CONTROL_CIDR=auto",
+        "",
+      ].join("\n"));
+      expect(readFileSync(join(repo, "instances", "aws-test", "secrets.env"), "utf8")).toContain("macos-keychain");
+      expect(readFileSync(join(repo, "instances", "aws-test", "proxy", "allowed-dns.txt"), "utf8")).toBe("\n");
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("initializes explicit macOS Lima instance environment", () => {
+    const repo = makeInstanceRepo();
+    try {
+      const result = initRootcellInstanceEnv(repo, "local", "macos-lima", ignoreLog, {});
+
+      expect(readFileSync(result.envPath, "utf8")).toBe([
+        "AWS_REGION=us-east-1",
+        "",
+        "# Provider initialized by rootcell --init-env macos-lima.",
+        "ROOTCELL_VM_PROVIDER=lima",
+        "",
+      ].join("\n"));
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("init-env preserves existing AWS provider settings", () => {
+    const repo = makeInstanceRepo();
+    try {
+      seedRootcellInstanceFiles(repo, "aws-test", ignoreLog, {});
+      const envPath = join(repo, "instances", "aws-test", ".env");
+      writeFileSync(envPath, [
+        "ROOTCELL_VM_PROVIDER=lima",
+        "ROOTCELL_AWS_PROFILE=prod",
+        "ROOTCELL_AWS_REGION=eu-central-1",
+        "",
+      ].join("\n"), "utf8");
+
+      initRootcellInstanceEnv(repo, "aws-test", "aws-ec2", ignoreLog, {
+        AWS_PROFILE: "sandbox",
+        AWS_REGION: "us-west-2",
+      });
+
+      expect(readFileSync(envPath, "utf8")).toBe([
+        "ROOTCELL_VM_PROVIDER=aws-ec2",
+        "ROOTCELL_AWS_PROFILE=prod",
+        "ROOTCELL_AWS_REGION=eu-central-1",
+        "",
+        "# Provider initialized by rootcell --init-env aws-ec2.",
+        "ROOTCELL_AWS_CONTROL_CIDR=auto",
+        "",
+      ].join("\n"));
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("rootcell edit command", () => {
@@ -1437,6 +1537,37 @@ describe("rootcell edit command", () => {
       expect(status).toBe(0);
       expect(readFileSync(record, "utf8").trim()).toBe(join(repo, ".state", "dev", "proxy", "allowed-dns.txt"));
       expect(readFileSync(join(repo, ".state", "dev", "proxy", "allowed-dns.txt"), "utf8")).toBe("\n");
+    } finally {
+      restoreEnv("ROOTCELL_STATE_DIR", oldRootcellStateDir);
+      restoreEnv("EDITOR", oldEditor);
+      restoreEnv("ROOTCELL_EDITOR_RECORD", oldRecord);
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("opens the selected instance environment in EDITOR", async () => {
+    const repo = makeInstanceRepo();
+    const oldRootcellStateDir = process.env.ROOTCELL_STATE_DIR;
+    const oldEditor = process.env.EDITOR;
+    const oldRecord = process.env.ROOTCELL_EDITOR_RECORD;
+    try {
+      mkdirSync(join(repo, "src", "bin"), { recursive: true });
+      writeFileSync(join(repo, "flake.nix"), "{}\n", "utf8");
+
+      const editor = join(repo, "editor.sh");
+      const record = join(repo, "opened.txt");
+      writeFileSync(editor, "#!/bin/sh\nprintf '%s\\n' \"$1\" > \"$ROOTCELL_EDITOR_RECORD\"\n", "utf8");
+      chmodSync(editor, 0o700);
+
+      process.env.ROOTCELL_STATE_DIR = join(repo, ".state");
+      process.env.EDITOR = editor;
+      process.env.ROOTCELL_EDITOR_RECORD = record;
+
+      const status = await rootcellMain(["--instance", "dev", "edit", "env"], join(repo, "src", "bin", "rootcell.ts"));
+
+      expect(status).toBe(0);
+      expect(readFileSync(record, "utf8").trim()).toBe(join(repo, ".state", "dev", ".env"));
+      expect(readFileSync(join(repo, ".state", "dev", ".env"), "utf8")).toBe("AWS_REGION=us-east-1\n");
     } finally {
       restoreEnv("ROOTCELL_STATE_DIR", oldRootcellStateDir);
       restoreEnv("EDITOR", oldEditor);

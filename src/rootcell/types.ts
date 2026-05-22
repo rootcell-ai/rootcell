@@ -11,6 +11,12 @@ export const RootcellVmProviderIdSchema = z.enum(["lima", "aws-ec2"]);
 
 export type RootcellVmProviderId = z.infer<typeof RootcellVmProviderIdSchema>;
 
+export const RootcellInitEnvProviderTypeSchema = z.enum(["macos-lima", "aws-ec2"]);
+
+export const ROOTCELL_INIT_ENV_PROVIDER_TYPES = RootcellInitEnvProviderTypeSchema.options;
+
+export type RootcellInitEnvProviderType = z.infer<typeof RootcellInitEnvProviderTypeSchema>;
+
 const AwsControlCidrSchema = z.string().refine(
   (value) => value === "auto" || isIpv4Cidr(value),
   { message: "must be 'auto' or an IPv4 CIDR block" },
@@ -126,12 +132,21 @@ export const ParsedRootcellHandledArgsSchema = z.object({
 
 export type ParsedRootcellHandledArgs = Readonly<z.infer<typeof ParsedRootcellHandledArgsSchema>>;
 
+export const ParsedRootcellInitEnvArgsSchema = z.object({
+  kind: z.literal("init-env"),
+  instanceName: NonEmptyStringSchema,
+  providerType: RootcellInitEnvProviderTypeSchema,
+});
+
+export type ParsedRootcellInitEnvArgs = Readonly<z.infer<typeof ParsedRootcellInitEnvArgsSchema>>;
+
 export const ParsedRootcellArgsSchema = z.discriminatedUnion("kind", [
   ParsedRootcellRunArgsSchema,
   ParsedRootcellHandledArgsSchema,
+  ParsedRootcellInitEnvArgsSchema,
 ]);
 
-export type ParsedRootcellArgs = ParsedRootcellRunArgs | ParsedRootcellHandledArgs;
+export type ParsedRootcellArgs = ParsedRootcellRunArgs | ParsedRootcellHandledArgs | ParsedRootcellInitEnvArgs;
 
 export const InstanceStateSchema = z.object({
   schemaVersion: z.literal(1),

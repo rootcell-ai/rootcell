@@ -6,7 +6,14 @@ AWS infrastructure with a generated Terraform module.
 
 ## Required Instance Environment
 
-Set these in the instance `.env` before first use:
+Initialize the instance `.env` before first use:
+
+```sh
+./rootcell -i aws-dev --init-env aws-ec2
+./rootcell -i aws-dev edit env
+```
+
+The command writes these provider settings:
 
 ```sh
 ROOTCELL_VM_PROVIDER=aws-ec2

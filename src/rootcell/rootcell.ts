@@ -10,6 +10,7 @@ import { dirname, join, resolve } from "node:path";
 import { parseRootcellArgs } from "./args.ts";
 import { loadDotEnv, nixString, parseSecretMappings } from "./env.ts";
 import { DEFAULT_IMAGE_MANIFEST_URL } from "./images.ts";
+import { initRootcellInstanceEnv } from "./init-env.ts";
 import {
   deriveVmNames,
   instancePaths,
@@ -28,12 +29,14 @@ import { RootcellConfigSchema, type RootcellConfig, type RootcellInstance, type 
 
 const GUEST_USER = "luser";
 
-const EDIT_ALLOWLIST_FILES = {
+const EDIT_PROXY_FILES = {
   http: "allowed-https.txt",
   https: "allowed-https.txt",
   dns: "allowed-dns.txt",
   ssh: "allowed-ssh.txt",
 } as const;
+
+const EDIT_TARGETS = ["env", "http", "https", "dns", "ssh"] as const;
 
 const VM_FILES: VmFileSet = {
   agent: [
@@ -948,24 +951,34 @@ function runEditCommand(
   instanceName: string,
   editTarget: string | undefined,
 ): number {
-  const file = editTarget === undefined ? undefined : EDIT_ALLOWLIST_FILES[editTarget as keyof typeof EDIT_ALLOWLIST_FILES];
-  if (file === undefined) {
-    log(`unknown allowlist '${editTarget ?? ""}' (expected http, dns, or ssh)`);
+  if (!isEditTarget(editTarget)) {
+    log(`unknown edit target '${editTarget ?? ""}' (expected ${EDIT_TARGETS.join(", ")})`);
     return 2;
   }
   const editor = env.EDITOR;
   if (editor === undefined || editor.length === 0) {
-    log("EDITOR is not set; set EDITOR to edit allowlists.");
+    log("EDITOR is not set; set EDITOR to edit instance files.");
     return 1;
   }
 
   seedRootcellInstanceFiles(repoDir, instanceName, log, env);
-  const path = join(instancePaths(repoDir, instanceName, env).proxyDir, file);
+  const path = editPath(instancePaths(repoDir, instanceName, env), editTarget);
   log(`opening ${path}`);
   return runInherited("sh", ["-c", "exec $EDITOR \"$1\"", "sh", path], {
     allowFailure: true,
     env,
   }).status;
+}
+
+function isEditTarget(value: string | undefined): value is (typeof EDIT_TARGETS)[number] {
+  return EDIT_TARGETS.some((target) => target === value);
+}
+
+function editPath(paths: ReturnType<typeof instancePaths>, target: (typeof EDIT_TARGETS)[number]): string {
+  if (target === "env") {
+    return paths.envPath;
+  }
+  return join(paths.proxyDir, EDIT_PROXY_FILES[target]);
 }
 
 function missingVmEntries(instanceName: string): readonly VmListEntry[] {
@@ -991,6 +1004,10 @@ export async function rootcellMain(args: readonly string[], importMetaPath: stri
   }
 
   try {
+    if (parsed.kind === "init-env") {
+      initRootcellInstanceEnv(repoDir, parsed.instanceName, parsed.providerType, log, process.env);
+      return 0;
+    }
     if (parsed.subcommand === "list") {
       return await runListCommand(repoDir, process.env, parsed.instanceName, hasInstanceFlag(args));
     }

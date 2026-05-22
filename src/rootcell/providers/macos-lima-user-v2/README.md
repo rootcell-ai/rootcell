@@ -10,8 +10,13 @@ HTTPS, SSH, and the host control path through the firewall.
 
 ## Required Instance Environment
 
-The Lima provider is the default. This is optional, but useful when you want the
-instance `.env` to be explicit:
+The Lima provider is the default. To make an instance `.env` explicit, run:
+
+```sh
+./rootcell -i local --init-env macos-lima
+```
+
+That command writes:
 
 ```sh
 ROOTCELL_VM_PROVIDER=lima
