@@ -438,6 +438,22 @@ describe("host tool resolution", () => {
     })).toThrow("nix shell .#hostTools --command ./rootcell");
   });
 
+  test("AWS EC2 uses OpenTofu by default but accepts Terraform override", () => {
+    const tofuSpec = {
+      name: "tofu",
+      envVar: "ROOTCELL_TERRAFORM",
+      purpose: "to manage rootcell AWS EC2 resources",
+    };
+    expect(resolveHostTool(tofuSpec, {
+      env: {},
+      commandExists: (command) => command === "tofu",
+    })).toBe("tofu");
+    expect(resolveHostTool(tofuSpec, {
+      env: { ROOTCELL_TERRAFORM: "/usr/local/bin/terraform" },
+      commandExists: () => false,
+    })).toBe("/usr/local/bin/terraform");
+  });
+
   test("runtime host tools do not fall back to host-side nix builds", () => {
     for (const file of [
       "src/rootcell/images.ts",
@@ -1038,8 +1054,10 @@ describe("VM and network providers", () => {
     }
   });
 
-  test("AWS EC2 README documents Terraform layout, upstream AMI, tags, and credential isolation", () => {
+  test("AWS EC2 README documents OpenTofu layout, upstream AMI, tags, and credential isolation", () => {
     const readme = readFileSync("src/rootcell/providers/aws-ec2/README.md", "utf8");
+    expect(readme).toContain("OpenTofu");
+    expect(readme).toContain("ROOTCELL_TERRAFORM=/path/to/terraform");
     expect(readme).toContain("<instance-dir>/v/aws-ec2/");
     expect(readme).toContain("official upstream NixOS ARM64 AMI");
     expect(readme).toContain("427812963091");

@@ -34,7 +34,7 @@ function hostToolMissingMessage(spec: HostToolSpec): string {
     ...(envVars.length === 0 ? [] : [`Set ${envVars.join(" or ")}=/path/to/${spec.name} to use a non-PATH binary.`]),
     "Install host tools with Homebrew:",
     "  brew tap oven-sh/bun",
-    "  brew install bun lima",
+    "  brew install bun lima opentofu",
     "Or run with Nix-provided host tools:",
     "  nix shell .#hostTools --command ./rootcell",
   ].join("\n");

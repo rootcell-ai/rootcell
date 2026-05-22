@@ -105,7 +105,7 @@ export class AwsEc2TerraformProject {
       return;
     }
 
-    this.log(`applying AWS EC2 Terraform for instance '${this.config.instanceName}'...`);
+    this.log(`applying AWS EC2 infrastructure for instance '${this.config.instanceName}'...`);
     this.writeTerraformFiles(metadata, "running", controlCidr);
     this.runner.init(this.terraformDir(), this.terraformEnv());
     this.runner.apply(this.terraformDir(), this.terraformEnv());
@@ -354,7 +354,7 @@ export class AwsEc2TerraformProject {
   private ensureTerraform(): string {
     if (this.terraformBin.length === 0) {
       this.terraformBin = resolveHostTool({
-        name: "terraform",
+        name: "tofu",
         envVar: "ROOTCELL_TERRAFORM",
         purpose: "to manage rootcell AWS EC2 resources",
       });

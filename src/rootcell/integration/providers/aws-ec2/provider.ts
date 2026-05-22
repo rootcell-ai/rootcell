@@ -7,6 +7,7 @@ import {
 } from "../../common/fixtures.ts";
 import { instancePaths } from "../../../instance.ts";
 import { commandExists, runInherited } from "../../../process.ts";
+import { resolveHostTool } from "../../../host-tools.ts";
 import type { RootcellConfig } from "../../../types.ts";
 import { AwsEc2VmProvider } from "../../../providers/aws-ec2.ts";
 import {
@@ -47,7 +48,12 @@ export function preflightAwsEc2Integration(): Promise<void> {
   requireEnv("ROOTCELL_VM_PROVIDER", "aws-ec2");
   requireEnv("ROOTCELL_AWS_PROFILE");
   requireEnv("ROOTCELL_AWS_REGION");
-  for (const tool of ["terraform", "ssh", "scp", "ssh-keygen", "curl"]) {
+  resolveHostTool({
+    name: "tofu",
+    envVar: "ROOTCELL_TERRAFORM",
+    purpose: "for AWS EC2 integration tests",
+  });
+  for (const tool of ["ssh", "scp", "ssh-keygen", "curl"]) {
     if (!commandExists(tool)) {
       throw new Error(`aws-ec2 integration tests require '${tool}' on PATH`);
     }

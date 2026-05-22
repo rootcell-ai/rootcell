@@ -2,7 +2,10 @@
 
 The `aws-ec2` provider runs rootcell's agent and firewall VMs as EC2
 instances. Rootcell creates a dedicated VPC per rootcell instance and manages
-AWS infrastructure with a generated Terraform module.
+AWS infrastructure with a generated Terraform-compatible module. It runs
+OpenTofu's `tofu` command by default; set
+`ROOTCELL_TERRAFORM=/path/to/terraform` to use a Terraform binary you installed
+yourself.
 
 ## Required Instance Environment
 
@@ -26,13 +29,13 @@ ROOTCELL_AWS_CONTROL_CIDR=auto
 not fall back to `AWS_PROFILE` or `AWS_REGION` for provider selection.
 
 `ROOTCELL_AWS_CONTROL_CIDR=auto` resolves your current public IPv4 address to a
-single `/32` when Terraform is applied. If that address changes, normal
+single `/32` when OpenTofu is applied. If that address changes, normal
 `rootcell` entry fails with instructions to run `rootcell provision` so the
 firewall SSH ingress rule is updated intentionally.
 
-## Terraform Layout
+## OpenTofu / Terraform Layout
 
-Rootcell writes one Terraform module per instance:
+Rootcell writes one Terraform-compatible module per instance:
 
 ```text
 <instance-dir>/v/aws-ec2/
@@ -47,12 +50,12 @@ Rootcell writes one Terraform module per instance:
 ```
 
 Terraform state is the ownership record for AWS resources. Normal VM entry does
-not run `terraform init` or `terraform apply`; it reads cached Terraform
-outputs, checks EC2 status, syncs allowlists, injects explicitly configured
+not run `tofu init` or `tofu apply`; it reads cached infrastructure outputs,
+checks EC2 status, syncs allowlists, injects explicitly configured
 session secrets, and opens SSH through the firewall.
 
-Terraform runs for first create, explicit `rootcell provision`, Terraform-backed
-start/stop transitions, and `rootcell remove`.
+OpenTofu runs for first create, explicit `rootcell provision`,
+state-backed start/stop transitions, and `rootcell remove`.
 
 ## Upstream NixOS AMI
 
@@ -60,7 +63,7 @@ AWS EC2 instances boot from the official upstream NixOS ARM64 AMI. Rootcell
 does not use rootcell-owned release image manifests, VM Import/Export, imported
 snapshots, generated AMIs, or S3 image staging.
 
-Terraform resolves the AMI at apply time:
+OpenTofu resolves the AMI at apply time:
 
 ```hcl
 data "aws_ami" "nixos_arm64" {
@@ -112,8 +115,8 @@ values.
 ## IAM And Credential Isolation
 
 Rootcell does not attach an IAM instance profile to the agent or firewall. The
-generated Terraform module must not create IAM roles, IAM instance profiles, or
-instance-profile associations for those instances.
+generated Terraform-compatible module must not create IAM roles, IAM instance
+profiles, or instance-profile associations for those instances.
 
 Rootcell never copies host `~/.aws` files into either VM and never injects AWS
 credentials unless the user explicitly maps them in `secrets.env`.
