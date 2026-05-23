@@ -161,6 +161,21 @@ test("selects a call and opens inspector sections", async ({ page }) => {
   await expect(page.getByText("Last ingest", { exact: true })).toBeVisible();
 });
 
+test("shows pinned inspector state when a newer visible call is available", async ({ page }) => {
+  await page.goto("/?since=0");
+  await expect(page.getByTestId("timeline-row")).toHaveCount(5);
+  await expect(page.getByTestId("inspector-pinned-state")).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Open call call-fixture-flow-tool-use", exact: true }).click();
+  await expect(page.locator("aside").getByText("call-fixture-flow-tool-use", { exact: true })).toBeVisible();
+  await expect(page.getByTestId("inspector-pinned-state")).toHaveText("Pinned");
+  await expect(page.getByRole("button", { name: "Follow Latest", exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "Follow Latest", exact: true }).click();
+  await expect(page.locator("aside").getByText("call-fixture-flow-tool-result", { exact: true })).toBeVisible();
+  await expect(page.getByTestId("inspector-pinned-state")).toHaveCount(0);
+});
+
 test("jumps to buried inspector sections from the section navigator", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto("/?since=0");

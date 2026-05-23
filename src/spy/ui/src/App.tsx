@@ -2,6 +2,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   Activity,
   AlertTriangle,
+  ArrowUp,
   BadgeInfo,
   Clock,
   Database,
@@ -299,6 +300,10 @@ export function App(): React.ReactElement {
   const selectedSummary = React.useMemo(() => {
     return calls.find((summary) => summary.call.id === selectedCallId) ?? null;
   }, [calls, selectedCallId]);
+  const latestVisibleSummary = calls[0] ?? null;
+  const selectedCallIsPinned = selectedSummary !== null
+    && latestVisibleSummary !== null
+    && selectedSummary.call.id !== latestVisibleSummary.call.id;
 
   const selectedDetailVersion = React.useMemo(() => {
     if (selectedSummary === null) {
@@ -538,9 +543,15 @@ export function App(): React.ReactElement {
           summary={selectedSummary}
           detailState={detailState}
           streamState={streamState}
+          pinned={selectedCallIsPinned}
           filters={filters}
           health={health}
           onFilters={setFilters}
+          onFollowLatest={() => {
+            if (latestVisibleSummary !== null) {
+              setSelectedCallId(latestVisibleSummary.call.id);
+            }
+          }}
           onLoadStream={() => {
             void loadStreamEvents(false);
           }}
@@ -823,9 +834,11 @@ function CallInspector(props: {
   readonly summary: SpyCallSummary | null;
   readonly detailState: DetailState | null;
   readonly streamState: StreamState | null;
+  readonly pinned: boolean;
   readonly filters: UiFilters;
   readonly health: SpyServiceHealth | null;
   readonly onFilters: (filters: UiFilters) => void;
+  readonly onFollowLatest: () => void;
   readonly onLoadStream: () => void;
   readonly onLoadMoreStream: () => void;
   readonly onStreamWindowStart: (windowStart: number) => void;
@@ -871,7 +884,22 @@ function CallInspector(props: {
               {props.summary === null ? "Select a provider call." : props.summary.call.id}
             </p>
           </div>
-          {props.summary === null ? null : <Badge tone={statusTone(props.summary.call.status)}>{props.summary.call.status}</Badge>}
+          {props.summary === null ? null : (
+            <div className="flex shrink-0 items-center gap-2">
+              {props.pinned ? (
+                <>
+                  <span data-testid="inspector-pinned-state">
+                    <Badge tone="amber">Pinned</Badge>
+                  </span>
+                  <Button size="sm" onClick={props.onFollowLatest}>
+                    <ArrowUp aria-hidden="true" size={14} />
+                    Follow Latest
+                  </Button>
+                </>
+              ) : null}
+              <Badge tone={statusTone(props.summary.call.status)}>{props.summary.call.status}</Badge>
+            </div>
+          )}
         </div>
         {showSectionNav ? <InspectorSectionNav /> : null}
       </div>

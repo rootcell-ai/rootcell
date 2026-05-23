@@ -867,9 +867,12 @@ P3 is polish, minor copy, or secondary accessibility.
 - [ ] [P1] SPY-QA-06: Reset inspector scroll and panel state when selecting a new
   call, or expose an explicit reset affordance. Selecting a different call after
   deep stream inspection can keep `scrollTop` thousands of pixels down.
-- [ ] [P1] SPY-QA-07: Clarify selected-call pinning while live calls arrive.
+- [x] [P1] SPY-QA-07: Clarify selected-call pinning while live calls arrive.
   New rows appear above the selected row, but the inspector stays on the older
   call without an explicit pinned/auto-follow state.
+  - Fixed on 2026-05-23: the inspector now shows a `Pinned` badge and `Follow
+    Latest` button when the selected call is older than the newest visible
+    timeline row, while preserving pinned inspection by default.
 - [ ] [P1] SPY-QA-08: Keep URL/query state in sync with selected time range and
   distinguish fixed `since` URLs from true Live mode. Reloading old `since` URLs
   can show historical data while the header still says `Live from now`.
@@ -955,10 +958,12 @@ Detailed issues and reproduction notes:
 - [ ] The custom datetime input is cramped at the normal desktop browser width.
   The stored value is correct, but the rendered field visually hides or crowds
   the AM/PM/time affordance next to the calendar icon.
-- [ ] Timeline selection state is ambiguous when new calls arrive. The inspector
+- [x] Timeline selection state is ambiguous when new calls arrive. The inspector
   remains pinned to the previously selected call, which may be intentional, but
   the UI does not explicitly label the inspector as pinned while newer calls are
   arriving above it.
+  Fixed on 2026-05-23 by adding the inspector `Pinned` state and `Follow
+  Latest` control.
 - [ ] Pending timeline rows duplicate the usage label. During the continued
   05:30-06:00 QA loop, pending rows rendered as `usage usage n/a`, which reads
   like a formatting bug rather than a deliberate unavailable-value state.
