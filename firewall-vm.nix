@@ -207,7 +207,6 @@ in
   systemd.tmpfiles.rules = [
     "d /etc/agent-vm 0755 ${username} users -"
     "f /etc/agent-vm/dnsmasq-allowlist.conf 0644 root root -"
-    "d /run/agent-vm-spy 1777 root root -"
     "d /var/lib/rootcell-spy 0750 rootcell-spy rootcell-spy -"
     "d /var/spool/rootcell-spy 2770 root rootcell-spy -"
   ];
@@ -228,11 +227,7 @@ in
   environment.etc."agent-vm/mitmproxy_addon.py".source = ./proxy/mitmproxy_addon.py;
   environment.etc."agent-vm/agent_spy.py" = {
     source = ./proxy/agent_spy.py;
-    mode = "0755";
-  };
-  environment.etc."agent-vm/agent_spy_tui.py" = {
-    source = ./proxy/agent_spy_tui.py;
-    mode = "0755";
+    mode = "0644";
   };
   environment.etc."agent-vm/spy-service.js" = {
     source = ./dist/spy-service.js;
@@ -300,7 +295,7 @@ in
       ProtectHome = true;
       NoNewPrivileges = true;
       ReadOnlyPaths = "/etc/agent-vm";
-      ReadWritePaths = [ "/run/agent-vm-spy" "/var/spool/rootcell-spy" ];
+      ReadWritePaths = [ "/var/spool/rootcell-spy" ];
       SupplementaryGroups = [ "rootcell-spy" ];
       Restart = "on-failure";
       RestartSec = "2s";
@@ -333,7 +328,7 @@ in
       ProtectSystem = "strict";
       ProtectHome = true;
       ReadOnlyPaths = "/etc/agent-vm";
-      ReadWritePaths = [ "/run/agent-vm-spy" "/var/spool/rootcell-spy" ];
+      ReadWritePaths = [ "/var/spool/rootcell-spy" ];
       SupplementaryGroups = [ "rootcell-spy" ];
       Restart = "on-failure";
       RestartSec = "2s";

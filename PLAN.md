@@ -565,6 +565,22 @@ V1 excludes:
     `bun run test:integration`, and `bun run test:integration:clean`.
   - Confirmed fresh Lima integration VM sizing with `limactl list`:
     `firewall-test` uses `64GiB` and `agent-test` remains `60GiB`.
+- Removed the old terminal/TUI spy implementation:
+  - Trimmed `proxy/agent_spy.py` to the mitmproxy-facing Bedrock spool shim.
+  - Deleted the Textual TUI module, terminal tail workflow, and Python tests for
+    that legacy path.
+  - Stopped provisioning `agent_spy_tui.py` and the legacy
+    `/run/agent-vm-spy` NDJSON directory.
+  - Updated host provisioning and integration assertions so `agent_spy.py` is
+    treated as a shipped shim, not an executable terminal tool.
+  - Updated main/proxy docs so `./rootcell spy` is only the browser launcher
+    over the SSH tunnel, with `--no-open` as the supported non-default flag.
+  - Added regression coverage that rejects the removed `--tui`, `--raw`, and
+    `--no-dedupe` paths and checks the firewall module no longer references the
+    removed TUI shim or runtime directory.
+  - Verified `python3 -m compileall proxy`, Python unit discovery,
+    `bun run typecheck`, `bun run lint`, `bun run test`, cleanup `rg` checks,
+    and the full `bun run test:integration` suite.
 
 ### V1
 
@@ -584,7 +600,7 @@ Build the Bedrock/Pi browser spy:
 - [x] Remove old user-facing `rootcell spy --tui`, `--raw`, and `--no-dedupe`
   CLI flags.
 - [x] Raise firewall disk/root volume defaults to 64 GiB.
-- [ ] Remove old TUI/terminal spy implementation files, tests, and docs.
+- [x] Remove old TUI/terminal spy implementation files, tests, and docs.
 - [ ] Add `src/spy/README.md` and brief links from main/proxy docs.
 
 ### V1.5

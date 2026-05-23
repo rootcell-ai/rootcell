@@ -99,36 +99,6 @@ class AgentSpyDetectionTests(unittest.TestCase):
         self.assertEqual(headers[1][1], "[redacted]")
         self.assertEqual(headers[2][1], "application/json")
 
-    def test_binary_fields_are_summarized(self):
-        raw = b"not really a png but enough bytes" * 4
-        body = {
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": "image/png",
-                "data": base64.b64encode(raw).decode("ascii"),
-            },
-        }
-        summarized = agent_spy.summarize_binary_fields(body)
-        self.assertIn("image/png base64", summarized["source"]["data"])
-        self.assertIn("sha256:", summarized["source"]["data"])
-
-    def test_eventstream_decoding(self):
-        payloads = [
-            {"messageStart": {"role": "assistant"}},
-            {"contentBlockDelta": {"delta": {"text": "Hello"}}},
-            {"metadata": {"usage": {"inputTokens": 4, "outputTokens": 2}}},
-        ]
-        stream = b"".join(
-            eventstream_message(
-                {":message-type": "event", ":event-type": "chunk", ":content-type": "application/json"},
-                json.dumps(payload).encode("utf-8"),
-            )
-            for payload in payloads
-        )
-        decoded = agent_spy.decode_event_stream(stream)
-        self.assertEqual(len(decoded), len(payloads))
-
 
 class AgentSpySpoolShimTests(unittest.TestCase):
     def setUp(self):

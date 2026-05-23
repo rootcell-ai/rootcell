@@ -813,7 +813,7 @@ fi
 systemctl is-active mitmproxy-explicit >/dev/null 2>&1 \\
  && systemctl is-active mitmproxy-transparent >/dev/null 2>&1 \\
  && systemctl is-active dnsmasq >/dev/null 2>&1 \\
- && test -x /etc/agent-vm/agent_spy.py \\
+ && test -f /etc/agent-vm/agent_spy.py \\
  && test -f /etc/agent-vm/spy-service.js \\
  && test -f /etc/agent-vm/spy-ui/index.html \\
  && test -f /etc/agent-vm/spy.env \\

@@ -1081,6 +1081,11 @@ describe("VM and network providers", () => {
     expect(firewallModule).toContain("lib/systemd/system-generators/rootcell-spy-generator");
     expect(firewallModule).toContain("d /var/lib/rootcell-spy 0750 rootcell-spy rootcell-spy -");
     expect(firewallModule).toContain("d /var/spool/rootcell-spy 2770 root rootcell-spy -");
+    const legacyTuiShim = "agent_spy_" + "tui.py";
+    const legacySpyRunDir = "/run/" + "agent-vm-spy";
+    expect(firewallModule).toContain("source = ./proxy/agent_spy.py;");
+    expect(firewallModule).not.toContain(legacyTuiShim);
+    expect(firewallModule).not.toContain(legacySpyRunDir);
     expect(firewallModule).not.toContain("ps.textual");
 
     const agentModule = readFileSync("agent-vm.nix", "utf8");

@@ -8,8 +8,8 @@ rootcell gives a coding agent disposable NixOS VMs where it can use root without
 touching your host filesystem. All outbound traffic passes through a separate
 firewall VM with DNS, HTTPS, and SSH allowlists. HTTPS is routed through a
 transparent decrypting proxy, so rootcell can enforce host policy and
-`./rootcell spy` can show formatted Bedrock Runtime traffic when you need to see
-what the agent is sending.
+`./rootcell spy` can open a local browser view of captured Bedrock Runtime
+traffic when you need to see what the agent is sending.
 
 rootcell is provider-backed: the same agent/firewall model can run locally on
 macOS with Lima or remotely in AWS EC2.
@@ -222,9 +222,7 @@ state root.
 ./rootcell list                   # list rootcell VMs and their current state
 ./rootcell stop --instance dev    # stop the dev instance VMs
 ./rootcell remove --instance dev  # stop dev and delete its provider VM state
-./rootcell spy                    # tail formatted Bedrock Runtime traffic
-./rootcell spy --raw              # include sanitized raw JSON bodies too
-./rootcell spy --tui              # browse Bedrock Runtime traffic interactively
+./rootcell spy                    # open the browser spy through a local SSH tunnel
 ./rootcell -i aws-dev --init-env aws-ec2     # initialize a provider-specific instance .env
 ./rootcell -i local --init-env macos-lima    # initialize an explicit local Lima .env
 
@@ -379,8 +377,7 @@ secrets.env.defaults     seed provider-qualified secret mappings for per-instanc
 instances/
                          per-instance state, allowlists, CA, SSH keys, and generated files
 proxy/                   allowlists and mitmproxy/dnsmasq firewall code
-  agent_spy.py           Bedrock Runtime formatter for `./rootcell spy`
-  agent_spy_tui.py       Textual browser for `./rootcell spy --tui`
+  agent_spy.py           Bedrock Runtime spool shim for the browser spy
 pi/agent/                global pi instructions, skills, and extensions
 ```
 
@@ -524,12 +521,10 @@ the checked-in defaults.
 
 ## Troubleshooting
 
-See formatted Bedrock Runtime requests and responses:
+Open the browser spy for captured Bedrock Runtime requests and responses:
 
 ```bash
 ./rootcell spy
-./rootcell spy --raw
-./rootcell spy --tui
 ```
 
 Check that firewall services are listening:
