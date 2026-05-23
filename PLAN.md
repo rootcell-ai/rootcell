@@ -749,6 +749,378 @@ findings are complete:
     cache markers, raw-disabled, raw-enabled, API contract validation, and the
     browser composition surface.
 
+### V1 Manual Browser QA Findings
+
+QA date: 2026-05-23.
+
+Manual test context:
+
+- Re-enabled spy on the `default` Lima instance, launched `./rootcell spy
+  --no-open`, and inspected the browser UI through the local SSH tunnel.
+- Captured a longer Pi.dev session using Amazon Bedrock model
+  `us.anthropic.claude-haiku-4-5-20251001-v1:0`.
+- Added a temporary large cache-anchor system prompt to force provider cache
+  accounting, then verified calls with cache write and cache read values in the
+  API and browser inspector.
+- Observed 17 real Bedrock `converse-stream` calls, including a call with
+  provider usage `input 10`, `output 32`, `cache read 10175`, and `cache write
+  29`, and a later long call with `input 10`, `output 2641`, `cache write
+  4570`, `total 7221`, 515 stream events, and 35 request blocks. The latest
+  live retry call showed `input 10`, `output 262`, `cache write 7195`, `total
+  7467`, 72 stream events, and 38 request blocks.
+- Created additional live Pi/Bedrock turns while the browser was open and
+  verified the timeline count and health values updated without refresh. A long
+  call visibly transitioned from pending with `output 0 B`, `usage n/a`, and
+  `duration pending` to complete with `output 7.5 KiB`, `usage 7.2k tok`, and
+  `duration 13 s`.
+- Cross-checked the browser against `/api/health` and `/api/calls`; the API
+  reported 17 calls, 0 pending calls, 0 dropped captures, 0 B spool, 1.9 MiB
+  DB size, and the same cache-heavy usage values shown in the inspector.
+- Continued the QA loop after 05:30 PM with a fresh Live spy URL. By 05:40 PM
+  `/api/health` reported 22 provider calls, 0 pending calls, 0 dropped captures,
+  0 B spool, and 2.7 MiB DB size. The newest Pi/Bedrock call showed provider
+  usage `input 10`, `output 104`, `cache read 5123`, `cache write 77`, `total
+  5314`, 36 stream events, and 23 request blocks.
+- While `Today` was selected, a new 05:40:59 PM Pi/Bedrock call appeared live
+  without refresh, taking the visible Today count to 23 calls. The API reported
+  `input 10`, `output 98`, `cache read 5200`, `cache write 81`, `total 5389`,
+  29 stream events, and 26 request blocks.
+- A later 05:45:03 PM health-live Pi/Bedrock call took the visible Today count
+  to 24 calls. The API reported `input 10`, `output 105`, `cache read 5281`,
+  `cache write 79`, `total 5475`, 30 stream events, and 29 request blocks.
+
+Checks that passed:
+
+- The cache-heavy call's Usage Records panel showed `input 10`, `output 32`,
+  `cache read 10175`, `cache write 29`, and `total 10246`.
+- The latest long cache-write call's Usage Records panel showed `input 10`,
+  `output 2641`, `cache read 0`, `cache write 4570`, and `total 7221`.
+- The latest live retry call's API and timeline values matched at `input 27 KiB`,
+  `output 2.6 KiB`, `usage 7.5k tok`, `duration 2.5 s`, and Usage Records
+  showed `input 10`, `output 262`, `cache read 0`, `cache write 7195`, and
+  `total 7467`.
+- Health updated after the live call and matched the API: Enabled, DB size
+  1.9 MiB, spool 0 B, dropped captures 0, last ingest May 23 05:14:10 PM,
+  Calls 17, Pending 0, Schema 2.
+- The 05:37:36 PM cache-read/write call matched between API and UI after
+  selection: the row showed `input 17 KiB`, `output 1.3 KiB`, `usage 5.3k tok`,
+  `duration 1.6 s`, and the inspector showed `in 10 · out 104 · cache
+  5,123/77`.
+- The Today range updated in place when the 05:40:59 PM call completed, and the
+  row showed the expected `input 18 KiB`, `output 1.2 KiB`, `usage 5.4k tok`,
+  `duration 1.4 s`; selecting it showed `in 10 · out 98 · cache 5,200/81`.
+- The 05:45:03 PM call also appeared live in Today, and the row/API/inspector
+  agreed at `input 19 KiB`, `output 1.2 KiB`, `usage 5.5k tok`, `duration 1.4 s`,
+  and `in 10 · out 105 · cache 5,281/79`.
+- Browser console logs stayed empty after the post-5:30 live-update, search,
+  filtering, and inspector-selection checks.
+- Pending provider calls render live in the timeline and update in place after
+  completion; the latest long turn matched the API values after completion.
+- No-result search and no-result status filtering clear the old inspector detail
+  and show an explicit empty inspector state.
+- Raw payloads correctly report that raw storage is disabled or no raw payloads
+  are stored.
+
+Prioritized fix handoff:
+
+Priority scale: P0 blocks ordinary UI use or hides core data; P1 is high-impact
+workflow correctness/usability; P2 is important clarity or inspection quality;
+P3 is polish, minor copy, or secondary accessibility.
+
+- [ ] [P0] SPY-QA-01: Rework the two-column page layout so the timeline and
+  inspector own their scroll containers instead of letting `main` hide overflow.
+  Today/long-call views can put rows, footer controls, and lower inspector panels
+  thousands of pixels below the visible viewport.
+- [ ] [P0] SPY-QA-02: Fix hidden top-level scrolling. Focus/opening lower
+  inspector panels can set `main.scrollTop` despite `overflow-hidden`, pushing
+  the global header and range controls offscreen with no visible page scrollbar.
+- [ ] [P0] SPY-QA-03: Fix timeline row and footer overlap. Rows in the short
+  10-minute view overlap each other by about 12 px, hit-testing can return two
+  row buttons at one point, and the call-count/Load More footer can cover row
+  content.
+- [ ] [P0] SPY-QA-04: Make long inspectors navigable. The inspector often
+  measures taller than the visible viewport, Request/Response Blocks open by
+  default for huge calls, and Usage Records/Network/Stream/Raw/Health become
+  effectively buried.
+- [ ] [P1] SPY-QA-05: Virtualize or paginate Stream Events and reset stale loaded
+  stream state on call/range changes. Loading 72-765 events renders hundreds or
+  thousands of inline lines and can leave the operator stranded in an old deep
+  scroll position.
+- [ ] [P1] SPY-QA-06: Reset inspector scroll and panel state when selecting a new
+  call, or expose an explicit reset affordance. Selecting a different call after
+  deep stream inspection can keep `scrollTop` thousands of pixels down.
+- [ ] [P1] SPY-QA-07: Clarify selected-call pinning while live calls arrive.
+  New rows appear above the selected row, but the inspector stays on the older
+  call without an explicit pinned/auto-follow state.
+- [ ] [P1] SPY-QA-08: Keep URL/query state in sync with selected time range and
+  distinguish fixed `since` URLs from true Live mode. Reloading old `since` URLs
+  can show historical data while the header still says `Live from now`.
+- [ ] [P1] SPY-QA-09: Decide whether `10 min` and `1 hour` are rolling windows or
+  fixed snapshots, then label/update them consistently. Refresh currently keeps
+  the original fixed start.
+- [ ] [P1] SPY-QA-10: Keep service Health reachable independently of selected
+  calls. Empty search/filter results clear the inspector and remove access to
+  health even though `/api/health` is still valid.
+- [ ] [P1] SPY-QA-11: Improve empty-state copy for active filters/search. A
+  Pending filter in Today with 23 completed calls says "No provider calls in this
+  range" instead of explaining that filters excluded the calls.
+- [ ] [P1] SPY-QA-12: Add a single clear/reset control for search and filters.
+  Recovering the full list currently requires clearing text, resetting multiple
+  selects, and submitting again.
+- [ ] [P1] SPY-QA-13: Make search results explain why they matched. Rows need
+  snippets/highlights; exact-looking hyphenated marker searches currently behave
+  like broad token matches and can return surprising older calls.
+- [ ] [P1] SPY-QA-14: Clarify search scope and include or explicitly exclude call
+  ids/model ids/metadata. Visible call-id fragments return no results while the
+  placeholder only says `Search text`.
+- [ ] [P1] SPY-QA-15: Submit search on Enter. The input updates but results do not
+  change until the Search button is clicked.
+- [ ] [P1] SPY-QA-16: Group related provider calls into Pi turns/sessions or show
+  prompt snippets. Tool-use cycles appear as adjacent unrelated Haiku rows.
+- [ ] [P1] SPY-QA-17: Make diff baseline scope explicit. Live/ranged views can
+  diff against a prior request outside the visible range without saying so.
+- [ ] [P1] SPY-QA-18: Surface cache read/write in the timeline summary and rename
+  or clarify the `cache 2` marker badge. Cache-read and cache-write calls look
+  nearly identical from the row alone.
+- [ ] [P1] SPY-QA-19: Fix Bedrock reasoning classification. Prior-history
+  `reasoningContent` and signature-only reasoning chunks show as `Unknown`
+  instead of thinking/reasoning metadata.
+- [ ] [P1] SPY-QA-20: Fix pending-row formatting. Pending rows can render
+  `usage usage n/a`.
+- [ ] [P1] SPY-QA-21: Fix modal focus management for Clear spy data. Focus stays
+  on the background icon button, the background is not effectively inert, and
+  Escape did not close the dialog during QA.
+- [ ] [P2] SPY-QA-22: Make request composition responsive. Provider usage and
+  cache read/write suffixes truncate, and the section table clips horizontally
+  at the normal in-app browser width.
+- [ ] [P2] SPY-QA-23: Move or scope the block-kind filter. It lives under Request
+  Blocks, affects request and response blocks, persists across call selection,
+  and can make Response Blocks look empty.
+- [ ] [P2] SPY-QA-24: Improve custom-range state. `Apply` stays green while all
+  range pills are inactive, lacks ARIA state, and minute precision rounded a
+  prior `since` down to `:00`.
+- [ ] [P2] SPY-QA-25: Expand or restyle the custom datetime input so the AM/PM
+  and time controls are not cramped at the normal desktop width.
+- [ ] [P2] SPY-QA-26: Reduce visual noise in stream-event JSON. Opaque Bedrock
+  `p` fields dominate the event payload and look like rendering artifacts.
+- [ ] [P2] SPY-QA-27: Improve Network Metadata readability. Paths truncate and
+  URL-encoded model punctuation such as `%3A0` makes the request target harder
+  to verify.
+- [ ] [P2] SPY-QA-28: Show the full provider model id somewhere prominent. The
+  normal row/header omit the `us.anthropic.` Bedrock namespace.
+- [ ] [P2] SPY-QA-29: Fix sticky inspector header overlap. Scrolled detail content
+  can slide underneath the fixed title/status area and appear clipped.
+- [ ] [P2] SPY-QA-30: Add ARIA state for selected timeline row and active range
+  segment. Current active/selected states are visual only.
+- [ ] [P2] SPY-QA-31: Improve timeline row accessible names. `aria-label` only
+  exposes `Open call <id>` and hides visible model/status/time/usage context from
+  assistive technology.
+- [ ] [P2] SPY-QA-32: Make the disconnected SSE `Reconnect` badge either a real
+  control or passive status text. It currently reads like a clickable action.
+- [ ] [P2] SPY-QA-33: Reduce nested scroll traps in large JSON/detail panels.
+  Stream events and other large detail payloads can catch wheel input and make it
+  awkward to continue through the inspector.
+- [ ] [P3] SPY-QA-34: Fix singular/plural call count grammar (`1 calls`).
+- [ ] [P3] SPY-QA-35: Loosen timeline row chips/badges. `cache 2`, `tok`, and
+  `PM` wrap or clip into awkward multi-line fragments.
+- [ ] [P3] SPY-QA-36: Prevent top inspector summary cards from truncating
+  important values such as exact `Started` time.
+
+Detailed issues and reproduction notes:
+
+- [ ] Prior request history containing Bedrock `reasoningContent` is classified
+  as `unknown` in request blocks. The same semantic content is classified as
+  thinking/reasoning on the response side, so repeated reasoning from provider
+  history is easy to miss and diff/composition labels are inconsistent. Response
+  `reasoningContent` signature-only chunks also surface as `Unknown`, which
+  makes provider thinking metadata look like an unclassified parsing failure.
+- [ ] The custom datetime input is cramped at the normal desktop browser width.
+  The stored value is correct, but the rendered field visually hides or crowds
+  the AM/PM/time affordance next to the calendar icon.
+- [ ] Timeline selection state is ambiguous when new calls arrive. The inspector
+  remains pinned to the previously selected call, which may be intentional, but
+  the UI does not explicitly label the inspector as pinned while newer calls are
+  arriving above it.
+- [ ] Pending timeline rows duplicate the usage label. During the continued
+  05:30-06:00 QA loop, pending rows rendered as `usage usage n/a`, which reads
+  like a formatting bug rather than a deliberate unavailable-value state.
+- [ ] Cache read/write values are correct in the inspector usage panel, but the
+  timeline summary collapses cache-heavy calls into a generic total-token value.
+  Cache-write and cache-read turns look nearly identical in the timeline, and
+  the `cache 2` badge can be mistaken for provider cache usage even when the
+  inspector reports `cache -/-`.
+- [ ] The request composition card has the correct provider usage text in the
+  DOM, but the visible line truncates the cache read/write suffix at normal
+  desktop width. The exact cache values are only comfortably readable lower in
+  Usage Records or stream metadata.
+- [ ] The request-composition section table is wider than its visible card at
+  the normal in-app browser width and is clipped without a horizontal scroll or
+  responsive column treatment.
+- [ ] Search results do not show match context. A search such as `live` narrows
+  the timeline but the rows still show only model/status/byte/token summaries,
+  with no matching snippet or highlighted block to explain why each call matched.
+- [ ] Hyphenated marker searches look exact but behave like broad token matches
+  without explaining that behavior. Searching Today for
+  `SPY-QA-TODAY-LIVE-UPDATE` returned the correct 05:40:59 PM call and also a
+  05:14:07 PM call that only contained older `SPY` / `TODAY` / `LIVE` markers;
+  with no match snippet, the second result looked incorrect.
+- [ ] Search scope is unclear and excludes visible call metadata. Searching for
+  a visible call id fragment such as `41739b60` returned no results, but the
+  placeholder only says `Search text` and the empty state does not explain that
+  call ids/model ids/metadata are outside the normalized-text search.
+- [ ] The empty timeline copy is misleading when filters/search are active. It
+  says "No provider calls in this range" even when the range has calls but the
+  current search text, status filter, or metadata filter excludes them. In the
+  post-5:30 Today view, selecting `Pending` with 23 completed calls in range
+  showed the same "No provider calls in this range" copy.
+- [ ] Pressing Enter in the search field does not run the search. The text box
+  updates, but results remain unchanged until the operator clicks the Search
+  button.
+- [ ] Tool-using Pi turns appear as adjacent independent provider-call rows with
+  no turn/session grouping or prompt snippet. A two-call tool cycle at 04:37:52
+  and 04:37:57 looked like unrelated Haiku calls until each row was inspected.
+- [ ] There is no clear/reset control for combined search and filters. Returning
+  to the full list after a narrowed view requires clearing the search text,
+  resetting each select individually, and clicking Search again.
+- [ ] The block-kind filter is presented inside Request Blocks but filters both
+  request and response blocks, persists across call selection, and can make
+  Response Blocks say "No blocks" when the selected kind only exists in the
+  request. That is correct mechanically, but easy to misread as missing response
+  data.
+- [ ] Diff baselines can come from outside the active time range without a clear
+  cue. In the continued QA loop, the first visible post-5:30 Live call diffed
+  against a 05:14:07 PM request that was not in the current Live timeline, while
+  the page still said `Live from now`.
+- [ ] Large JSON/detail panels, especially stream events, can create nested
+  scroll areas that catch the wheel and make it awkward to move through the
+  inspector.
+- [ ] Stream-event JSON prominently exposes opaque Bedrock `p` fields with long
+  alphabet-like strings. They appear to be real provider metadata, but they read
+  like rendering artifacts and dominate the useful event payload.
+- [ ] Loading stream events renders the full event list inline and leaves it
+  loaded across time-range changes. Loading 72 stream events for the latest call
+  produced 763 rendered lines and grew the inspector scroll height to about
+  27790 px; switching from 10 minute to Today kept that loaded stream panel and
+  deep scroll position. In Today at the inspector's maximum scroll position, the
+  visible viewport still showed stream event cards around #62-65 while the tail
+  of stream events, Raw Payloads, and Health were below the actual screen and
+  unreachable because the aside believed 2308 px were visible. A post-5:30
+  tool-use call with 765 stream events rendered 1094 lines inline and pushed the
+  inspector scroll height to about 28827 px.
+- [ ] There is no obvious way to reset a deeply scrolled inspector. After
+  loading stream events and changing ranges, re-clicking the already-selected
+  row left the inspector at the deep stream-event scroll position with the
+  stream panel still open. In the post-5:30 loop, selecting the newest different
+  call updated the content but kept the old `scrollTop` around 4558 px, so the
+  user can land mid-detail instead of at the selected call's title/summary.
+- [ ] Network metadata paths are visually truncated and show URL-encoded model
+  punctuation such as `%3A0`, which makes the model/request path harder to
+  inspect at a glance.
+- [ ] Reopening a historical spy URL with an older `since` timestamp still shows
+  the header subtitle "Live from now" and keeps the Live pill selected. The data
+  is correct, but the visible mode label misrepresents the current time range.
+  Reloading `?since=1779566974` after using Today restored 16 historical calls
+  while still labeling the view as `Live from now`; clicking the already-active
+  Live pill then reset the visible list to 0 calls.
+- [ ] The timeline column can overflow below the viewport without becoming
+  scrollable. In the 1159 x 862 in-app browser viewport, seven rows place the
+  oldest rows and Load More control below the clipped `main` area, and normal
+  wheel scrolling over the timeline does not reveal them. Those clipped rows are
+  still focusable DOM controls, so keyboard focus can move to invisible timeline
+  rows. With 17 Today rows, wheel scrolling over the timeline left
+  `main.scrollTop` at 0 and did not move the row list even though the footer was
+  positioned far below the visible viewport.
+- [ ] The timeline footer can overlap row content instead of reserving vertical
+  space. In the 10 minute and Live views with short result lists, the sticky
+  call count / Load More footer covers the bottom of the visible row content.
+- [ ] Timeline rows can overlap each other in the short 10 minute view. At
+  05:46 PM with three visible rows, each row measured 130 px tall but the next
+  row started 118 px later, creating about 12 px of overlap; hit-testing inside
+  the overlap returned two different row buttons, and the footer also overlapped
+  the last row.
+- [ ] Timeline count text does not handle singular grammar; the 10 minute range
+  displays `1 calls`.
+- [ ] Timeline row badges and metric chips are too tight. Cache badges wrap or
+  clip as a two-line `cache` / `2`, usage chips wrap `tok` onto a new line, and
+  timestamps often wrap `PM` onto a separate line, making rows uneven.
+- [ ] Time-range controls update the visible range and data, but the browser URL
+  remains on the original `?since=...` query. Reloading or sharing the URL would
+  not represent the current 10 minute, 1 hour, Today, or custom view.
+- [ ] Relative time ranges are fixed after selection instead of rolling. The
+  `10 min` view selected at 05:20:21 PM still showed `Since May 23, 05:10:21 PM`
+  at 05:23:25 PM, and the in-app refresh button did not advance the start time.
+  At 05:24:47 PM it still showed the 05:14:07 PM call even though that call was
+  older than a true 10 minute window. The `1 hour` view similarly kept its
+  04:26:24 PM start at 05:28:57 PM. In the post-5:30 loop, selecting `10 min`
+  at 05:46:13 PM fixed the subtitle at `Since May 23, 05:36:13 PM`; pressing
+  Refresh at 05:46:27 PM kept the same fixed start. For a live monitor, the
+  `10 min` and `1 hour` labels read like moving windows.
+- [ ] Custom range active state is represented by the `Apply` command button
+  staying green while all range pills are inactive. The button has no ARIA state,
+  and applying the minute-precision custom input rounded the prior 05:10:21 PM
+  since value down to 05:10:00 PM.
+- [ ] The Health panel is only reachable through a selected call inspector.
+  Filters or searches that return no calls clear the inspector and remove access
+  to health/status even though service health is independent of call selection.
+  The post-5:30 Today `Pending` filter left only the empty inspector text even
+  though `/api/health` was still valid and reported Calls 23 / Pending 0.
+- [ ] The inspector scroll container is taller than the actually visible
+  viewport. With a long selected call, scrolling the inspector to its maximum
+  still leaves lower accordions such as Diff, Usage Records, Network Metadata,
+  Stream Events, Raw Payloads, and Health below the clipped area unless the
+  operator first collapses or filters upper sections. In the Today view with 11
+  rows, even collapsing Request Blocks and Response Blocks left Stream Events,
+  Raw Payloads, and Health below the visible viewport because the aside measured
+  itself as 1600 px tall while the browser viewport was 862 px tall. With 16
+  calls in Today, the timeline section had 2190 px of content in the same
+  862 px viewport, and the inspector aside measured 2190 px tall with 10444 px
+  of scrollable inspector content.
+- [ ] Long selected calls open both Request Blocks and Response Blocks by
+  default. On the 35-request-block / 515-stream-event call, the request block
+  section alone occupied about 7849 px and response blocks another 1285 px,
+  burying Usage Records, Network Metadata, Stream Events, Raw Payloads, and
+  Health before the operator has made a choice to inspect the full text.
+- [ ] The top-level `main` container can enter a hidden scroll state. After
+  selecting or focusing lower content, `main.scrollTop` became nonzero despite
+  `overflow-hidden`, visually pushing the global header offscreen without an
+  obvious page scrollbar or reset affordance. In the post-5:30 Today view,
+  opening lower inspector accordions after collapsing Request/Response Blocks
+  pushed `main.scrollTop` to 1087 px; the header measured at `y = -1087`, and
+  the visible top-left content jumped to older timeline rows instead of the
+  header/range controls.
+- [ ] The selected timeline call is not exposed through ARIA state. The active
+  row has only visual border/ring styling; `aria-selected`, `aria-pressed`, and
+  `aria-current` are absent, so assistive technology and keyboard review do not
+  get a reliable selected-call signal.
+- [ ] Timeline row accessible names omit the visible summary. Rows set
+  `aria-label="Open call <id>"`, which hides the visible model/status/time/usage
+  content from the button's accessible name and leaves assistive technology with
+  much less context than sighted users get.
+- [ ] The sticky inspector call header can visually cover scrolled detail
+  content. While scrolling the inspector, the Request Composition/Request
+  Blocks content moves underneath the fixed call title/status area with no clear
+  top padding boundary, leaving partially clipped rows at the top of the detail
+  pane.
+- [ ] The disconnected SSE badge is labeled `Reconnect` but is not an
+  interactive control. During the tunnel-disconnect check it behaved as passive
+  status and auto-recovered when the tunnel returned, so the label reads like a
+  clickable action even though it is not one.
+- [ ] The clear-data confirmation dialog does not take keyboard focus when it
+  opens. Focus remained on the background `Clear spy data` icon button outside
+  the `role="dialog"` container, so keyboard users do not land on Cancel/Clear
+  and the background is not effectively inert from a focus perspective. Escape
+  also left the dialog open during the keyboard check.
+- [ ] The top inspector summary cards truncate important values. The `Started`
+  card routinely shows only `May 23, 04:5...` at the normal browser width, so
+  the exact start time is hidden even though the detail/API value is correct.
+- [ ] The active time-range segment is not exposed through ARIA state. `Live`,
+  `10 min`, `1 hour`, and `Today` only use visual active styling; the active
+  segment does not set `aria-pressed`, `aria-selected`, or `aria-current`.
+- [ ] The full provider model id is not visible in the normal timeline or
+  inspector header. The UI shows `claude-haiku-4-5-20251001-v1:0` but omits the
+  `us.anthropic.` Bedrock namespace, so exact model verification requires the
+  API or opening network metadata.
+
 Keep the verification baseline for the follow-up fixes:
 
 - `bun run typecheck`
