@@ -827,10 +827,13 @@ Priority scale: P0 blocks ordinary UI use or hides core data; P1 is high-impact
 workflow correctness/usability; P2 is important clarity or inspection quality;
 P3 is polish, minor copy, or secondary accessibility.
 
-- [ ] [P0] SPY-QA-01: Rework the two-column page layout so the timeline and
+- [x] [P0] SPY-QA-01: Rework the two-column page layout so the timeline and
   inspector own their scroll containers instead of letting `main` hide overflow.
   Today/long-call views can put rows, footer controls, and lower inspector panels
   thousands of pixels below the visible viewport.
+  - Fixed on 2026-05-23: changed the spy UI shell to a fixed header plus
+    shrinkable body grid, added `min-h-0` to the timeline and inspector scroll
+    owners, and covered the clipping regression in Playwright.
 - [ ] [P0] SPY-QA-02: Fix hidden top-level scrolling. Focus/opening lower
   inspector panels can set `main.scrollTop` despite `overflow-hidden`, pushing
   the global header and range controls offscreen with no visible page scrollbar.

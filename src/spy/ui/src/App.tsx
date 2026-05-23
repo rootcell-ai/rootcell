@@ -372,7 +372,7 @@ export function App(): React.ReactElement {
   }
 
   return (
-    <main className="h-screen min-h-[720px] overflow-hidden bg-[#f7f5f2] text-stone-950">
+    <main className="grid h-screen min-h-0 grid-rows-[4rem_minmax(0,1fr)] overflow-hidden bg-[#f7f5f2] text-stone-950">
       <header className="flex h-16 items-center justify-between border-b border-stone-300 bg-white px-5">
         <div className="flex min-w-0 items-center gap-3">
           <div className="flex h-9 w-9 items-center justify-center rounded-md bg-emerald-700 text-white">
@@ -405,8 +405,8 @@ export function App(): React.ReactElement {
         </div>
       </header>
 
-      <section className="grid h-[calc(100vh-4rem)] min-h-[656px] grid-cols-[minmax(520px,44vw)_minmax(0,1fr)]">
-        <div className="flex min-w-0 flex-col border-r border-stone-300 bg-[#fbfaf8]">
+      <section className="grid min-h-0 overflow-hidden grid-cols-[minmax(520px,44vw)_minmax(0,1fr)]">
+        <div className="flex min-h-0 min-w-0 flex-col border-r border-stone-300 bg-[#fbfaf8]">
           <TimelineControls
             preset={preset}
             customStart={customStart}
@@ -638,7 +638,7 @@ function Timeline(props: {
   }
 
   return (
-    <div ref={parentRef} className="spy-scrollbar relative flex-1 overflow-auto" data-testid="timeline">
+    <div ref={parentRef} className="spy-scrollbar relative min-h-0 flex-1 overflow-auto" data-testid="timeline">
       <div className="relative w-full" style={{ height: `${String(virtualizer.getTotalSize())}px` }}>
         {virtualItems.map((virtualRow) => {
           const summary = props.calls[virtualRow.index];
@@ -760,7 +760,7 @@ function CallInspector(props: {
   }
 
   return (
-    <aside className="spy-scrollbar min-w-0 overflow-auto bg-[#f3f0eb]">
+    <aside className="spy-scrollbar min-h-0 min-w-0 overflow-auto bg-[#f3f0eb]">
       <div className="sticky top-0 z-10 border-b border-stone-300 bg-white px-5 py-4">
         <div className="flex min-w-0 items-start justify-between gap-3">
           <div className="min-w-0">

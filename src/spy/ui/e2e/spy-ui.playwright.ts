@@ -9,6 +9,73 @@ test("loads fixture calls and receives live updates", async ({ page }) => {
   await expect(page.getByTestId("timeline-row")).toHaveCount(5);
 });
 
+test("keeps timeline and inspector scroll containers inside the viewport", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto("/?since=0");
+  await expect(page.getByTestId("timeline-row")).toHaveCount(5);
+
+  const initialMetrics = await page.evaluate(() => {
+    const rectOf = (selector: string): DOMRect => {
+      const element = document.querySelector(selector);
+      if (element === null) {
+        throw new Error(`missing ${selector}`);
+      }
+      return element.getBoundingClientRect();
+    };
+    const main = document.querySelector("main");
+    const timeline = document.querySelector('[data-testid="timeline"]');
+    const aside = document.querySelector("aside");
+    if (main === null || timeline === null || aside === null) {
+      throw new Error("missing layout containers");
+    }
+
+    const timelineRect = rectOf('[data-testid="timeline"]');
+    const asideRect = rectOf("aside");
+    return {
+      viewportHeight: window.innerHeight,
+      mainClientHeight: main.clientHeight,
+      mainScrollHeight: main.scrollHeight,
+      timelineBottom: timelineRect.bottom,
+      timelineClientHeight: timeline.clientHeight,
+      timelineScrollHeight: timeline.scrollHeight,
+      asideBottom: asideRect.bottom,
+      asideClientHeight: aside.clientHeight,
+      asideScrollHeight: aside.scrollHeight,
+    };
+  });
+
+  expect(initialMetrics.mainScrollHeight).toBe(initialMetrics.mainClientHeight);
+  expect(initialMetrics.timelineBottom).toBeLessThanOrEqual(initialMetrics.viewportHeight);
+  expect(initialMetrics.asideBottom).toBeLessThanOrEqual(initialMetrics.viewportHeight);
+  expect(initialMetrics.timelineScrollHeight).toBeGreaterThan(initialMetrics.timelineClientHeight);
+  expect(initialMetrics.asideScrollHeight).toBeGreaterThan(initialMetrics.asideClientHeight);
+
+  const tailMetrics = await page.evaluate(() => {
+    const aside = document.querySelector("aside");
+    if (aside === null) {
+      throw new Error("missing inspector");
+    }
+    aside.scrollTop = aside.scrollHeight;
+    const healthSummary = Array.from(document.querySelectorAll("summary"))
+      .find((summary) => summary.textContent.trim() === "Health");
+    if (healthSummary === undefined) {
+      throw new Error("missing health summary");
+    }
+    const healthRect = healthSummary.getBoundingClientRect();
+    return {
+      viewportHeight: window.innerHeight,
+      healthTop: healthRect.top,
+      healthBottom: healthRect.bottom,
+      inspectorScrollTop: aside.scrollTop,
+      inspectorMaxScrollTop: aside.scrollHeight - aside.clientHeight,
+    };
+  });
+
+  expect(tailMetrics.inspectorScrollTop).toBe(tailMetrics.inspectorMaxScrollTop);
+  expect(tailMetrics.healthTop).toBeGreaterThanOrEqual(0);
+  expect(tailMetrics.healthBottom).toBeLessThanOrEqual(tailMetrics.viewportHeight);
+});
+
 test("selects a call and opens inspector sections", async ({ page }) => {
   await page.goto("/?since=0");
   await expect(page.getByTestId("timeline-row")).toHaveCount(5);
