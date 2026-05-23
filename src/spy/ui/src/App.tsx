@@ -55,6 +55,7 @@ import type {
 const api = new SpyApiClient();
 const CALL_LIMIT = 100;
 const ALL_FILTER = "all";
+const TIMELINE_ROW_ESTIMATE = 138;
 const PROVIDER_OPTIONS = [
   { value: "bedrock", label: "Bedrock" },
 ] as const;
@@ -624,7 +625,7 @@ function Timeline(props: {
   const virtualizer = useVirtualizer({
     count: props.calls.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => 118,
+    estimateSize: () => TIMELINE_ROW_ESTIMATE,
     overscan: 8,
   });
   const virtualItems = virtualizer.getVirtualItems();
@@ -638,31 +639,35 @@ function Timeline(props: {
   }
 
   return (
-    <div ref={parentRef} className="spy-scrollbar relative min-h-0 flex-1 overflow-auto" data-testid="timeline">
-      <div className="relative w-full" style={{ height: `${String(virtualizer.getTotalSize())}px` }}>
-        {virtualItems.map((virtualRow) => {
-          const summary = props.calls[virtualRow.index];
-          if (summary === undefined) {
-            return null;
-          }
-          return (
-            <div
-              key={summary.call.id}
-              className="absolute left-0 top-0 w-full px-4 py-2"
-              style={{ transform: `translateY(${String(virtualRow.start)}px)` }}
-            >
-              <TimelineRow
-                summary={summary}
-                selected={summary.call.id === props.selectedCallId}
-                onSelect={() => {
-                  props.onSelect(summary.call.id);
-                }}
-              />
-            </div>
-          );
-        })}
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div ref={parentRef} className="spy-scrollbar relative min-h-0 flex-1 overflow-auto" data-testid="timeline">
+        <div className="relative w-full" style={{ height: `${String(virtualizer.getTotalSize())}px` }}>
+          {virtualItems.map((virtualRow) => {
+            const summary = props.calls[virtualRow.index];
+            if (summary === undefined) {
+              return null;
+            }
+            return (
+              <div
+                key={summary.call.id}
+                ref={virtualizer.measureElement}
+                data-index={virtualRow.index}
+                className="absolute left-0 top-0 w-full px-4 py-2"
+                style={{ transform: `translateY(${String(virtualRow.start)}px)` }}
+              >
+                <TimelineRow
+                  summary={summary}
+                  selected={summary.call.id === props.selectedCallId}
+                  onSelect={() => {
+                    props.onSelect(summary.call.id);
+                  }}
+                />
+              </div>
+            );
+          })}
+        </div>
       </div>
-      <div className="sticky bottom-0 border-t border-stone-300 bg-white/95 p-3 backdrop-blur">
+      <div className="border-t border-stone-300 bg-white/95 p-3 backdrop-blur" data-testid="timeline-footer">
         <div className="flex items-center justify-between text-xs text-stone-500">
           <span>{formatNumber(props.calls.length)} calls</span>
           <Button size="sm" disabled={!props.hasMore || props.loading} onClick={props.onLoadMore}>

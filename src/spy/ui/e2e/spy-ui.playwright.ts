@@ -76,6 +76,58 @@ test("keeps timeline and inspector scroll containers inside the viewport", async
   expect(tailMetrics.healthBottom).toBeLessThanOrEqual(tailMetrics.viewportHeight);
 });
 
+test("keeps timeline rows and footer from overlapping", async ({ page }) => {
+  await page.setViewportSize({ width: 1100, height: 720 });
+  await page.goto("/?since=0");
+  await page.getByRole("button", { name: "10 min" }).click();
+  await expect(page.getByTestId("timeline-row")).toHaveCount(5);
+
+  await expect.poll(async () => page.evaluate(() => {
+    const rows = Array.from(document.querySelectorAll('[data-testid="timeline-row"]'));
+    const rects = rows.map((row) => row.getBoundingClientRect());
+    let maxOverlap = 0;
+    for (let index = 1; index < rects.length; index += 1) {
+      const previous = rects[index - 1];
+      const current = rects[index];
+      if (previous !== undefined && current !== undefined) {
+        maxOverlap = Math.max(maxOverlap, previous.bottom - current.top);
+      }
+    }
+    return Math.max(0, Math.ceil(maxOverlap));
+  })).toBe(0);
+
+  const footerMetrics = await page.evaluate(async () => {
+    const timeline = document.querySelector('[data-testid="timeline"]');
+    const footer = document.querySelector('[data-testid="timeline-footer"]');
+    if (timeline === null || footer === null) {
+      throw new Error("missing timeline containers");
+    }
+    timeline.scrollTop = timeline.scrollHeight;
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => {
+        resolve();
+      });
+    });
+
+    const footerRect = footer.getBoundingClientRect();
+    const rowRects = Array.from(document.querySelectorAll('[data-testid="timeline-row"]'))
+      .map((row) => row.getBoundingClientRect());
+    const maxFooterOverlap = rowRects.reduce((maxOverlap, rowRect) => {
+      const overlap = Math.min(rowRect.bottom, footerRect.bottom) - Math.max(rowRect.top, footerRect.top);
+      return Math.max(maxOverlap, overlap);
+    }, 0);
+    return {
+      footerTop: footerRect.top,
+      maxFooterOverlap: Math.max(0, Math.ceil(maxFooterOverlap)),
+      timelineScrollTop: timeline.scrollTop,
+      timelineMaxScrollTop: timeline.scrollHeight - timeline.clientHeight,
+    };
+  });
+
+  expect(footerMetrics.timelineScrollTop).toBe(footerMetrics.timelineMaxScrollTop);
+  expect(footerMetrics.maxFooterOverlap).toBe(0);
+});
+
 test("selects a call and opens inspector sections", async ({ page }) => {
   await page.goto("/?since=0");
   await expect(page.getByTestId("timeline-row")).toHaveCount(5);

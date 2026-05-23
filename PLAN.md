@@ -837,10 +837,18 @@ P3 is polish, minor copy, or secondary accessibility.
 - [ ] [P0] SPY-QA-02: Fix hidden top-level scrolling. Focus/opening lower
   inspector panels can set `main.scrollTop` despite `overflow-hidden`, pushing
   the global header and range controls offscreen with no visible page scrollbar.
-- [ ] [P0] SPY-QA-03: Fix timeline row and footer overlap. Rows in the short
+  - RCA attempt on 2026-05-23 could not reproduce this in the current tree:
+    lower inspector panel focus, stream-event loading, narrower/shorter desktop
+    viewports, and keyboard focus traversal all kept `main.scrollTop=0` and the
+    global header at y=0.
+- [x] [P0] SPY-QA-03: Fix timeline row and footer overlap. Rows in the short
   10-minute view overlap each other by about 12 px, hit-testing can return two
   row buttons at one point, and the call-count/Load More footer can cover row
   content.
+  - Fixed on 2026-05-23: timeline rows now use actual virtualizer measurement
+    instead of a too-small fixed estimate, and the footer sits outside the
+    timeline scroll viewport so it cannot overlay row content. Added Playwright
+    coverage for adjacent row overlap and footer coverage at max scroll.
 - [ ] [P0] SPY-QA-04: Make long inspectors navigable. The inspector often
   measures taller than the visible viewport, Request/Response Blocks open by
   default for huge calls, and Usage Records/Network/Stream/Raw/Health become
@@ -1033,10 +1041,10 @@ Detailed issues and reproduction notes:
   rows. With 17 Today rows, wheel scrolling over the timeline left
   `main.scrollTop` at 0 and did not move the row list even though the footer was
   positioned far below the visible viewport.
-- [ ] The timeline footer can overlap row content instead of reserving vertical
+- [x] The timeline footer can overlap row content instead of reserving vertical
   space. In the 10 minute and Live views with short result lists, the sticky
   call count / Load More footer covers the bottom of the visible row content.
-- [ ] Timeline rows can overlap each other in the short 10 minute view. At
+- [x] Timeline rows can overlap each other in the short 10 minute view. At
   05:46 PM with three visible rows, each row measured 130 px tall but the next
   row started 118 px later, creating about 12 px of overlap; hit-testing inside
   the overlap returned two different row buttons, and the footer also overlapped
@@ -1091,6 +1099,7 @@ Detailed issues and reproduction notes:
   pushed `main.scrollTop` to 1087 px; the header measured at `y = -1087`, and
   the visible top-left content jumped to older timeline rows instead of the
   header/range controls.
+  RCA attempt on 2026-05-23 could not reproduce this in the current tree.
 - [ ] The selected timeline call is not exposed through ARIA state. The active
   row has only visual border/ring styling; `aria-selected`, `aria-pressed`, and
   `aria-current` are absent, so assistive technology and keyboard review do not
