@@ -58,6 +58,8 @@ const ALL_FILTER = "all";
 const TIMELINE_ROW_ESTIMATE = 138;
 const BLOCK_SECTION_AUTO_OPEN_MAX_BLOCKS = 6;
 const BLOCK_SECTION_AUTO_OPEN_MAX_BYTES = 24 * 1024;
+const STREAM_EVENT_WINDOW_SIZE = 25;
+const STREAM_EVENT_PAYLOAD_PREVIEW_CHARS = 4_000;
 const PROVIDER_OPTIONS = [
   { value: "bedrock", label: "Bedrock" },
 ] as const;
@@ -110,8 +112,10 @@ type LoadedDetailState = DetailState & {
 interface StreamState {
   readonly callId: string;
   readonly items: readonly StreamEvent[];
+  readonly windowStart: number;
   readonly nextCursor?: string | undefined;
   readonly state: LoadState;
+  readonly expandedEventId?: string | undefined;
   readonly error?: string | undefined;
 }
 
@@ -140,6 +144,16 @@ export function App(): React.ReactElement {
   const [sseError, setSseError] = React.useState<string | undefined>();
   const [clearOpen, setClearOpen] = React.useState(false);
   const [clearing, setClearing] = React.useState(false);
+  const timelineContextKey = React.useMemo(() => [
+    since,
+    search,
+    filters.provider,
+    filters.model,
+    filters.operation,
+    filters.status,
+  ].join("|"), [filters.model, filters.operation, filters.provider, filters.status, search, since]);
+  const previousTimelineContextKey = React.useRef<string | null>(null);
+  const previousSelectedCallId = React.useRef<string | undefined>(undefined);
 
   const loadCalls = React.useCallback(async (options: { readonly cursor?: string | undefined; readonly append?: boolean | undefined } = {}) => {
     setCallState("loading");
@@ -176,6 +190,22 @@ export function App(): React.ReactElement {
   React.useEffect(() => {
     void loadCalls();
   }, [loadCalls]);
+
+  React.useEffect(() => {
+    if (previousTimelineContextKey.current !== null && previousTimelineContextKey.current !== timelineContextKey) {
+      setStreamState(null);
+      resetInspectorScroll();
+    }
+    previousTimelineContextKey.current = timelineContextKey;
+  }, [timelineContextKey]);
+
+  React.useEffect(() => {
+    if (previousSelectedCallId.current !== selectedCallId) {
+      setStreamState(null);
+      resetInspectorScroll();
+      previousSelectedCallId.current = selectedCallId;
+    }
+  }, [selectedCallId]);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -367,25 +397,57 @@ export function App(): React.ReactElement {
     setStreamState((current) => ({
       callId: selectedCallId,
       items: more ? current?.items ?? [] : [],
+      windowStart: more ? current?.windowStart ?? 0 : 0,
       state: "loading",
       ...(cursor === undefined ? {} : { nextCursor: cursor }),
     }));
     try {
       const page = await api.streamEvents(selectedCallId, cursor);
-      setStreamState((current) => ({
-        callId: selectedCallId,
-        items: more ? [...(current?.items ?? []), ...page.items] : page.items,
-        nextCursor: page.nextCursor,
-        state: "idle",
-      }));
+      setStreamState((current) => {
+        const currentItems = more ? current?.items ?? [] : [];
+        const items = more ? [...currentItems, ...page.items] : page.items;
+        return {
+          callId: selectedCallId,
+          items,
+          windowStart: more ? streamWindowStartForIndex(currentItems.length, items.length) : 0,
+          nextCursor: page.nextCursor,
+          state: "idle",
+        };
+      });
     } catch (error) {
       setStreamState({
         callId: selectedCallId,
         items: more ? streamState?.items ?? [] : [],
+        windowStart: more ? streamState?.windowStart ?? 0 : 0,
         state: "error",
         error: error instanceof Error ? error.message : "failed to load stream events",
       });
     }
+  }
+
+  function setStreamWindowStart(windowStart: number): void {
+    setStreamState((current) => {
+      if (current === null) {
+        return current;
+      }
+      return {
+        ...current,
+        expandedEventId: undefined,
+        windowStart: streamWindowStartForIndex(windowStart, current.items.length),
+      };
+    });
+  }
+
+  function toggleStreamPayload(eventId: string): void {
+    setStreamState((current) => {
+      if (current === null) {
+        return current;
+      }
+      return {
+        ...current,
+        expandedEventId: current.expandedEventId === eventId ? undefined : eventId,
+      };
+    });
   }
 
   async function clearData(): Promise<void> {
@@ -485,6 +547,8 @@ export function App(): React.ReactElement {
           onLoadMoreStream={() => {
             void loadStreamEvents(true);
           }}
+          onStreamWindowStart={setStreamWindowStart}
+          onToggleStreamPayload={toggleStreamPayload}
         />
       </section>
 
@@ -764,6 +828,8 @@ function CallInspector(props: {
   readonly onFilters: (filters: UiFilters) => void;
   readonly onLoadStream: () => void;
   readonly onLoadMoreStream: () => void;
+  readonly onStreamWindowStart: (windowStart: number) => void;
+  readonly onToggleStreamPayload: (eventId: string) => void;
 }): React.ReactElement {
   const detailState = props.detailState;
   const showSectionNav = isLoadedDetailState(detailState);
@@ -787,6 +853,8 @@ function CallInspector(props: {
         onFilters={props.onFilters}
         onLoadStream={props.onLoadStream}
         onLoadMoreStream={props.onLoadMoreStream}
+        onStreamWindowStart={props.onStreamWindowStart}
+        onToggleStreamPayload={props.onToggleStreamPayload}
       />
     );
   }
@@ -828,6 +896,8 @@ function InspectorContent(props: {
   readonly onFilters: (filters: UiFilters) => void;
   readonly onLoadStream: () => void;
   readonly onLoadMoreStream: () => void;
+  readonly onStreamWindowStart: (windowStart: number) => void;
+  readonly onToggleStreamPayload: (eventId: string) => void;
 }): React.ReactElement {
   const requestBlocks = props.detail.blocks.filter((block) => block.direction === "request");
   const responseBlocks = props.detail.blocks.filter((block) => block.direction === "response");
@@ -876,6 +946,8 @@ function InspectorContent(props: {
           count={props.detail.summary.streamEventCount}
           onLoad={props.onLoadStream}
           onLoadMore={props.onLoadMoreStream}
+          onWindowStart={props.onStreamWindowStart}
+          onTogglePayload={props.onToggleStreamPayload}
         />
       </Section>
       <Section id="raw" title="Raw Payloads">
@@ -928,8 +1000,24 @@ function scrollInspectorSection(id: InspectorSectionId): void {
   target?.scrollIntoView({ block: "start" });
 }
 
+function resetInspectorScroll(): void {
+  window.requestAnimationFrame(() => {
+    const inspector = document.querySelector("aside");
+    if (inspector instanceof HTMLElement) {
+      inspector.scrollTop = 0;
+    }
+  });
+}
+
 function inspectorSectionDomId(id: InspectorSectionId): string {
   return `spy-inspector-${id}`;
+}
+
+function streamWindowStartForIndex(index: number, itemCount: number): number {
+  if (itemCount <= STREAM_EVENT_WINDOW_SIZE) {
+    return 0;
+  }
+  return Math.min(Math.max(0, index), itemCount - STREAM_EVENT_WINDOW_SIZE);
 }
 
 function shouldAutoOpenBlockSections(
@@ -1230,6 +1318,8 @@ function StreamPanel(props: {
   readonly count: number;
   readonly onLoad: () => void;
   readonly onLoadMore: () => void;
+  readonly onWindowStart: (windowStart: number) => void;
+  readonly onTogglePayload: (eventId: string) => void;
 }): React.ReactElement {
   if (props.streamState === null) {
     return (
@@ -1242,25 +1332,101 @@ function StreamPanel(props: {
   if (props.streamState.state === "error") {
     return <ErrorPanel message={props.streamState.error ?? "failed to load stream events"} />;
   }
-  return (
-    <div className="space-y-2">
-      {props.streamState.state === "loading" && props.streamState.items.length === 0 ? <LoadingPanel label="Loading stream events" /> : null}
-      {props.streamState.items.map((event) => (
-        <div key={event.id} className="rounded-md border border-stone-200 bg-stone-50 p-3">
-          <div className="flex items-center gap-2">
-            <Badge tone="blue">{event.event_type}</Badge>
-            <span className="text-xs text-stone-500">#{formatNumber(event.ordinal)}</span>
-          </div>
-          <pre className="spy-scrollbar mt-2 max-h-52 overflow-auto whitespace-pre-wrap break-words rounded-md bg-white p-3 text-xs text-stone-700">
-            {clipped(JSON.stringify(event.payload ?? event.payload_text ?? event.headers, null, 2), 4_000)}
-          </pre>
+  const streamState = props.streamState;
+  const loadedCount = streamState.items.length;
+  const windowStart = streamWindowStartForIndex(streamState.windowStart, loadedCount);
+  const visibleEvents = streamState.items.slice(windowStart, windowStart + STREAM_EVENT_WINDOW_SIZE);
+  const windowEnd = windowStart + visibleEvents.length;
+  if (loadedCount === 0) {
+    return (
+      <div className="space-y-3">
+        {props.streamState.state === "loading" ? <LoadingPanel label="Loading stream events" /> : null}
+        <div className="rounded-md border border-stone-200 bg-stone-50 p-3 text-sm text-stone-500">
+          No stream events loaded.
         </div>
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-3" data-testid="stream-event-window">
+      <div className="flex flex-wrap items-center gap-2 rounded-md border border-stone-200 bg-stone-50 p-3">
+        <div className="min-w-0 flex-1 text-sm text-stone-600">
+          Loaded {formatNumber(loadedCount)} of {formatNumber(props.count)} stream events
+          <span className="block text-xs text-stone-500">
+            Showing {formatNumber(windowStart + 1)}-{formatNumber(windowEnd)}
+          </span>
+        </div>
+        <Button
+          size="sm"
+          disabled={windowStart === 0}
+          onClick={() => {
+            props.onWindowStart(windowStart - STREAM_EVENT_WINDOW_SIZE);
+          }}
+        >
+          Previous Events
+        </Button>
+        <Button
+          size="sm"
+          disabled={windowEnd >= loadedCount}
+          onClick={() => {
+            props.onWindowStart(windowStart + STREAM_EVENT_WINDOW_SIZE);
+          }}
+        >
+          Next Events
+        </Button>
+        <Button
+          size="sm"
+          disabled={streamState.nextCursor === undefined || streamState.state === "loading"}
+          onClick={props.onLoadMore}
+        >
+          {streamState.state === "loading" ? "Loading Stream Events" : "Load More Stream Events"}
+        </Button>
+      </div>
+      {visibleEvents.map((event) => (
+        <StreamEventRow
+          key={event.id}
+          event={event}
+          expanded={streamState.expandedEventId === event.id}
+          onToggle={() => {
+            props.onTogglePayload(event.id);
+          }}
+        />
       ))}
-      <Button size="sm" disabled={props.streamState.nextCursor === undefined || props.streamState.state === "loading"} onClick={props.onLoadMore}>
-        Load More Stream Events
-      </Button>
     </div>
   );
+}
+
+function StreamEventRow(props: {
+  readonly event: StreamEvent;
+  readonly expanded: boolean;
+  readonly onToggle: () => void;
+}): React.ReactElement {
+  const payloadText = streamEventPayloadText(props.event);
+  const headerEventType = props.event.headers[":event-type"];
+  const eventSummary = props.event.payload_sha256 ?? (typeof headerEventType === "string" ? headerEventType : "stream event");
+  return (
+    <div className="rounded-md border border-stone-200 bg-stone-50 p-3" data-testid="stream-event-card">
+      <div className="flex min-w-0 items-center gap-2">
+        <Badge tone="blue">{props.event.event_type}</Badge>
+        <span className="text-xs text-stone-500">#{formatNumber(props.event.ordinal)}</span>
+        <span className="min-w-0 truncate text-xs text-stone-500">
+          {eventSummary}
+        </span>
+        <Button className="ml-auto" size="sm" onClick={props.onToggle}>
+          {props.expanded ? "Hide Payload" : "Show Payload"}
+        </Button>
+      </div>
+      {props.expanded ? (
+        <pre className="mt-2 whitespace-pre-wrap break-words rounded-md bg-white p-3 text-xs text-stone-700" data-testid="stream-event-payload">
+          {clipped(payloadText, STREAM_EVENT_PAYLOAD_PREVIEW_CHARS)}
+        </pre>
+      ) : null}
+    </div>
+  );
+}
+
+function streamEventPayloadText(event: StreamEvent): string {
+  return JSON.stringify(event.payload ?? event.payload_text ?? event.headers, null, 2);
 }
 
 function RawPayloadPanel(props: {

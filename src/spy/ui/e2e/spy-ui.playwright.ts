@@ -1,4 +1,13 @@
-import { expect, test } from "@playwright/test";
+import { expect, type Page, type Route, test } from "@playwright/test";
+import type {
+  NormalizedBlock,
+  SpyCallDetail,
+  SpyCallDiff,
+  SpyCallSummary,
+  SpyRequestComposition,
+  SpyServiceHealth,
+  StreamEvent,
+} from "../src/types.ts";
 
 test.describe.configure({ mode: "serial" });
 
@@ -238,6 +247,56 @@ test("loads stream events on demand", async ({ page }) => {
   await expect(page.getByText("messageStart").first()).toBeVisible();
 });
 
+test("bounds high-volume stream events and clears them on range changes", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await installHeavyStreamRoutes(page);
+  await page.goto("/?since=0");
+  await expect(page.getByTestId("timeline-row")).toHaveCount(1);
+
+  await page.getByTestId("inspector-nav-stream").click();
+  await page.getByRole("button", { name: "Load Stream Events" }).click();
+  await expect(page.getByText("Loaded 100 of 250 stream events")).toBeVisible();
+  await expect(page.getByText("Showing 1-25")).toBeVisible();
+  await expect(page.getByTestId("stream-event-card")).toHaveCount(25);
+  await expect(page.getByTestId("stream-event-payload")).toHaveCount(0);
+
+  await page.getByTestId("stream-event-card").first().getByRole("button", { name: "Show Payload" }).click();
+  await expect(page.getByTestId("stream-event-payload")).toHaveCount(1);
+
+  await page.getByRole("button", { name: "Load More Stream Events" }).click();
+  await expect(page.getByText("Loaded 200 of 250 stream events")).toBeVisible();
+  await expect(page.getByText("Showing 101-125")).toBeVisible();
+  await expect(page.getByTestId("stream-event-card")).toHaveCount(25);
+  await expect(page.getByTestId("stream-event-payload")).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Load More Stream Events" }).click();
+  await expect(page.getByText("Loaded 250 of 250 stream events")).toBeVisible();
+  await expect(page.getByText("Showing 201-225")).toBeVisible();
+  await expect(page.getByTestId("stream-event-card")).toHaveCount(25);
+
+  const loadedMetrics = await page.evaluate(() => {
+    const aside = document.querySelector("aside");
+    const stream = document.querySelector('[data-testid="inspector-section-stream"]');
+    return {
+      cards: document.querySelectorAll('[data-testid="stream-event-card"]').length,
+      payloadBlocks: document.querySelectorAll('[data-testid="stream-event-payload"]').length,
+      asideScrollHeight: aside?.scrollHeight ?? 0,
+      streamHeight: stream?.getBoundingClientRect().height ?? 0,
+    };
+  });
+
+  expect(loadedMetrics.cards).toBe(25);
+  expect(loadedMetrics.payloadBlocks).toBe(0);
+  expect(loadedMetrics.asideScrollHeight).toBeLessThan(10_000);
+  expect(loadedMetrics.streamHeight).toBeLessThan(5_000);
+
+  await page.getByRole("button", { name: "Today" }).click();
+  await expect(page.getByRole("button", { name: "Load Stream Events" })).toBeVisible();
+  await expect(page.getByTestId("stream-event-card")).toHaveCount(0);
+  await expect.poll(async () => page.evaluate(() => document.querySelector("aside")?.scrollTop ?? -1)).toBe(0);
+  expect(await page.evaluate(() => document.querySelector("main")?.scrollTop ?? -1)).toBe(0);
+});
+
 test("clears data with confirmation", async ({ page }) => {
   await page.goto("/?since=0");
   await expect(page.getByTestId("timeline-row")).toHaveCount(5);
@@ -246,3 +305,265 @@ test("clears data with confirmation", async ({ page }) => {
   await page.getByRole("button", { name: "Clear", exact: true }).click();
   await expect(page.getByText("No provider calls in this range.")).toBeVisible();
 });
+
+const HEAVY_STREAM_CALL_ID = "call-heavy-stream";
+const HEAVY_STREAM_TS = 1779562000;
+const HEAVY_STREAM_MODEL_ID = "us.anthropic.claude-sonnet-4-6";
+const BLOCK_KINDS: readonly NormalizedBlock["kind"][] = [
+  "provider-envelope",
+  "harness-system-context",
+  "user-visible-message",
+  "prior-conversation-history",
+  "current-user-input",
+  "assistant-output",
+  "thinking",
+  "tool-definition",
+  "tool-call",
+  "tool-result",
+  "cache-marker",
+  "media-summary",
+  "unknown",
+];
+
+async function installHeavyStreamRoutes(page: Page): Promise<void> {
+  const fixture = heavyStreamFixture();
+  await page.route(/\/api\/health$/, async (route) => {
+    await fulfillJson(route, fixture.health);
+  });
+  await page.route(/\/api\/calls\/call-heavy-stream\/stream-events(?:\?.*)?$/, async (route) => {
+    const url = new URL(route.request().url());
+    const limit = Number(url.searchParams.get("limit") ?? "100");
+    const cursor = Number(url.searchParams.get("cursor") ?? "0");
+    const start = Number.isFinite(cursor) && cursor >= 0 ? cursor : 0;
+    const end = Math.min(start + limit, fixture.streamEvents.length);
+    const pagePayload: { readonly items: readonly StreamEvent[]; nextCursor?: string | undefined } = {
+      items: fixture.streamEvents.slice(start, end),
+    };
+    if (end < fixture.streamEvents.length) {
+      pagePayload.nextCursor = String(end);
+    }
+    await fulfillJson(route, pagePayload);
+  });
+  await page.route(/\/api\/calls\/call-heavy-stream\/diff$/, async (route) => {
+    await fulfillJson(route, fixture.diff);
+  });
+  await page.route(/\/api\/calls\/call-heavy-stream$/, async (route) => {
+    await fulfillJson(route, fixture.detail);
+  });
+  await page.route(/\/api\/calls(?:\?.*)?$/, async (route) => {
+    await fulfillJson(route, { items: [fixture.summary] });
+  });
+  await page.route(/\/api\/search(?:\?.*)?$/, async (route) => {
+    await fulfillJson(route, { items: [fixture.summary] });
+  });
+}
+
+async function fulfillJson(route: Route, payload: unknown): Promise<void> {
+  await route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify(payload),
+  });
+}
+
+function heavyStreamFixture(): {
+  readonly summary: SpyCallSummary;
+  readonly detail: SpyCallDetail;
+  readonly diff: SpyCallDiff;
+  readonly health: SpyServiceHealth;
+  readonly streamEvents: readonly StreamEvent[];
+} {
+  const usage = {
+    inputTokens: 10,
+    outputTokens: 100,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    totalTokens: 110,
+  };
+  const call = {
+    id: HEAVY_STREAM_CALL_ID,
+    provider: "bedrock" as const,
+    operation: "converse-stream",
+    model_id: HEAVY_STREAM_MODEL_ID,
+    status: "complete" as const,
+    started_at: HEAVY_STREAM_TS,
+    completed_at: HEAVY_STREAM_TS + 2,
+    status_code: 200,
+    request_flow_id: "heavy-stream-flow",
+    response_flow_id: "heavy-stream-flow",
+    request_content_hash: "heavy-request-hash",
+    response_content_hash: "heavy-response-hash",
+  };
+  const summary: SpyCallSummary = {
+    call,
+    durationMs: 2000,
+    usage,
+    requestBlockCount: 2,
+    responseBlockCount: 1,
+    requestByteSize: 2048,
+    responseByteSize: 1024,
+    cacheMarkerCount: 0,
+    streamEventCount: 250,
+    rawPayloadCount: 0,
+  };
+  const blocks = [
+    normalizedBlock("block-request-envelope", "request", 0, "provider-envelope", "synthetic envelope"),
+    normalizedBlock("block-request-user", "request", 1, "current-user-input", "show a long stream"),
+    normalizedBlock("block-response", "response", 0, "assistant-output", "done"),
+  ];
+  const detail: SpyCallDetail = {
+    summary,
+    requestComposition: requestComposition(usage),
+    httpEvents: [
+      {
+        id: "http-request-heavy-stream",
+        call_id: HEAVY_STREAM_CALL_ID,
+        direction: "request",
+        observed_at: HEAVY_STREAM_TS,
+        host: "bedrock-runtime.us-east-1.amazonaws.com",
+        method: "POST",
+        path: `/model/${HEAVY_STREAM_MODEL_ID}/converse-stream`,
+        headers: [["content-type", "application/json"]],
+      },
+      {
+        id: "http-response-heavy-stream",
+        call_id: HEAVY_STREAM_CALL_ID,
+        direction: "response",
+        observed_at: HEAVY_STREAM_TS + 2,
+        host: "bedrock-runtime.us-east-1.amazonaws.com",
+        method: "POST",
+        path: `/model/${HEAVY_STREAM_MODEL_ID}/converse-stream`,
+        status_code: 200,
+        reason: "OK",
+        headers: [["content-type", "application/vnd.amazon.eventstream"]],
+        request_headers: [["authorization", "[redacted]"]],
+      },
+    ],
+    blocks,
+    usageRecords: [
+      {
+        id: "usage-heavy-stream",
+        call_id: HEAVY_STREAM_CALL_ID,
+        source: "provider-reported",
+        input_tokens: usage.inputTokens,
+        output_tokens: usage.outputTokens,
+        cache_read_tokens: usage.cacheReadTokens,
+        cache_write_tokens: usage.cacheWriteTokens,
+        total_tokens: usage.totalTokens,
+        raw: {},
+      },
+    ],
+    rawPayloads: [],
+  };
+  return {
+    summary,
+    detail,
+    diff: {
+      call: summary,
+      previousCall: null,
+      blocks: blocks.map((block) => ({ block, classification: "new" as const })),
+    },
+    health: {
+      ok: true,
+      service: {
+        enabled: true,
+        bind: "127.0.0.1",
+        port: 4674,
+        retentionDays: 7,
+        maxBytes: 6442450944,
+        spoolMaxBytes: 1073741824,
+        storeRaw: false,
+        staticAssets: true,
+      },
+      store: {
+        schemaVersion: 2,
+        dbSizeBytes: 123456,
+        dbUsedBytes: 123456,
+        spoolSizeBytes: 0,
+        providerCallCount: 1,
+        pendingCallCount: 0,
+        droppedCaptureCount: 0,
+        lastIngestAt: HEAVY_STREAM_TS,
+        counters: {},
+        metadata: {},
+      },
+    },
+    streamEvents: Array.from({ length: 250 }, (_, index) => streamEvent(index)),
+  };
+}
+
+function requestComposition(usage: SpyCallSummary["usage"]): SpyRequestComposition {
+  return {
+    totalBlockCount: 2,
+    totalMessageCount: 1,
+    totalCharSize: 128,
+    totalByteSize: 128,
+    sections: BLOCK_KINDS.map((kind, index) => ({
+      kind,
+      present: index < 2,
+      blockCount: index < 2 ? 1 : 0,
+      messageCount: kind === "current-user-input" ? 1 : 0,
+      charSize: index < 2 ? 64 : 0,
+      byteSize: index < 2 ? 64 : 0,
+    })),
+    toolDefinitionCount: 0,
+    toolSchemaCharSize: 0,
+    toolSchemaByteSize: 0,
+    cacheMarkerCount: 0,
+    cacheMarkerCharSize: 0,
+    cacheMarkerByteSize: 0,
+    mediaSummaryCount: 0,
+    mediaSummaryCharSize: 0,
+    mediaSummaryByteSize: 0,
+    usage,
+  };
+}
+
+function normalizedBlock(
+  id: string,
+  direction: NormalizedBlock["direction"],
+  ordinal: number,
+  kind: NormalizedBlock["kind"],
+  text: string,
+): NormalizedBlock {
+  return {
+    id,
+    call_id: HEAVY_STREAM_CALL_ID,
+    direction,
+    ordinal,
+    kind,
+    source: "synthetic-stream-rca",
+    provider_path: "$.synthetic",
+    text,
+    char_size: text.length,
+    byte_size: new TextEncoder().encode(text).length,
+    content_hash: `${id}-hash`,
+    cache_marker: false,
+  };
+}
+
+function streamEvent(index: number): StreamEvent {
+  return {
+    id: `stream-${String(index).padStart(3, "0")}`,
+    call_id: HEAVY_STREAM_CALL_ID,
+    ordinal: index,
+    event_type: "contentBlockDelta",
+    headers: {
+      ":event-type": "contentBlockDelta",
+      ":content-type": "application/json",
+    },
+    payload: {
+      contentBlockIndex: 0,
+      delta: {
+        text: `chunk ${String(index)}`,
+      },
+      p: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".repeat(5),
+      metadata: {
+        synthetic: true,
+        index,
+      },
+    },
+    payload_sha256: `sha-${String(index)}`,
+    observed_at: HEAVY_STREAM_TS + 2,
+  };
+}

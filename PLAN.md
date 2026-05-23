@@ -856,10 +856,14 @@ P3 is polish, minor copy, or secondary accessibility.
   - Fixed on 2026-05-23: added a sticky inspector section navigator, made
     high-volume Request/Response block sections start collapsed, and covered
     the navigation regression in Playwright.
-- [ ] [P1] SPY-QA-05: Virtualize or paginate Stream Events and reset stale loaded
+- [x] [P1] SPY-QA-05: Virtualize or paginate Stream Events and reset stale loaded
   stream state on call/range changes. Loading 72-765 events renders hundreds or
   thousands of inline lines and can leave the operator stranded in an old deep
   scroll position.
+  - Fixed on 2026-05-23: stream events now render through a bounded 25-event
+    window with collapsed payload previews, and loaded stream state is cleared
+    when selecting a new call or changing timeline context. Added Playwright
+    coverage with a synthetic 250-event stream response.
 - [ ] [P1] SPY-QA-06: Reset inspector scroll and panel state when selecting a new
   call, or expose an explicit reset affordance. Selecting a different call after
   deep stream inspection can keep `scrollTop` thousands of pixels down.
@@ -1011,7 +1015,7 @@ Detailed issues and reproduction notes:
 - [ ] Stream-event JSON prominently exposes opaque Bedrock `p` fields with long
   alphabet-like strings. They appear to be real provider metadata, but they read
   like rendering artifacts and dominate the useful event payload.
-- [ ] Loading stream events renders the full event list inline and leaves it
+- [x] Loading stream events renders the full event list inline and leaves it
   loaded across time-range changes. Loading 72 stream events for the latest call
   produced 763 rendered lines and grew the inspector scroll height to about
   27790 px; switching from 10 minute to Today kept that loaded stream panel and
@@ -1021,6 +1025,9 @@ Detailed issues and reproduction notes:
   unreachable because the aside believed 2308 px were visible. A post-5:30
   tool-use call with 765 stream events rendered 1094 lines inline and pushed the
   inspector scroll height to about 28827 px.
+  Fixed on 2026-05-23 by rendering a bounded stream-event window, collapsing
+  payload previews by default, and clearing stream state on timeline-context
+  changes.
 - [ ] There is no obvious way to reset a deeply scrolled inspector. After
   loading stream events and changing ranges, re-clicking the already-selected
   row left the inspector at the deep stream-event scroll position with the
