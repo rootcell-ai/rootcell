@@ -611,6 +611,65 @@ Build the Bedrock/Pi browser spy:
 - [x] Remove old TUI/terminal spy implementation files, tests, and docs.
 - [x] Add `src/spy/README.md` and brief links from main/proxy docs.
 
+### V1 Review Findings
+
+Review date: 2026-05-23.
+
+The implementation history above is complete, and the V1-specific validation
+commands pass when local listener permissions are available. However, the review
+found the following acceptance gaps that must be fixed before V1 should be
+considered fully complete:
+
+- [ ] Add runtime validation for browser API and SSE payloads.
+  - Current backend boundaries use Zod for spool ingestion, clear requests, and
+    SQLite row readback, but the React UI still trusts dynamic JSON with type
+    assertions.
+  - Replace unchecked client parsing such as generic `fetchJson<T>()` casts and
+    `JSON.parse(event.data) as SpyServiceHealth` with shared or UI-local Zod
+    schemas for health, call pages, details, diffs, stream-event pages, and SSE
+    event payloads.
+  - Keep parsed values typed from `z.infer<...>` instead of hand-maintained
+    duplicate interfaces where practical.
+  - Add UI/API unit coverage for invalid response payloads and malformed SSE
+    payloads.
+- [ ] Complete the health/settings surface required by V1.
+  - The UI must show enabled state, DB size, spool size, store/spool caps,
+    retention days, dropped capture count, last ingest time, and service
+    version.
+  - Extend the service health response if needed so the UI does not infer these
+    fields from partial metadata.
+  - Include dropped capture count from health counters and a stable service
+    version/build identifier in the API response.
+  - Add service/UI tests that fail if any required health field is absent.
+- [ ] Complete V1 timeline filtering.
+  - V1 requires filtering by time, provider/model, event type, and normalized
+    text.
+  - Time range, model, status, and normalized-text search exist, but provider
+    and event-type/operation filtering are missing from the UI flow.
+  - Decide whether "event type" means provider-call operation/status, stream
+    event type, or a dedicated timeline event classification, then implement it
+    consistently in the API/UI and tests.
+- [ ] Expand the request composition summary to the exact V1 structural
+  measures.
+  - Current UI summarizes block kind counts and byte totals, but it does not
+    explicitly show section presence, message count, character/byte size by
+    section, tool count, tool schema size, cache marker summary, media summary,
+    and provider-reported usage in one request-composition surface.
+  - Prefer computing these measures from normalized blocks and persisted
+    metadata in TypeScript, exposing them through typed API fields instead of
+    ad hoc UI-only derivation.
+  - Add fixture-backed tests for simple prompts, history, toolUse/toolResult,
+    cache markers, raw-disabled, and raw-enabled cases.
+
+Keep the verification baseline for the follow-up fixes:
+
+- `bun run typecheck`
+- `bun run lint`
+- `python3 -m unittest discover -s proxy -p 'test_*.py'`
+- `bun run build:spy`
+- `bun run test` (requires permission to bind localhost in this workspace)
+- `bun run test:spy-ui:e2e` (requires localhost/browser permissions)
+
 ### V1.5
 
 Add analysis depth:
