@@ -414,21 +414,41 @@ V1 excludes:
 
 ## Roadmap
 
+### Completed
+
+- Captured sanitized real Pi/Bedrock traffic from the existing running
+  `default` instance using Pi provider `amazon-bedrock` and model
+  `us.anthropic.claude-sonnet-4-6`.
+- Added `src/spy/fixtures/bedrock-pi-us-sonnet-4-6.ndjson` with real
+  request/response pairs for simple streaming, two-turn history, cache markers,
+  toolUse, toolResult, and provider-reported usage.
+- Added initial `src/spy` TypeScript contract:
+  - Zod spool event, provider call, normalized block, usage, stream event, raw
+    payload, and diff schemas.
+  - AWS event-stream decoder with CRC validation.
+  - V1 SQLite migration helper and initial schema.
+  - Fixture validation, event-stream decoding, and migration tests.
+- Verified `bun run typecheck`, `bun run lint`, `bun run test`, direct
+  `bun:sqlite` migration execution, and a fixture credential audit.
+
 ### V1
 
 Build the Bedrock/Pi browser spy:
 
-1. Define spool event schema, normalized provider schema, and SQLite schema.
-2. Replace Python spy with minimal provider-gated spool shim.
-3. Implement TypeScript Bedrock adapter and AWS event-stream decoder.
-4. Implement SQLite persistence, migrations, retention, and clear-data.
-5. Implement TS web service, API, SSE, and static asset serving.
-6. Implement React desktop UI with virtualized timeline and call inspector.
-7. Wire `rootcell provision`, systemd service config, and `rootcell spy`
+- [x] Define spool event schema, normalized provider schema, and SQLite schema.
+- [x] Capture sanitized real Pi/Bedrock fixtures to ground the schema and
+  adapter work.
+- [x] Add initial AWS event-stream decoder.
+- [ ] Replace Python spy with minimal provider-gated spool shim.
+- [ ] Implement TypeScript Bedrock adapter on top of the captured fixtures.
+- [ ] Implement SQLite persistence, migrations, retention, and clear-data.
+- [ ] Implement TS web service, API, SSE, and static asset serving.
+- [ ] Implement React desktop UI with virtualized timeline and call inspector.
+- [ ] Wire `rootcell provision`, systemd service config, and `rootcell spy`
    launcher/tunnel.
-8. Raise firewall disk/root volume defaults to 64 GiB.
-9. Remove old TUI/terminal spy flags, tests, and docs.
-10. Add `src/spy/README.md` and brief links from main/proxy docs.
+- [ ] Raise firewall disk/root volume defaults to 64 GiB.
+- [ ] Remove old TUI/terminal spy flags, tests, and docs.
+- [ ] Add `src/spy/README.md` and brief links from main/proxy docs.
 
 ### V1.5
 
@@ -558,8 +578,11 @@ V1 tests:
 
 Fixture strategy:
 
-- Start with handcrafted minimal Bedrock/Pi fixtures.
-- Add sanitized real Pi/Bedrock captures once the new spool schema exists.
+- Initial sanitized real Pi/Bedrock fixture capture is complete for
+  `us.anthropic.claude-sonnet-4-6`.
+- Add handcrafted minimal fixtures only as supplements for targeted edge cases.
+- Add more sanitized real captures as the Bedrock adapter, shim, and UI expose
+  concrete gaps.
 - Cover normal calls, streaming, tool calls/results, cache markers, large
   history, error responses, disabled capture, raw disabled, and raw enabled.
 
