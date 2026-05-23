@@ -6,7 +6,8 @@ private Lima user-v2 network per rootcell instance.
 
 The firewall VM has public egress through Lima VZ NAT plus a private user-v2
 interface. The agent VM has only the private user-v2 interface and reaches DNS,
-HTTPS, SSH, and the host control path through the firewall.
+HTTPS, and SSH egress through the firewall. Lima's own `limactl shell` control
+path stays on VSOCK.
 
 ## Required Instance Environment
 
@@ -114,18 +115,23 @@ Default rootcell instance allocation uses:
 
 - `.10` for the firewall VM.
 - `.11` for the agent VM.
-- `.2` for the Lima user-v2 gateway.
-- `.3` for Lima user-v2 DNS.
+- `.2` for the Lima user-v2 gateway and DNS service.
 
 The firewall VM receives two network interfaces:
 
 - A Lima VZ NAT interface for public egress and host control.
 - A Lima user-v2 interface for private traffic from the agent.
 
-The agent VM receives only the user-v2 interface. During startup, rootcell runs
-a proof gate inside the agent that checks there is exactly one non-loopback
-interface, that the default route points to the firewall, and that there is no
-extra global IPv4 address or bypass route.
+The agent VM receives only the user-v2 interface. It keeps a DHCP lease on that
+link because Lima's VZ hostagent waits for the user-v2 lease before it opens the
+VSOCK SSH control endpoint after restarts. DHCP routes and DNS are ignored; the
+Rootcell static address, firewall DNS, and default route remain authoritative.
+The firewall VM keeps the same route-free, DNS-free DHCP lease on its private
+user-v2 interface for the same Lima VSOCK startup path.
+During startup, rootcell runs a proof gate inside the agent that checks there is
+exactly one non-loopback interface, that all global IPv4 addresses are on that
+interface, that the Rootcell static address is present, and that there is no
+default-route bypass.
 
 The host connects to the firewall through Lima's generated localhost SSH
 endpoint. The agent is reached through SSH ProxyJump via the firewall over the
@@ -138,7 +144,7 @@ v0.0.5 template. It keeps the upstream NixOS guest contract while replacing the
 pieces rootcell needs to control:
 
 - `mounts: []`, so the host home directory is not mounted into either VM.
-- `ssh.overVsock: true`, so host-to-firewall SSH uses Lima's local endpoint.
+- `ssh.overVsock: true`, so Lima's local SSH endpoints use VSOCK.
 - The guest user, network interfaces, CPU, memory, and disk settings.
 
 The generated YAML pins the upstream `nixos-lima` image URLs and digests instead
@@ -176,9 +182,10 @@ guests. For Intel Macs or x86 Linux guests, update these together:
 ## Security Notes
 
 The Lima provider writes generated YAML and keeps host filesystem mounts
-disabled. The agent VM has no VZ NAT attachment and no direct host-to-agent SSH
-path. Host entry goes through the firewall, and agent egress goes through the
-firewall allowlist path.
+disabled. The agent VM has no VZ NAT attachment and no direct host-to-agent
+network SSH path. Rootcell host entry goes through the firewall, Lima's own
+control endpoint uses VSOCK, and agent egress goes through the firewall
+allowlist path.
 
 The provider uses Lima's normal host-side SSH identity from `LIMA_HOME/_config/user`
 for the initial firewall connection. Agent Git pushes use the separate SSH key
