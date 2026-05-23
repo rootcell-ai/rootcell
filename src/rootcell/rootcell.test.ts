@@ -5,7 +5,7 @@ import { ROOTCELL_SUBCOMMANDS } from "./metadata.ts";
 import { loadDotEnv, parseSecretMappings } from "./env.ts";
 import { resolveHostTool } from "./host-tools.ts";
 import { initRootcellInstanceEnv } from "./init-env.ts";
-import { buildConfig, formatVmList, rootcellMain } from "./rootcell.ts";
+import { buildConfig, formatVmList, rootcellMain, RootcellApp } from "./rootcell.ts";
 import { deriveVmNames, instancePaths, listRootcellVmInstanceNames, loadRootcellInstance, seedRootcellInstanceFiles } from "./instance.ts";
 import { runCapture } from "./process.ts";
 import { parseAwsEc2Config } from "./providers/aws-ec2-config.ts";
@@ -17,6 +17,7 @@ import {
   type TerraformRunner,
 } from "./providers/aws-ec2-terraform.ts";
 import type { AwsEc2Api, AwsS3ObjectRef } from "./providers/aws-ec2-aws.ts";
+import type { ProviderBundle, VmNetworkAttachment } from "./providers/types.ts";
 import { createProviderBundle } from "./providers/factory.ts";
 import {
   limaNetworkListIncludes,
@@ -762,6 +763,72 @@ describe("VM and network providers", () => {
     expect(providers.secrets.ids).toEqual(["macos-keychain", "aws-prod", "aws-dev"]);
   });
 
+  test("app lifecycle stop uses graceful VM stop before stopping networks", async () => {
+    const config = buildConfig("/repo", {}, fakeInstance("dev"));
+    const calls: string[] = [];
+    const attachment: VmNetworkAttachment = { kind: "fake" };
+    const providers: ProviderBundle = {
+      network: {
+        id: "fake-network",
+        plan: () => ({
+          provider: "fake-network",
+          guest: {
+            firewallIp: config.firewallIp,
+            agentIp: config.agentIp,
+            networkPrefix: 24,
+            agentPrivateInterface: "agent0",
+            firewallPrivateInterface: "firewall0",
+            firewallEgressInterface: "egress0",
+          },
+          vms: {
+            agent: attachment,
+            firewall: attachment,
+          },
+        }),
+        preflight: () => Promise.resolve(),
+        stop: () => {
+          calls.push("network:stop");
+          return Promise.resolve();
+        },
+        remove: () => Promise.resolve(),
+        ensureReady: () => Promise.resolve(),
+      },
+      vm: {
+        id: "fake-vm",
+        status: (name) => {
+          calls.push(`status:${name}`);
+          return Promise.resolve({ state: "stopped" });
+        },
+        stopIfRunning: (name) => {
+          calls.push(`stop:${name}`);
+          return Promise.resolve();
+        },
+        forceStopIfRunning: (name) => {
+          calls.push(`force:${name}`);
+          return Promise.resolve();
+        },
+        remove: () => Promise.resolve(),
+        assertCompatible: () => Promise.resolve(),
+        ensureRunning: () => Promise.resolve({ created: false }),
+        exec: () => Promise.resolve({ status: 0 }),
+        execCapture: () => Promise.resolve({ status: 0, stdout: "", stderr: "" }),
+        execInteractive: () => Promise.resolve(0),
+        copyToGuest: () => Promise.resolve(),
+      },
+      secrets: new StaticSecretProviderRegistry([]),
+    };
+
+    await new RootcellApp(config, providers).stopVms();
+
+    expect(calls).toEqual([
+      "stop:agent-dev",
+      "stop:firewall-dev",
+      "status:agent-dev",
+      "status:firewall-dev",
+      "network:stop",
+    ]);
+  });
+
   test("macOS Lima user-v2 provider exposes egress firewall and private-only agent attachments", () => {
     const config = buildConfig("/repo", {}, fakeInstance("dev"));
     const plan = new MacOsLimaUserV2NetworkProvider(config, ignoreLog).plan();
@@ -1311,6 +1378,64 @@ describe("VM and network providers", () => {
     expect(() => parseLimaVmState({ provider: "unknown" })).toThrow("provider mismatch");
   });
 
+  test("Lima lifecycle stop requests graceful stop without force", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rootcell-lima-stop-test-"));
+    const oldLimactl = process.env.ROOTCELL_LIMACTL;
+    const oldCalls = process.env.ROOTCELL_LIMACTL_CALLS;
+    try {
+      const callsPath = join(dir, "calls.txt");
+      const limactl = join(dir, "limactl");
+      writeFileSync(limactl, fakeLimactlStopScript({ gracefulStatus: 0 }), "utf8");
+      chmodSync(limactl, 0o755);
+      process.env.ROOTCELL_LIMACTL = limactl;
+      process.env.ROOTCELL_LIMACTL_CALLS = callsPath;
+
+      const config = buildConfig(dir, {}, fakeInstance("dev", dir));
+      const provider = new LimaVmProvider(config, ignoreLog);
+
+      await provider.stopIfRunning(config.agentVm);
+
+      expect(readLines(callsPath)).toEqual([
+        "list --format json agent-dev",
+        "--tty=false stop agent-dev",
+      ]);
+    } finally {
+      restoreEnv("ROOTCELL_LIMACTL", oldLimactl);
+      restoreEnv("ROOTCELL_LIMACTL_CALLS", oldCalls);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("Lima lifecycle stop falls back to force when graceful stop fails", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rootcell-lima-stop-fallback-test-"));
+    const oldLimactl = process.env.ROOTCELL_LIMACTL;
+    const oldCalls = process.env.ROOTCELL_LIMACTL_CALLS;
+    try {
+      const callsPath = join(dir, "calls.txt");
+      const limactl = join(dir, "limactl");
+      writeFileSync(limactl, fakeLimactlStopScript({ gracefulStatus: 1 }), "utf8");
+      chmodSync(limactl, 0o755);
+      process.env.ROOTCELL_LIMACTL = limactl;
+      process.env.ROOTCELL_LIMACTL_CALLS = callsPath;
+
+      const config = buildConfig(dir, {}, fakeInstance("dev", dir));
+      const provider = new LimaVmProvider(config, ignoreLog);
+
+      await provider.stopIfRunning(config.agentVm);
+
+      expect(readLines(callsPath)).toEqual([
+        "list --format json agent-dev",
+        "--tty=false stop agent-dev",
+        "list --format json agent-dev",
+        "--tty=false stop --force agent-dev",
+      ]);
+    } finally {
+      restoreEnv("ROOTCELL_LIMACTL", oldLimactl);
+      restoreEnv("ROOTCELL_LIMACTL_CALLS", oldCalls);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("Lima transport refreshes stale firewall SSH local ports", async () => {
     const dir = mkdtempSync(join(tmpdir(), "rootcell-lima-port-test-"));
     const oldPath = process.env.PATH;
@@ -1732,6 +1857,30 @@ function stripTrailingBlankLine(text: string): string {
 
 function removedRuntimeNames(): readonly string[] {
   return [["vf", "kit"].join(""), ["socket", "_vmnet"].join("")];
+}
+
+function fakeLimactlStopScript(input: { readonly gracefulStatus: number }): string {
+  return [
+    "#!/bin/sh",
+    "printf '%s\\n' \"$*\" >> \"$ROOTCELL_LIMACTL_CALLS\"",
+    "if [ \"$1\" = \"list\" ] && [ \"$2\" = \"--format\" ] && [ \"$3\" = \"json\" ] && [ \"$4\" = \"agent-dev\" ]; then",
+    "  printf '[{\"name\":\"agent-dev\",\"status\":\"running\"}]\\n'",
+    "  exit 0",
+    "fi",
+    "if [ \"$1\" = \"--tty=false\" ] && [ \"$2\" = \"stop\" ] && [ \"$3\" = \"agent-dev\" ]; then",
+    `  exit ${String(input.gracefulStatus)}`,
+    "fi",
+    "if [ \"$1\" = \"--tty=false\" ] && [ \"$2\" = \"stop\" ] && [ \"$3\" = \"--force\" ] && [ \"$4\" = \"agent-dev\" ]; then",
+    "  exit 0",
+    "fi",
+    "echo unexpected limactl \"$@\" >&2",
+    "exit 1",
+    "",
+  ].join("\n");
+}
+
+function readLines(path: string): readonly string[] {
+  return readFileSync(path, "utf8").trim().split("\n");
 }
 
 function fakeInstance(name: string, repo = "/repo", env: NodeJS.ProcessEnv = {}): RootcellInstance {

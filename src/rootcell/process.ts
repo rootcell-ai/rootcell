@@ -20,6 +20,7 @@ export interface InheritOptions {
   readonly env?: NodeJS.ProcessEnv;
   readonly allowFailure?: boolean;
   readonly ignoredOutput?: boolean;
+  readonly timeoutMs?: number;
 }
 
 function statusFromSignal(signal: NodeJS.Signals | null): number {
@@ -62,6 +63,7 @@ export function runInherited(command: string, args: readonly string[], options: 
     env: options.env ?? process.env,
     stdio: options.ignoredOutput ? "ignore" : "inherit",
     encoding: "utf8",
+    timeout: options.timeoutMs,
   });
   const status = result.status ?? statusFromSignal(result.signal);
   if (!options.allowFailure && status !== 0) {

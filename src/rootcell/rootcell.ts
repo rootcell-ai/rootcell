@@ -229,7 +229,7 @@ export class RootcellApp<TAttachment extends VmNetworkAttachment> {
 
   async stopVms(): Promise<void> {
     for (const entry of this.vmEntries()) {
-      await this.providers.vm.forceStopIfRunning(entry.name);
+      await this.providers.vm.stopIfRunning(entry.name);
     }
     await this.waitForVmsStopped();
     await this.providers.network.stop();
@@ -777,7 +777,7 @@ Run \`./rootcell pubkey\` to print it again.
 
   private async restartAgentVm(message: string): Promise<void> {
     log(message);
-    await this.providers.vm.forceStopIfRunning(this.config.agentVm);
+    await this.providers.vm.stopIfRunning(this.config.agentVm);
     await this.providers.vm.ensureRunning({
       role: "agent",
       name: this.config.agentVm,
