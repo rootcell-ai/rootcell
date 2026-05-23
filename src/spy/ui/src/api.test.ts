@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { SpyServiceHealthSchema } from "../../api-contracts.ts";
+import { SpyCallDetailSchema, SpyServiceHealthSchema } from "../../api-contracts.ts";
 import { SpyApiClient, callsUrl, fetchJson, parseSseEventData, streamEventsUrl } from "./api.ts";
 
 const originalFetch = globalThis.fetch;
@@ -84,6 +84,12 @@ describe("spy UI API helpers", () => {
     }
   });
 
+  test("requires request composition in call details", () => {
+    const missingComposition: Record<string, unknown> = { ...sampleDetail };
+    delete missingComposition.requestComposition;
+    expect(SpyCallDetailSchema.safeParse(missingComposition).success).toBe(false);
+  });
+
   test("validates SSE payloads by event name", () => {
     expect(parseSseEventData("hello", JSON.stringify({ id: 1 }))).toEqual({ id: 1 });
     expect(parseSseEventData("health", JSON.stringify(sampleHealth))).toEqual(sampleHealth);
@@ -155,6 +161,31 @@ const sampleSummary = {
   rawPayloadCount: 0,
 } as const;
 
+const sampleRequestComposition = {
+  totalBlockCount: 1,
+  totalMessageCount: 1,
+  totalCharSize: 5,
+  totalByteSize: 5,
+  sections: [{
+    kind: "current-user-input",
+    present: true,
+    blockCount: 1,
+    messageCount: 1,
+    charSize: 5,
+    byteSize: 5,
+  }],
+  toolDefinitionCount: 0,
+  toolSchemaCharSize: 0,
+  toolSchemaByteSize: 0,
+  cacheMarkerCount: 0,
+  cacheMarkerCharSize: 0,
+  cacheMarkerByteSize: 0,
+  mediaSummaryCount: 0,
+  mediaSummaryCharSize: 0,
+  mediaSummaryByteSize: 0,
+  usage: sampleUsageSummary,
+} as const;
+
 const sampleHealth = {
   ok: true,
   service: {
@@ -196,6 +227,7 @@ const sampleBlock = {
 
 const sampleDetail = {
   summary: sampleSummary,
+  requestComposition: sampleRequestComposition,
   httpEvents: [{
     id: "http-call-one-request",
     call_id: "call-one",

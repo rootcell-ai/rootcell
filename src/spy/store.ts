@@ -34,6 +34,21 @@ const DEFAULT_RETENTION_DAYS = 7;
 const DEFAULT_MAX_BYTES = 6 * 1024 * 1024 * 1024;
 const DEFAULT_QUERY_LIMIT = 100;
 const MAX_QUERY_LIMIT = 500;
+const REQUEST_COMPOSITION_SECTION_ORDER: readonly NormalizedBlock["kind"][] = [
+  "provider-envelope",
+  "harness-system-context",
+  "user-visible-message",
+  "prior-conversation-history",
+  "current-user-input",
+  "assistant-output",
+  "thinking",
+  "tool-definition",
+  "tool-call",
+  "tool-result",
+  "cache-marker",
+  "media-summary",
+  "unknown",
+];
 
 export interface SpyStoreOptions {
   readonly dbPath: string;
@@ -101,6 +116,33 @@ export interface SpyCallSummary {
   readonly rawPayloadCount: number;
 }
 
+export interface SpyRequestCompositionSection {
+  readonly kind: NormalizedBlock["kind"];
+  readonly present: boolean;
+  readonly blockCount: number;
+  readonly messageCount: number;
+  readonly charSize: number;
+  readonly byteSize: number;
+}
+
+export interface SpyRequestComposition {
+  readonly totalBlockCount: number;
+  readonly totalMessageCount: number;
+  readonly totalCharSize: number;
+  readonly totalByteSize: number;
+  readonly sections: readonly SpyRequestCompositionSection[];
+  readonly toolDefinitionCount: number;
+  readonly toolSchemaCharSize: number;
+  readonly toolSchemaByteSize: number;
+  readonly cacheMarkerCount: number;
+  readonly cacheMarkerCharSize: number;
+  readonly cacheMarkerByteSize: number;
+  readonly mediaSummaryCount: number;
+  readonly mediaSummaryCharSize: number;
+  readonly mediaSummaryByteSize: number;
+  readonly usage: SpyUsageSummary;
+}
+
 export interface SpyPaginatedResult<T> {
   readonly items: readonly T[];
   readonly nextCursor?: string | undefined;
@@ -125,6 +167,7 @@ export interface SpyStreamEventsOptions {
 
 export interface SpyCallDetail {
   readonly summary: SpyCallSummary;
+  readonly requestComposition: SpyRequestComposition;
   readonly httpEvents: readonly HttpEventRecord[];
   readonly blocks: readonly NormalizedBlock[];
   readonly usageRecords: readonly UsageRecord[];
@@ -404,10 +447,15 @@ WHERE call_id = ?
 ORDER BY observed_at ASC, direction ASC
 `).all(callId) as HttpEventRow[];
 
+    const blocks = this.blocksForCall(callId);
     return {
       summary,
+      requestComposition: requestCompositionForBlocks(
+        blocks.filter((block) => block.direction === "request"),
+        summary.usage,
+      ),
       httpEvents: httpEvents.map(httpEventFromRow),
-      blocks: this.blocksForCall(callId),
+      blocks,
       usageRecords: this.usageRecordsForCall(callId),
       rawPayloads: this.rawPayloadsForCall(callId),
     };
@@ -1136,6 +1184,111 @@ ON CONFLICT(key) DO UPDATE SET
 
 export function openSpyStore(options: SpyStoreOptions): SpyStore {
   return new BunSqliteSpyStore(options);
+}
+
+function requestCompositionForBlocks(
+  requestBlocks: readonly NormalizedBlock[],
+  usage: SpyUsageSummary,
+): SpyRequestComposition {
+  const totalMessageIndexes = new Set<number>();
+  const sections = new Map<NormalizedBlock["kind"], {
+    blockCount: number;
+    messageIndexes: Set<number>;
+    charSize: number;
+    byteSize: number;
+  }>();
+  for (const kind of REQUEST_COMPOSITION_SECTION_ORDER) {
+    sections.set(kind, {
+      blockCount: 0,
+      messageIndexes: new Set<number>(),
+      charSize: 0,
+      byteSize: 0,
+    });
+  }
+
+  let totalCharSize = 0;
+  let totalByteSize = 0;
+  let toolDefinitionCount = 0;
+  let toolSchemaCharSize = 0;
+  let toolSchemaByteSize = 0;
+  let cacheMarkerCount = 0;
+  let cacheMarkerCharSize = 0;
+  let cacheMarkerByteSize = 0;
+  let mediaSummaryCount = 0;
+  let mediaSummaryCharSize = 0;
+  let mediaSummaryByteSize = 0;
+
+  for (const block of requestBlocks) {
+    totalCharSize += block.char_size;
+    totalByteSize += block.byte_size;
+
+    const section = sections.get(block.kind);
+    if (section !== undefined) {
+      section.blockCount += 1;
+      section.charSize += block.char_size;
+      section.byteSize += block.byte_size;
+      const messageIndex = messageIndexForBlock(block);
+      if (messageIndex !== undefined) {
+        section.messageIndexes.add(messageIndex);
+        totalMessageIndexes.add(messageIndex);
+      }
+    }
+
+    if (block.kind === "tool-definition") {
+      toolDefinitionCount += 1;
+      toolSchemaCharSize += block.char_size;
+      toolSchemaByteSize += block.byte_size;
+    }
+    if (block.kind === "cache-marker" || block.cache_marker) {
+      cacheMarkerCount += 1;
+      cacheMarkerCharSize += block.char_size;
+      cacheMarkerByteSize += block.byte_size;
+    }
+    if (block.kind === "media-summary") {
+      mediaSummaryCount += 1;
+      mediaSummaryCharSize += block.char_size;
+      mediaSummaryByteSize += block.byte_size;
+    }
+  }
+
+  return {
+    totalBlockCount: requestBlocks.length,
+    totalMessageCount: totalMessageIndexes.size,
+    totalCharSize,
+    totalByteSize,
+    sections: REQUEST_COMPOSITION_SECTION_ORDER.map((kind): SpyRequestCompositionSection => {
+      const section = sections.get(kind);
+      if (section === undefined) {
+        throw new Error(`missing request composition section ${kind}`);
+      }
+      return {
+        kind,
+        present: section.blockCount > 0,
+        blockCount: section.blockCount,
+        messageCount: section.messageIndexes.size,
+        charSize: section.charSize,
+        byteSize: section.byteSize,
+      };
+    }),
+    toolDefinitionCount,
+    toolSchemaCharSize,
+    toolSchemaByteSize,
+    cacheMarkerCount,
+    cacheMarkerCharSize,
+    cacheMarkerByteSize,
+    mediaSummaryCount,
+    mediaSummaryCharSize,
+    mediaSummaryByteSize,
+    usage,
+  };
+}
+
+function messageIndexForBlock(block: NormalizedBlock): number | undefined {
+  const match = /^\$\.messages\[(\d+)\]/.exec(block.provider_path ?? "");
+  if (match === null) {
+    return undefined;
+  }
+  return Number(match[1]);
 }
 
 function providerCallFromRow(row: ProviderCallRow): ProviderCall {

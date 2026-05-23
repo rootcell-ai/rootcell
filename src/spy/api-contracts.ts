@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   DiffClassificationSchema,
   HttpEventRecordSchema,
+  NormalizedBlockKindSchema,
   NormalizedBlockSchema,
   ProviderCallSchema,
   RawPayloadRecordSchema,
@@ -79,6 +80,33 @@ export const SpyCallSummarySchema = z.object({
   rawPayloadCount: NonNegativeIntegerSchema,
 }).strict();
 
+export const SpyRequestCompositionSectionSchema = z.object({
+  kind: NormalizedBlockKindSchema,
+  present: z.boolean(),
+  blockCount: NonNegativeIntegerSchema,
+  messageCount: NonNegativeIntegerSchema,
+  charSize: NonNegativeIntegerSchema,
+  byteSize: NonNegativeIntegerSchema,
+}).strict();
+
+export const SpyRequestCompositionSchema = z.object({
+  totalBlockCount: NonNegativeIntegerSchema,
+  totalMessageCount: NonNegativeIntegerSchema,
+  totalCharSize: NonNegativeIntegerSchema,
+  totalByteSize: NonNegativeIntegerSchema,
+  sections: z.array(SpyRequestCompositionSectionSchema),
+  toolDefinitionCount: NonNegativeIntegerSchema,
+  toolSchemaCharSize: NonNegativeIntegerSchema,
+  toolSchemaByteSize: NonNegativeIntegerSchema,
+  cacheMarkerCount: NonNegativeIntegerSchema,
+  cacheMarkerCharSize: NonNegativeIntegerSchema,
+  cacheMarkerByteSize: NonNegativeIntegerSchema,
+  mediaSummaryCount: NonNegativeIntegerSchema,
+  mediaSummaryCharSize: NonNegativeIntegerSchema,
+  mediaSummaryByteSize: NonNegativeIntegerSchema,
+  usage: SpyUsageSummarySchema,
+}).strict();
+
 export function spyPaginatedResultSchema<T extends z.ZodType>(itemSchema: T): z.ZodObject<{
   items: z.ZodArray<T>;
   nextCursor: z.ZodOptional<z.ZodString>;
@@ -94,6 +122,7 @@ export const StreamEventPageSchema = spyPaginatedResultSchema(StreamEventSchema)
 
 export const SpyCallDetailSchema = z.object({
   summary: SpyCallSummarySchema,
+  requestComposition: SpyRequestCompositionSchema,
   httpEvents: z.array(HttpEventRecordSchema),
   blocks: z.array(NormalizedBlockSchema),
   usageRecords: z.array(UsageRecordSchema),
@@ -137,6 +166,8 @@ export type SpyHealthSnapshot = Readonly<z.infer<typeof SpyHealthSnapshotSchema>
 export type SpyServiceHealth = Readonly<z.infer<typeof SpyServiceHealthSchema>>;
 export type SpyUsageSummary = Readonly<z.infer<typeof SpyUsageSummarySchema>>;
 export type SpyCallSummary = Readonly<z.infer<typeof SpyCallSummarySchema>>;
+export type SpyRequestCompositionSection = Readonly<z.infer<typeof SpyRequestCompositionSectionSchema>>;
+export type SpyRequestComposition = Readonly<z.infer<typeof SpyRequestCompositionSchema>>;
 export type SpyCallDetail = Readonly<z.infer<typeof SpyCallDetailSchema>>;
 export type SpyBlockDiff = Readonly<z.infer<typeof SpyBlockDiffSchema>>;
 export type SpyCallDiff = Readonly<z.infer<typeof SpyCallDiffSchema>>;

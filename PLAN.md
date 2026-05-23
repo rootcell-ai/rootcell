@@ -604,6 +604,22 @@ V1 excludes:
     malformed SSE payloads.
   - Verified `bun run typecheck`, `bun run lint`, `bun run test` with localhost
     bind permission, `bun run test:spy-ui:unit`, and `git diff --check`.
+- Completed the V1 request composition summary:
+  - Added shared `SpyRequestComposition` API contracts and included
+    `requestComposition` in `GET /api/calls/:id` detail responses.
+  - Computes request-only structural measures from persisted normalized blocks
+    and provider usage in TypeScript: total blocks/messages/chars/bytes,
+    per-section presence/counts/sizes, tool schema size, cache marker summary,
+    media summary, and provider-reported usage.
+  - Replaced the old mixed request/response block summary with a request-native
+    browser panel while keeping request and response block lists unchanged.
+  - Added fixture-backed store/service/UI/e2e coverage for simple prompts,
+    history, toolUse/toolResult, cache markers, raw-disabled, and raw-enabled
+    cases.
+  - Verified `bun run typecheck`, `bun run lint`, `bun run build:spy`,
+    `bun test src/spy --timeout 10000`, `bun run test`,
+    `bun run test:spy-ui:unit`, and `bun run test:spy-ui:e2e` with localhost
+    bind/browser permissions where required.
 
 ### V1
 
@@ -662,17 +678,18 @@ considered fully complete:
   - Decide whether "event type" means provider-call operation/status, stream
     event type, or a dedicated timeline event classification, then implement it
     consistently in the API/UI and tests.
-- [ ] Expand the request composition summary to the exact V1 structural
+- [x] Expand the request composition summary to the exact V1 structural
   measures.
-  - Current UI summarizes block kind counts and byte totals, but it does not
-    explicitly show section presence, message count, character/byte size by
-    section, tool count, tool schema size, cache marker summary, media summary,
-    and provider-reported usage in one request-composition surface.
-  - Prefer computing these measures from normalized blocks and persisted
-    metadata in TypeScript, exposing them through typed API fields instead of
-    ad hoc UI-only derivation.
-  - Add fixture-backed tests for simple prompts, history, toolUse/toolResult,
-    cache markers, raw-disabled, and raw-enabled cases.
+  - Added shared request composition Zod schemas and types, then exposed
+    `requestComposition` on call detail responses.
+  - Computes the exact V1 request measures from normalized blocks and usage in
+    the TypeScript store instead of deriving them ad hoc in React.
+  - The UI now shows a request-only composition panel with section presence,
+    message count, character/byte size by section, tool schema size, cache
+    marker summary, media summary, and provider-reported usage.
+  - Added fixture-backed tests for simple prompts, history, toolUse/toolResult,
+    cache markers, raw-disabled, raw-enabled, API contract validation, and the
+    browser composition surface.
 
 Keep the verification baseline for the follow-up fixes:
 

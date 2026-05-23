@@ -136,6 +136,11 @@ describe("spy web service", () => {
     expect(detailResponse.status).toBe(200);
     const detail = await jsonAs(detailResponse, SpyCallDetailSchema);
     expect(detail.summary.call.id).toBe(callId);
+    expect(detail.requestComposition.totalBlockCount).toBe(detail.summary.requestBlockCount);
+    expect(detail.requestComposition.totalByteSize).toBe(detail.summary.requestByteSize);
+    expect(detail.requestComposition.totalMessageCount).toBeGreaterThan(0);
+    expect(detail.requestComposition.sections.some((section) => section.present)).toBe(true);
+    expect(detail.requestComposition.usage).toEqual(detail.summary.usage);
     expect(detail.httpEvents).toHaveLength(2);
     expect(detail.blocks.length).toBeGreaterThan(0);
     expect(detail.usageRecords.length).toBeGreaterThan(0);

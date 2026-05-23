@@ -13,6 +13,13 @@ test("selects a call and opens inspector sections", async ({ page }) => {
   await page.goto("/?since=0");
   await expect(page.getByTestId("timeline-row")).toHaveCount(5);
   await page.getByTestId("timeline-row").first().click();
+  await expect(page.getByTestId("request-composition")).toBeVisible();
+  await expect(page.getByTestId("request-composition").getByText("Messages", { exact: true }).first()).toBeVisible();
+  await expect(page.getByTestId("request-composition").getByText("Tool schemas", { exact: true })).toBeVisible();
+  await expect(page.getByTestId("request-composition").getByText("Cache markers", { exact: true })).toBeVisible();
+  await expect(page.getByTestId("request-composition").getByText("Media summaries", { exact: true })).toBeVisible();
+  await expect(page.getByTestId("request-composition").getByText("Provider usage", { exact: true })).toBeVisible();
+  await expect(page.getByTestId("request-composition").getByText("Current User Input", { exact: true })).toBeVisible();
   await expect(page.getByText("Request Blocks", { exact: true })).toBeVisible();
   await expect(page.getByText("Network Metadata", { exact: true })).toBeVisible();
 });

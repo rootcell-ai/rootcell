@@ -13,7 +13,7 @@ import {
   type SpoolRequestEvent,
   type SpoolResponseEvent,
 } from "./schemas.ts";
-import { openSpyStore, type SpyStore } from "./store.ts";
+import { openSpyStore, type SpyCallDetail, type SpyStore } from "./store.ts";
 
 const FIXTURE_PATH = new URL("./fixtures/bedrock-pi-us-sonnet-4-6.ndjson", import.meta.url);
 
@@ -142,6 +142,25 @@ function firstFixtureEvent(): SpoolEvent {
   return event;
 }
 
+function requiredDetail(store: SpyStore, callId: string): SpyCallDetail {
+  const detail = store.getCallDetail(callId);
+  if (detail === null) {
+    throw new Error(`missing detail ${callId}`);
+  }
+  return detail;
+}
+
+function compositionSection(
+  detail: SpyCallDetail,
+  kind: SpyCallDetail["requestComposition"]["sections"][number]["kind"],
+): SpyCallDetail["requestComposition"]["sections"][number] {
+  const section = detail.requestComposition.sections.find((candidate) => candidate.kind === kind);
+  if (section === undefined) {
+    throw new Error(`missing composition section ${kind}`);
+  }
+  return section;
+}
+
 describe("spy SQLite store", () => {
   test("ingests Bedrock fixture spool files into normalized SQLite records", () => {
     const { dbPath, spoolDir, store } = createTestStore();
@@ -177,7 +196,59 @@ describe("spy SQLite store", () => {
     }
   });
 
+  test("computes request composition structural measures from normalized request blocks", () => {
+    const { spoolDir, store } = createTestStore();
+    try {
+      writeSpoolEvents(spoolDir, fixtureEvents());
+      expect(store.ingestSpoolBatch().ingested).toBe(10);
+
+      const simple = requiredDetail(store, "call-fixture-flow-simple");
+      expect(simple.requestComposition.totalBlockCount).toBe(simple.summary.requestBlockCount);
+      expect(simple.requestComposition.totalByteSize).toBe(simple.summary.requestByteSize);
+      expect(simple.requestComposition.totalMessageCount).toBe(1);
+      expect(simple.requestComposition.usage).toEqual(simple.summary.usage);
+      expect(compositionSection(simple, "current-user-input")).toMatchObject({
+        present: true,
+        blockCount: 1,
+        messageCount: 1,
+      });
+      expect(compositionSection(simple, "harness-system-context").present).toBe(true);
+      expect(simple.requestComposition.toolDefinitionCount).toBe(4);
+      expect(simple.requestComposition.toolSchemaByteSize).toBe(compositionSection(simple, "tool-definition").byteSize);
+      expect(simple.requestComposition.cacheMarkerCount).toBe(2);
+      expect(simple.requestComposition.mediaSummaryCount).toBe(0);
+      expect(simple.requestComposition.usage.totalTokens).toBe(1944);
+
+      const history = requiredDetail(store, "call-fixture-flow-session-turn-two");
+      expect(history.requestComposition.totalMessageCount).toBe(3);
+      expect(compositionSection(history, "prior-conversation-history")).toMatchObject({
+        present: true,
+        blockCount: 2,
+        messageCount: 2,
+      });
+
+      const toolResult = requiredDetail(store, "call-fixture-flow-tool-result");
+      expect(toolResult.requestComposition.totalMessageCount).toBe(3);
+      expect(compositionSection(toolResult, "tool-call")).toMatchObject({ present: true, blockCount: 1 });
+      expect(compositionSection(toolResult, "tool-result")).toMatchObject({ present: true, blockCount: 1 });
+    } finally {
+      store.close();
+    }
+  });
+
   test("persists raw payloads only when raw storage is enabled", () => {
+    const disabledComposition = (() => {
+      const rawDisabled = createTestStore();
+      try {
+        const [request, response] = fixturePair();
+        rawDisabled.store.persistRequest(request);
+        expect(rawDisabled.store.persistResponse(response)).toBe(true);
+        return requiredDetail(rawDisabled.store, bedrockCallIdForFlow(request.flow_id)).requestComposition;
+      } finally {
+        rawDisabled.store.close();
+      }
+    })();
+
     const { dbPath, store } = createTestStore({ storeRaw: true });
     try {
       const [request, response] = fixturePair();
@@ -188,6 +259,7 @@ describe("spy SQLite store", () => {
       expect(countRows(dbPath, "raw_payload")).toBe(2);
       expect(countRows(dbPath, "raw_payload", "direction = 'request' AND body_text LIKE '%Fixture capture simple prompt%'")).toBe(1);
       expect(countRows(dbPath, "raw_payload", "direction = 'response' AND body_encoding = 'aws-eventstream'")).toBe(1);
+      expect(requiredDetail(store, bedrockCallIdForFlow(request.flow_id)).requestComposition).toEqual(disabledComposition);
     } finally {
       store.close();
     }

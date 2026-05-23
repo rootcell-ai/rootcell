@@ -34,7 +34,6 @@ import {
   secondsForPreset,
   shortModelId,
   statusTone,
-  summarizeBlocks,
 } from "./format.ts";
 import { cn } from "./lib/utils.ts";
 import type {
@@ -44,6 +43,7 @@ import type {
   RawPayloadRecord,
   SpyCallDetail,
   SpyCallDiff,
+  SpyRequestComposition,
   SpyCallSummary,
   SpyServiceHealth,
   StreamEvent,
@@ -743,7 +743,7 @@ function InspectorContent(props: {
   return (
     <>
       <SummaryPanel detail={props.detail} />
-      <BlockSummaryPanel requestBlocks={requestBlocks} responseBlocks={responseBlocks} />
+      <RequestCompositionPanel composition={props.detail.requestComposition} />
       <Section title="Request Blocks" defaultOpen>
         <BlockToolbar filters={props.filters} onFilters={props.onFilters} />
         <BlockList blocks={requestBlocks} filterKind={props.filters.blockKind} diffByBlockId={diffByBlockId} />
@@ -808,24 +808,90 @@ function PanelMetric(props: {
   );
 }
 
-function BlockSummaryPanel(props: {
-  readonly requestBlocks: readonly NormalizedBlock[];
-  readonly responseBlocks: readonly NormalizedBlock[];
+function RequestCompositionPanel(props: {
+  readonly composition: SpyRequestComposition;
 }): React.ReactElement {
-  const summaries = [...summarizeBlocks(props.requestBlocks), ...summarizeBlocks(props.responseBlocks)];
+  const { composition } = props;
   return (
-    <div className="rounded-md border border-stone-300 bg-white p-4 shadow-sm">
-      <h3 className="text-sm font-semibold">Composition</h3>
-      <div className="mt-3 grid grid-cols-2 gap-2">
-        {summaries.slice(0, 10).map((summary, index) => (
-          <div key={`${summary.kind}-${String(index)}`} className="min-w-0 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-xs">
-            <div className="truncate font-medium text-stone-800">{blockKindLabel(summary.kind)}</div>
-            <div className="mt-1 text-stone-500">{summary.count} blocks · {formatBytes(summary.bytes)}</div>
+    <div className="rounded-md border border-stone-300 bg-white p-4 shadow-sm" data-testid="request-composition">
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="text-sm font-semibold">Request Composition</h3>
+        <Badge tone="neutral">request only</Badge>
+      </div>
+
+      <div className="mt-3 grid grid-cols-4 gap-x-4 gap-y-3 border-y border-stone-200 py-3">
+        <CompositionMetric label="Messages" value={formatNumber(composition.totalMessageCount)} />
+        <CompositionMetric label="Blocks" value={formatNumber(composition.totalBlockCount)} />
+        <CompositionMetric label="Characters" value={formatNumber(composition.totalCharSize)} />
+        <CompositionMetric label="Bytes" value={formatBytes(composition.totalByteSize)} />
+        <CompositionMetric
+          label="Tool schemas"
+          value={`${formatNumber(composition.toolDefinitionCount)} · ${formatBytes(composition.toolSchemaByteSize)}`}
+          detail={`${formatNumber(composition.toolSchemaCharSize)} chars`}
+        />
+        <CompositionMetric
+          label="Cache markers"
+          value={`${formatNumber(composition.cacheMarkerCount)} · ${formatBytes(composition.cacheMarkerByteSize)}`}
+          detail={`${formatNumber(composition.cacheMarkerCharSize)} chars`}
+        />
+        <CompositionMetric
+          label="Media summaries"
+          value={`${formatNumber(composition.mediaSummaryCount)} · ${formatBytes(composition.mediaSummaryByteSize)}`}
+          detail={`${formatNumber(composition.mediaSummaryCharSize)} chars`}
+        />
+        <CompositionMetric
+          label="Provider usage"
+          value={formatUsageTotal(composition.usage)}
+          detail={formatCompositionUsageDetail(composition.usage)}
+        />
+      </div>
+
+      <div className="mt-3 overflow-hidden rounded-md border border-stone-200 text-xs">
+        <div className="grid grid-cols-[minmax(150px,1fr)_72px_72px_72px_88px_88px] gap-2 bg-stone-100 px-3 py-2 font-medium text-stone-600">
+          <span>Section</span>
+          <span>State</span>
+          <span className="text-right">Messages</span>
+          <span className="text-right">Blocks</span>
+          <span className="text-right">Chars</span>
+          <span className="text-right">Bytes</span>
+        </div>
+        {composition.sections.map((section) => (
+          <div key={section.kind} className="grid grid-cols-[minmax(150px,1fr)_72px_72px_72px_88px_88px] gap-2 border-t border-stone-200 px-3 py-2">
+            <span className="truncate font-medium text-stone-800">{blockKindLabel(section.kind)}</span>
+            <span className={section.present ? "text-emerald-700" : "text-stone-400"}>
+              {section.present ? "present" : "absent"}
+            </span>
+            <span className="text-right text-stone-600">{formatNumber(section.messageCount)}</span>
+            <span className="text-right text-stone-600">{formatNumber(section.blockCount)}</span>
+            <span className="text-right text-stone-600">{formatNumber(section.charSize)}</span>
+            <span className="text-right text-stone-600">{formatBytes(section.byteSize)}</span>
           </div>
         ))}
       </div>
     </div>
   );
+}
+
+function CompositionMetric(props: {
+  readonly label: string;
+  readonly value: string;
+  readonly detail?: string | undefined;
+}): React.ReactElement {
+  return (
+    <div className="min-w-0">
+      <div className="truncate text-xs text-stone-500">{props.label}</div>
+      <div className="mt-0.5 truncate text-sm font-semibold text-stone-950">{props.value}</div>
+      {props.detail === undefined ? null : <div className="mt-0.5 truncate text-xs text-stone-500">{props.detail}</div>}
+    </div>
+  );
+}
+
+function formatCompositionUsageDetail(usage: SpyRequestComposition["usage"]): string {
+  return [
+    `in ${formatNumber(usage.inputTokens)}`,
+    `out ${formatNumber(usage.outputTokens)}`,
+    `cache ${formatNumber(usage.cacheReadTokens)}/${formatNumber(usage.cacheWriteTokens)}`,
+  ].join(" · ");
 }
 
 function BlockToolbar(props: {
