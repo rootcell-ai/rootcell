@@ -90,6 +90,29 @@ describe("spy UI API helpers", () => {
     expect(SpyCallDetailSchema.safeParse(missingComposition).success).toBe(false);
   });
 
+  test("requires explicit V1 health fields", () => {
+    const missingEnabled = {
+      ...sampleHealth,
+      service: { ...sampleHealth.service },
+    };
+    delete (missingEnabled.service as Record<string, unknown>).enabled;
+    expect(SpyServiceHealthSchema.safeParse(missingEnabled).success).toBe(false);
+
+    const missingDroppedCaptureCount = {
+      ...sampleHealth,
+      store: { ...sampleHealth.store },
+    };
+    delete (missingDroppedCaptureCount.store as Record<string, unknown>).droppedCaptureCount;
+    expect(SpyServiceHealthSchema.safeParse(missingDroppedCaptureCount).success).toBe(false);
+
+    const missingLastIngestAt = {
+      ...sampleHealth,
+      store: { ...sampleHealth.store },
+    };
+    delete (missingLastIngestAt.store as Record<string, unknown>).lastIngestAt;
+    expect(SpyServiceHealthSchema.safeParse(missingLastIngestAt).success).toBe(false);
+  });
+
   test("validates SSE payloads by event name", () => {
     expect(parseSseEventData("hello", JSON.stringify({ id: 1 }))).toEqual({ id: 1 });
     expect(parseSseEventData("health", JSON.stringify(sampleHealth))).toEqual(sampleHealth);
@@ -189,6 +212,7 @@ const sampleRequestComposition = {
 const sampleHealth = {
   ok: true,
   service: {
+    enabled: true,
     bind: "127.0.0.1",
     port: 6174,
     retentionDays: 7,
@@ -204,6 +228,8 @@ const sampleHealth = {
     spoolSizeBytes: 0,
     providerCallCount: 1,
     pendingCallCount: 0,
+    droppedCaptureCount: 1,
+    lastIngestAt: 1,
     counters: { captures_dropped: 1 },
     metadata: { last_ingest_at: "1" },
   },

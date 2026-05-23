@@ -41,6 +41,8 @@ export const SpyHealthSnapshotSchema = z.object({
   spoolSizeBytes: NonNegativeIntegerSchema,
   providerCallCount: NonNegativeIntegerSchema,
   pendingCallCount: NonNegativeIntegerSchema,
+  droppedCaptureCount: NonNegativeIntegerSchema,
+  lastIngestAt: NonNegativeNumberSchema.nullable(),
   counters: z.record(z.string(), z.number()),
   metadata: z.record(z.string(), z.string()),
 }).strict();
@@ -48,6 +50,7 @@ export const SpyHealthSnapshotSchema = z.object({
 export const SpyServiceHealthSchema = z.object({
   ok: z.literal(true),
   service: z.object({
+    enabled: z.boolean(),
     bind: z.string().min(1),
     port: NonNegativeIntegerSchema,
     retentionDays: NonNegativeNumberSchema,

@@ -162,6 +162,40 @@ function compositionSection(
 }
 
 describe("spy SQLite store", () => {
+  test("exposes explicit health fields for ingest time and dropped captures", () => {
+    let now = 100;
+    const { spoolDir, store } = createTestStore({ now: () => now });
+    try {
+      let health = store.getHealthSnapshot();
+      expect(health.droppedCaptureCount).toBe(0);
+      expect(health.lastIngestAt).toBeNull();
+
+      writeSpoolEvents(spoolDir, fixturePair());
+      expect(store.ingestSpoolBatch()).toMatchObject({ ingested: 2 });
+      health = store.getHealthSnapshot();
+      expect(health.droppedCaptureCount).toBe(0);
+      expect(health.lastIngestAt).toBe(100);
+
+      now = 200;
+      writeSpoolEvents(spoolDir, [
+        SpoolEventSchema.parse({
+          version: 1,
+          ts: 2000,
+          direction: "dropped",
+          provider: "bedrock",
+          reason: "spool_full",
+          dropped_count: 3,
+        }),
+      ]);
+      expect(store.ingestSpoolBatch()).toMatchObject({ ingested: 1 });
+      health = store.getHealthSnapshot();
+      expect(health.droppedCaptureCount).toBe(3);
+      expect(health.lastIngestAt).toBe(200);
+    } finally {
+      store.close();
+    }
+  });
+
   test("ingests Bedrock fixture spool files into normalized SQLite records", () => {
     const { dbPath, spoolDir, store } = createTestStore();
     try {
@@ -191,6 +225,8 @@ describe("spy SQLite store", () => {
       expect(health.counters.spool_response_events).toBe(5);
       expect(health.providerCallCount).toBe(5);
       expect(health.pendingCallCount).toBe(0);
+      expect(health.droppedCaptureCount).toBe(0);
+      expect(health.lastIngestAt).not.toBeNull();
     } finally {
       store.close();
     }

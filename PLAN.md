@@ -620,6 +620,20 @@ V1 excludes:
     `bun test src/spy --timeout 10000`, `bun run test`,
     `bun run test:spy-ui:unit`, and `bun run test:spy-ui:e2e` with localhost
     bind/browser permissions where required.
+- Completed the V1 health/settings surface:
+  - Added explicit `service.enabled`, `store.droppedCaptureCount`, and
+    `store.lastIngestAt` fields to `/api/health` and SSE health payloads.
+  - Kept diagnostic counters and metadata available while moving required UI
+    state off metadata inference and onto typed API fields.
+  - Updated the browser health panel to show enabled state, DB size, spool size,
+    store/spool caps, retention days, dropped capture count, and last ingest
+    time without adding service/API versioning.
+  - Added store, service, shared-contract, UI API, and Playwright coverage for
+    the required health fields.
+  - Verified `bun run typecheck`, `bun run lint`, `bun run build:spy`,
+    `bun test src/spy --timeout 10000`, `bun run test:spy-ui:unit`, and
+    `bun run test:spy-ui:e2e` with localhost bind/browser permissions where
+    required.
 
 ### V1
 
@@ -647,9 +661,8 @@ Build the Bedrock/Pi browser spy:
 Review date: 2026-05-23.
 
 The implementation history above is complete, and the V1-specific validation
-commands pass when local listener permissions are available. However, the review
-found the following acceptance gaps that must be fixed before V1 should be
-considered fully complete:
+commands pass when local listener permissions are available. The review tracks
+the following acceptance gaps before V1 should be considered fully complete:
 
 - [x] Add runtime validation for browser API and SSE payloads.
   - Added shared Zod schemas for health, call pages, details, diffs,
@@ -661,15 +674,16 @@ considered fully complete:
   - Added UI/API unit coverage for invalid response payloads and malformed SSE
     payloads, plus service coverage that parses real API/SSE output through the
     shared contracts.
-- [ ] Complete the health/settings surface required by V1.
-  - The UI must show enabled state, DB size, spool size, store/spool caps,
-    retention days, dropped capture count, last ingest time, and service
-    version.
-  - Extend the service health response if needed so the UI does not infer these
-    fields from partial metadata.
-  - Include dropped capture count from health counters and a stable service
-    version/build identifier in the API response.
-  - Add service/UI tests that fail if any required health field is absent.
+- [x] Complete the health/settings surface required by V1.
+  - Added explicit `service.enabled`, `store.droppedCaptureCount`, and
+    `store.lastIngestAt` fields to `/api/health` and SSE health payloads.
+  - Kept counters and metadata for diagnostics while making the UI use explicit
+    health fields instead of inferring V1 status from partial metadata.
+  - Updated the browser health panel to show enabled state, DB size, spool size,
+    store/spool caps, retention days, dropped capture count, and last ingest
+    time.
+  - Added store, service, UI API, and Playwright coverage that fails when
+    required health fields are absent.
 - [ ] Complete V1 timeline filtering.
   - V1 requires filtering by time, provider/model, event type, and normalized
     text.

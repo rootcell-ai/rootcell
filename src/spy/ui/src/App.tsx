@@ -1131,15 +1131,17 @@ function HealthPanel(props: { readonly health: SpyServiceHealth | null }): React
   const { service, store } = props.health;
   return (
     <div className="grid grid-cols-3 gap-2 text-sm">
+      <HealthCell label="Enabled" value={service.enabled ? "Enabled" : "Disabled"} />
       <HealthCell label="DB size" value={formatBytes(store.dbSizeBytes)} />
       <HealthCell label="Spool size" value={formatBytes(store.spoolSizeBytes)} />
+      <HealthCell label="Store cap" value={formatBytes(service.maxBytes)} />
+      <HealthCell label="Spool cap" value={formatBytes(service.spoolMaxBytes)} />
+      <HealthCell label="Retention" value={`${formatNumber(service.retentionDays)} days`} />
+      <HealthCell label="Dropped captures" value={formatNumber(store.droppedCaptureCount)} />
+      <HealthCell label="Last ingest" value={store.lastIngestAt === null ? "-" : formatDateTime(store.lastIngestAt)} />
       <HealthCell label="Calls" value={formatNumber(store.providerCallCount)} />
       <HealthCell label="Pending" value={formatNumber(store.pendingCallCount)} />
-      <HealthCell label="Retention" value={`${formatNumber(service.retentionDays)} days`} />
-      <HealthCell label="Max store" value={formatBytes(service.maxBytes)} />
-      <HealthCell label="Max spool" value={formatBytes(service.spoolMaxBytes)} />
       <HealthCell label="Schema" value={formatNumber(store.schemaVersion)} />
-      <HealthCell label="Last ingest" value={store.metadata.last_ingest_at === undefined ? "-" : formatDateTime(Number(store.metadata.last_ingest_at))} />
     </div>
   );
 }

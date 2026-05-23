@@ -91,6 +91,8 @@ export interface SpyHealthSnapshot {
   readonly spoolSizeBytes: number;
   readonly providerCallCount: number;
   readonly pendingCallCount: number;
+  readonly droppedCaptureCount: number;
+  readonly lastIngestAt: number | null;
   readonly counters: Readonly<Record<string, number>>;
   readonly metadata: Readonly<Record<string, string>>;
 }
@@ -623,6 +625,8 @@ LIMIT ?
   }
 
   getHealthSnapshot(): SpyHealthSnapshot {
+    const counters = this.healthCounters();
+    const metadata = this.serviceMetadata();
     return {
       schemaVersion: currentSpySchemaVersion(),
       dbSizeBytes: this.databaseSizeBytes(),
@@ -630,8 +634,10 @@ LIMIT ?
       spoolSizeBytes: this.spoolSizeBytes(),
       providerCallCount: this.countRows("provider_call"),
       pendingCallCount: this.countRows("provider_call", "status = 'pending'"),
-      counters: this.healthCounters(),
-      metadata: this.serviceMetadata(),
+      droppedCaptureCount: nonNegativeCounter(counters.captures_dropped),
+      lastIngestAt: metadataTimestamp(metadata.last_ingest_at),
+      counters,
+      metadata,
     };
   }
 
@@ -1507,6 +1513,18 @@ function contentType(headers: readonly (readonly [string, string])[]): string | 
 
 function positiveNumber(value: number | undefined, fallback: number): number {
   return value === undefined || !Number.isFinite(value) || value <= 0 ? fallback : value;
+}
+
+function nonNegativeCounter(value: number | undefined): number {
+  return value === undefined || !Number.isFinite(value) || value < 0 ? 0 : value;
+}
+
+function metadataTimestamp(value: string | undefined): number | null {
+  if (value === undefined) {
+    return null;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
 
 function errorMessage(error: unknown): string {

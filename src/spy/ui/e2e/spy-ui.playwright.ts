@@ -22,6 +22,15 @@ test("selects a call and opens inspector sections", async ({ page }) => {
   await expect(page.getByTestId("request-composition").getByText("Current User Input", { exact: true })).toBeVisible();
   await expect(page.getByText("Request Blocks", { exact: true })).toBeVisible();
   await expect(page.getByText("Network Metadata", { exact: true })).toBeVisible();
+  await page.getByText("Health", { exact: true }).click();
+  await expect(page.getByText("Enabled", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("DB size", { exact: true })).toBeVisible();
+  await expect(page.getByText("Spool size", { exact: true })).toBeVisible();
+  await expect(page.getByText("Store cap", { exact: true })).toBeVisible();
+  await expect(page.getByText("Spool cap", { exact: true })).toBeVisible();
+  await expect(page.getByText("Retention", { exact: true })).toBeVisible();
+  await expect(page.getByText("Dropped captures", { exact: true })).toBeVisible();
+  await expect(page.getByText("Last ingest", { exact: true })).toBeVisible();
 });
 
 test("loads historical ranges and searches normalized text", async ({ page }) => {

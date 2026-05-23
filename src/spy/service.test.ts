@@ -14,7 +14,7 @@ import {
   SseEventPayloadSchemas,
 } from "./api-contracts.ts";
 import { SpoolEventSchema, type SpoolEvent } from "./schemas.ts";
-import { startSpyService, type SpyServiceHandle } from "./service.ts";
+import { spyServiceConfigFromEnv, startSpyService, type SpyServiceHandle } from "./service.ts";
 
 const FIXTURE_PATH = new URL("./fixtures/bedrock-pi-us-sonnet-4-6.ndjson", import.meta.url);
 
@@ -100,6 +100,12 @@ async function jsonAs<T>(response: Response, schema: ZodType<T>): Promise<T> {
 }
 
 describe("spy web service", () => {
+  test("derives enabled state from environment with direct startup enabled by default", () => {
+    expect(spyServiceConfigFromEnv({}).enabled).toBe(true);
+    expect(spyServiceConfigFromEnv({ ROOTCELL_SPY_ENABLED: "false" }).enabled).toBe(false);
+    expect(spyServiceConfigFromEnv({ ROOTCELL_SPY_ENABLED: "true" }).enabled).toBe(true);
+  });
+
   test("serves health, paginated calls, details, diff, stream events, and search", async () => {
     const { handle, spoolDir } = createTestService();
     writeSpoolEvents(spoolDir, fixtureEvents());
@@ -114,8 +120,11 @@ describe("spy web service", () => {
     const healthResponse = await fetch(`${handle.url}/api/health`);
     expect(healthResponse.status).toBe(200);
     const health = await jsonAs(healthResponse, SpyServiceHealthSchema);
+    expect(health.service.enabled).toBe(true);
     expect(health.service.storeRaw).toBe(false);
     expect(health.store.providerCallCount).toBe(5);
+    expect(health.store.droppedCaptureCount).toBe(0);
+    expect(health.store.lastIngestAt).not.toBeNull();
 
     const firstPageResponse = await fetch(`${handle.url}/api/calls?limit=2`);
     const firstPage = await jsonAs(firstPageResponse, SpyCallSummaryPageSchema);

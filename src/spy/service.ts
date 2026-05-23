@@ -29,6 +29,7 @@ const ClearRequestSchema = z.object({
 }).strict();
 
 export interface SpyServiceConfig {
+  readonly enabled: boolean;
   readonly bind: string;
   readonly port: number;
   readonly dbPath: string;
@@ -46,6 +47,7 @@ export interface SpyServiceConfig {
 export interface SpyServiceHealth {
   readonly ok: true;
   readonly service: {
+    readonly enabled: boolean;
     readonly bind: string;
     readonly port: number;
     readonly retentionDays: number;
@@ -221,6 +223,7 @@ class SpyHttpService {
     return {
       ok: true,
       service: {
+        enabled: this.config.enabled,
         bind: this.config.bind,
         port: this.config.port,
         retentionDays: this.config.retentionDays,
@@ -336,6 +339,7 @@ class SpyHttpService {
 export function spyServiceConfigFromEnv(env: NodeJS.ProcessEnv = process.env): SpyServiceConfig {
   const staticDir = nonEmpty(env.ROOTCELL_SPY_STATIC_DIR);
   return {
+    enabled: envBoolean(env.ROOTCELL_SPY_ENABLED, true),
     bind: nonEmpty(env.ROOTCELL_SPY_BIND) ?? DEFAULT_BIND,
     port: envNumber(env.ROOTCELL_SPY_PORT, DEFAULT_PORT),
     dbPath: nonEmpty(env.ROOTCELL_SPY_DB_PATH) ?? DEFAULT_DB_PATH,
