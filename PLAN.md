@@ -647,6 +647,30 @@ V1 excludes:
   - Verified `bun run typecheck`, `bun run lint`, `bun run build:spy`,
     `bun run test`, `bun run test:spy-ui:unit`, `bun run test:spy-ui:e2e`, and
     `git diff --check` with localhost bind/browser permissions where required.
+- Completed V1 completion validation on 2026-05-23:
+  - Ran the full V1 baseline: `bun run typecheck`, `bun run lint`,
+    `python3 -m unittest discover -s proxy -p 'test_*.py'`,
+    `bun run build:spy`, `bun run test`, `bun run test:spy-ui:unit`,
+    `bun run test:spy-ui:e2e`, `bun run test:integration`, and
+    `bun run test:integration:clean`.
+  - Localhost-bound tests required the normal localhost/browser permissions; no
+    product, packaging, or test defects were found in the baseline.
+  - Ran the live smoke against the `default` Lima instance: enabled spy,
+    provisioned, launched `./rootcell spy --no-open`, verified `/api/health`,
+    captured real Pi/Bedrock `converse-stream` calls, inspected API detail,
+    diff, stream events, browser timeline/detail, and health, then cleared
+    data.
+  - Fixed one live-smoke UI defect where a selected pending call detail could
+    remain stale after SSE updated the call summary to complete. The browser now
+    refetches selected detail when the selected summary status/content changes.
+  - Rebuilt and reprovisioned the patched spy UI, then confirmed the browser
+    inspector updated without reselecting the row and showed completed duration,
+    usage, request composition, repeated/changed diff labels, response blocks,
+    and health data.
+  - Restored `ROOTCELL_SPY_ENABLED=false`, reprovisioned, confirmed
+    `./rootcell spy --no-open` refuses to launch while disabled, the
+    `rootcell-spy.service` is inactive, the SQLite store is preserved, the spool
+    is empty, and a disabled-state Pi/Bedrock call writes no spool files.
 
 ### V1
 
@@ -668,6 +692,10 @@ Build the Bedrock/Pi browser spy:
 - [x] Raise firewall disk/root volume defaults to 64 GiB.
 - [x] Remove old TUI/terminal spy implementation files, tests, and docs.
 - [x] Add `src/spy/README.md` and brief links from main/proxy docs.
+- [x] Complete the final V1 acceptance pass against the `default` Lima instance.
+  - Ran the full baseline, live spy smoke, clear-data check, disabled-state
+    capture check, and restored `ROOTCELL_SPY_ENABLED=false`.
+  - Fixed the selected-call detail refresh defect found during the live smoke.
 
 ### V1 Review Findings
 
@@ -728,7 +756,10 @@ Keep the verification baseline for the follow-up fixes:
 - `python3 -m unittest discover -s proxy -p 'test_*.py'`
 - `bun run build:spy`
 - `bun run test` (requires permission to bind localhost in this workspace)
+- `bun run test:spy-ui:unit`
 - `bun run test:spy-ui:e2e` (requires localhost/browser permissions)
+- `bun run test:integration`
+- `bun run test:integration:clean`
 
 ### V1.5
 

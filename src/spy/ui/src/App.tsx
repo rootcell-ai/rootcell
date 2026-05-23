@@ -239,6 +239,28 @@ export function App(): React.ReactElement {
     };
   }, [loadCalls]);
 
+  const selectedSummary = React.useMemo(() => {
+    return calls.find((summary) => summary.call.id === selectedCallId) ?? null;
+  }, [calls, selectedCallId]);
+
+  const selectedDetailVersion = React.useMemo(() => {
+    if (selectedSummary === null) {
+      return selectedCallId;
+    }
+    return [
+      selectedSummary.call.id,
+      selectedSummary.call.status,
+      selectedSummary.call.completed_at ?? "pending",
+      selectedSummary.call.request_content_hash ?? "",
+      selectedSummary.call.response_content_hash ?? "",
+      selectedSummary.durationMs ?? "pending",
+      selectedSummary.usage.totalTokens ?? "usage-pending",
+      selectedSummary.responseBlockCount,
+      selectedSummary.responseByteSize,
+      selectedSummary.streamEventCount,
+    ].join("|");
+  }, [selectedCallId, selectedSummary]);
+
   React.useEffect(() => {
     if (selectedCallId === undefined) {
       return;
@@ -267,7 +289,7 @@ export function App(): React.ReactElement {
     return () => {
       cancelled = true;
     };
-  }, [selectedCallId]);
+  }, [selectedCallId, selectedDetailVersion]);
 
   const modelOptions = React.useMemo(() => {
     return [
@@ -277,10 +299,6 @@ export function App(): React.ReactElement {
       ]),
     ].sort();
   }, [calls, filters.model]);
-
-  const selectedSummary = React.useMemo(() => {
-    return calls.find((summary) => summary.call.id === selectedCallId) ?? null;
-  }, [calls, selectedCallId]);
 
   function setPresetSince(nextPreset: TimePreset): void {
     setPreset(nextPreset);
