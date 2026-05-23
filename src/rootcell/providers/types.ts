@@ -57,6 +57,7 @@ export interface CopyToGuestOptions {
 export interface VmProvider<TAttachment extends VmNetworkAttachment = VmNetworkAttachment> {
   readonly id: string;
   status(name: string): Promise<VmStatus>;
+  stopIfRunning(name: string): Promise<void>;
   forceStopIfRunning(name: string): Promise<void>;
   remove(name: string): Promise<void>;
   assertCompatible(name: string, network: TAttachment): Promise<void>;

@@ -32,6 +32,10 @@ export class AwsEc2VmProvider implements VmProvider<AwsEc2NetworkAttachment> {
   }
 
   async forceStopIfRunning(name: string): Promise<void> {
+    await this.stopIfRunning(name);
+  }
+
+  async stopIfRunning(name: string): Promise<void> {
     if ((await this.status(name)).state !== "running") {
       return;
     }

@@ -34,6 +34,8 @@ const LimaVmStateSchema = z.object({
 
 type LimaVmState = Readonly<z.infer<typeof LimaVmStateSchema>>;
 
+const LIMA_GRACEFUL_STOP_TIMEOUT_MS = 180_000;
+
 export const NIXOS_LIMA_AARCH64_IMAGE = {
   location: "https://github.com/nixos-lima/nixos-lima/releases/download/v0.0.5/nixos-lima-v0.0.5-aarch64.qcow2",
   arch: "aarch64",
@@ -104,11 +106,31 @@ export class LimaVmProvider implements VmProvider<LimaUserV2NetworkAttachment> {
     return Promise.resolve({ state: "unexpected", detail: status.length === 0 ? "unknown Lima status" : status });
   }
 
-  async forceStopIfRunning(name: string): Promise<void> {
+  async stopIfRunning(name: string): Promise<void> {
     if ((await this.status(name)).state !== "running") {
       return;
     }
     this.log(`stopping ${name} Lima VM...`);
+    const result = runInherited(this.ensureLimactl(), ["--tty=false", "stop", name], {
+      allowFailure: true,
+      timeoutMs: LIMA_GRACEFUL_STOP_TIMEOUT_MS,
+    });
+    if (result.status === 0 || (await this.status(name)).state !== "running") {
+      return;
+    }
+    this.log(`graceful stop for ${name} did not complete; force-stopping Lima VM...`);
+    this.forceStopRunning(name);
+  }
+
+  async forceStopIfRunning(name: string): Promise<void> {
+    if ((await this.status(name)).state !== "running") {
+      return;
+    }
+    this.forceStopRunning(name);
+  }
+
+  private forceStopRunning(name: string): void {
+    this.log(`force-stopping ${name} Lima VM...`);
     runInherited(this.ensureLimactl(), ["--tty=false", "stop", "--force", name], {
       allowFailure: true,
     });
