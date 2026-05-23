@@ -24,6 +24,11 @@ import {
   limaUserV2ReservedIps,
   MacOsLimaUserV2NetworkProvider,
 } from "./providers/macos-lima-user-v2-network.ts";
+import {
+  assertLimactlSupportsSshOverVsockYaml,
+  limaVersionSupportsSshOverVsockYaml,
+  parseLimactlVersionOutput,
+} from "./providers/lima-version.ts";
 import { directSshConfig, LimaVmProvider, limaYaml, NIXOS_LIMA_AARCH64_IMAGE, parseLimaVmState, userV2ProofScript } from "./providers/lima.ts";
 import {
   ImageStore,
@@ -465,6 +470,65 @@ describe("host tool resolution", () => {
   });
 });
 
+describe("Lima version compatibility", () => {
+  test("parses limactl version output", () => {
+    expect(parseLimactlVersionOutput("limactl version 2.1.1")).toEqual({
+      major: 2,
+      minor: 1,
+      patch: 1,
+      raw: "2.1.1",
+    });
+    expect(parseLimactlVersionOutput("limactl version v2.0.2")).toEqual({
+      major: 2,
+      minor: 0,
+      patch: 2,
+      raw: "2.0.2",
+    });
+    expect(parseLimactlVersionOutput("limactl version 2.1.1-dev")).toEqual({
+      major: 2,
+      minor: 1,
+      patch: 1,
+      raw: "2.1.1",
+    });
+    expect(parseLimactlVersionOutput("limactl unknown")).toBeNull();
+  });
+
+  test("requires the Lima release that introduced ssh.overVsock YAML", () => {
+    const oldLima = parseLimactlVersionOutput("limactl version 1.2.2");
+    const firstYamlFieldRelease = parseLimactlVersionOutput("limactl version 2.0.2");
+    const newerLima = parseLimactlVersionOutput("limactl version 2.1.1");
+    if (oldLima === null || firstYamlFieldRelease === null || newerLima === null) {
+      throw new Error("test failed to parse Lima versions");
+    }
+
+    expect(limaVersionSupportsSshOverVsockYaml(oldLima)).toBe(false);
+    expect(limaVersionSupportsSshOverVsockYaml(firstYamlFieldRelease)).toBe(true);
+    expect(limaVersionSupportsSshOverVsockYaml(newerLima)).toBe(true);
+  });
+
+  test("fails preflight before provisioning with a limactl that cannot read ssh.overVsock", () => {
+    const dir = mkdtempSync(join(tmpdir(), "rootcell-lima-version-test-"));
+    try {
+      const limactl = join(dir, "limactl");
+      writeFileSync(limactl, [
+        "#!/bin/sh",
+        "printf 'limactl version 1.2.2\\n'",
+        "",
+      ].join("\n"), "utf8");
+      chmodSync(limactl, 0o755);
+
+      expect(() => {
+        assertLimactlSupportsSshOverVsockYaml(limactl);
+      }).toThrow(".ssh.overVsock");
+      expect(() => {
+        assertLimactlSupportsSshOverVsockYaml(limactl);
+      }).toThrow("nix shell .#hostTools --command ./rootcell");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("secret providers", () => {
   test("registry routes provider-qualified references", async () => {
     const calls: string[] = [];
@@ -893,6 +957,7 @@ describe("VM and network providers", () => {
     expect(commonModule).toContain('home = lib.mkDefault "/home/${username}";');
     expect(commonModule).toContain("ln -sfn /run/current-system/sw/bin/bash /bin/bash");
     expect(commonModule).toContain("services.lima.enable = !isAwsEc2;");
+    expect(commonModule).toContain('services.dbus.implementation = "dbus";');
     expect(commonModule).toContain("/virtualisation/amazon-image.nix");
     expect(commonModule).toContain("networking.nat.enable = lib.mkForce false;");
 
