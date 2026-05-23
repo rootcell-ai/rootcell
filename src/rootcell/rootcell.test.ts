@@ -5,7 +5,7 @@ import { ROOTCELL_SUBCOMMANDS } from "./metadata.ts";
 import { loadDotEnv, parseSecretMappings } from "./env.ts";
 import { resolveHostTool } from "./host-tools.ts";
 import { initRootcellInstanceEnv } from "./init-env.ts";
-import { buildConfig, formatVmList, rootcellMain, RootcellApp } from "./rootcell.ts";
+import { buildConfig, chooseSpyLocalPort, formatVmList, renderSpyEnv, rootcellMain, RootcellApp } from "./rootcell.ts";
 import { deriveVmNames, instancePaths, listRootcellVmInstanceNames, loadRootcellInstance, seedRootcellInstanceFiles } from "./instance.ts";
 import { runCapture } from "./process.ts";
 import { parseAwsEc2Config } from "./providers/aws-ec2-config.ts";
@@ -64,9 +64,7 @@ import {
 
 const EmptyStringArraySchema = z.array(z.string()).length(0);
 const DefaultSpyOptionsSchema = z.object({
-  raw: z.literal(false),
-  dedupe: z.literal(true),
-  tui: z.literal(false),
+  open: z.literal(true),
 }).strict();
 
 const ignoreLog = (): void => undefined;
@@ -86,7 +84,7 @@ describe("rootcell argument parsing", () => {
       instanceName: "default",
       subcommand: "provision",
       rest: [],
-      spyOptions: { raw: false, dedupe: true, tui: false },
+      spyOptions: { open: true },
     });
     expect(() => parseRootcellArgs(["provision", "ignored"])).toThrow("Too many non-option arguments");
   });
@@ -99,7 +97,7 @@ describe("rootcell argument parsing", () => {
       instanceName: "default",
       subcommand: "list",
       rest: [],
-      spyOptions: { raw: false, dedupe: true, tui: false },
+      spyOptions: { open: true },
     });
     const stop = runArgs(["stop", "--instance", "dev"]);
     expectRunArgs(stop);
@@ -108,7 +106,7 @@ describe("rootcell argument parsing", () => {
       instanceName: "dev",
       subcommand: "stop",
       rest: [],
-      spyOptions: { raw: false, dedupe: true, tui: false },
+      spyOptions: { open: true },
     });
     const remove = runArgs(["remove", "--instance=dev"]);
     expectRunArgs(remove);
@@ -117,7 +115,7 @@ describe("rootcell argument parsing", () => {
       instanceName: "dev",
       subcommand: "remove",
       rest: [],
-      spyOptions: { raw: false, dedupe: true, tui: false },
+      spyOptions: { open: true },
     });
   });
 
@@ -129,7 +127,7 @@ describe("rootcell argument parsing", () => {
       instanceName: "default",
       subcommand: "edit",
       rest: ["env"],
-      spyOptions: { raw: false, dedupe: true, tui: false },
+      spyOptions: { open: true },
     });
 
     const http = runArgs(["edit", "http"]);
@@ -139,7 +137,7 @@ describe("rootcell argument parsing", () => {
       instanceName: "default",
       subcommand: "edit",
       rest: ["http"],
-      spyOptions: { raw: false, dedupe: true, tui: false },
+      spyOptions: { open: true },
     });
 
     const dns = runArgs(["--instance", "dev", "edit", "dns"]);
@@ -149,7 +147,7 @@ describe("rootcell argument parsing", () => {
       instanceName: "dev",
       subcommand: "edit",
       rest: ["dns"],
-      spyOptions: { raw: false, dedupe: true, tui: false },
+      spyOptions: { open: true },
     });
 
     const ssh = runArgs(["edit", "ssh", "-i", "dev"]);
@@ -159,7 +157,7 @@ describe("rootcell argument parsing", () => {
       instanceName: "dev",
       subcommand: "edit",
       rest: ["ssh"],
-      spyOptions: { raw: false, dedupe: true, tui: false },
+      spyOptions: { open: true },
     });
 
     expect(() => parseRootcellArgs(["edit"])).toThrow();
@@ -174,7 +172,7 @@ describe("rootcell argument parsing", () => {
       instanceName: "default",
       subcommand: "",
       rest: ["nix", "flake", "update"],
-      spyOptions: { raw: false, dedupe: true, tui: false },
+      spyOptions: { open: true },
     });
     const implicit = runArgs(["pi", "--model", "sonnet"]);
     expectRunArgs(implicit);
@@ -183,7 +181,7 @@ describe("rootcell argument parsing", () => {
       instanceName: "default",
       subcommand: "",
       rest: ["pi", "--model", "sonnet"],
-      spyOptions: { raw: false, dedupe: true, tui: false },
+      spyOptions: { open: true },
     });
     const numericOptions = runArgs(["--", "curl", "--connect-timeout", "5", "--max-time", "20", "https://github.com"]);
     expectRunArgs(numericOptions);
@@ -198,7 +196,7 @@ describe("rootcell argument parsing", () => {
       instanceName: "dev",
       subcommand: "provision",
       rest: [],
-      spyOptions: { raw: false, dedupe: true, tui: false },
+      spyOptions: { open: true },
     });
     const afterCommand = runArgs(["allow", "--instance=dev"]);
     expectRunArgs(afterCommand);
@@ -207,7 +205,7 @@ describe("rootcell argument parsing", () => {
       instanceName: "dev",
       subcommand: "allow",
       rest: [],
-      spyOptions: { raw: false, dedupe: true, tui: false },
+      spyOptions: { open: true },
     });
     const passThrough = runArgs(["pi", "--instance", "dev", "--model", "sonnet"]);
     expectRunArgs(passThrough);
@@ -216,7 +214,7 @@ describe("rootcell argument parsing", () => {
       instanceName: "dev",
       subcommand: "",
       rest: ["pi", "--model", "sonnet"],
-      spyOptions: { raw: false, dedupe: true, tui: false },
+      spyOptions: { open: true },
     });
   });
 
@@ -225,20 +223,49 @@ describe("rootcell argument parsing", () => {
     expect(() => parseRootcellArgs(["provision", "--instance", "dev-"])).toThrow("invalid instance name");
   });
 
-  test("parses spy flags", () => {
-    const parsed = runArgs(["spy", "--tui", "--raw", "--no-dedupe"]);
+  test("parses spy launcher flags", () => {
+    const parsed = runArgs(["spy", "--no-open"]);
     expectRunArgs(parsed);
     expect(parsed).toEqual({
       kind: "run",
       instanceName: "default",
       subcommand: "spy",
       rest: [],
-      spyOptions: { raw: true, dedupe: false, tui: true },
+      spyOptions: { open: false },
     });
   });
 
   test("rejects unknown spy flags", () => {
     expect(() => parseRootcellArgs(["spy", "--bogus"])).toThrow("Unknown argument: bogus");
+    expect(() => parseRootcellArgs(["spy", "--tui"])).toThrow("Unknown argument: tui");
+    expect(() => parseRootcellArgs(["spy", "--raw"])).toThrow("Unknown argument: raw");
+    expect(() => parseRootcellArgs(["spy", "--no-dedupe"])).toThrow("Unknown argument: dedupe");
+  });
+
+  test("renders generated spy environment defaults and overrides", () => {
+    expect(renderSpyEnv({})).toBe([
+      "# Generated by ./rootcell provision. DO NOT EDIT.",
+      "ROOTCELL_SPY_ENABLED=false",
+      "ROOTCELL_SPY_RETENTION_DAYS=7",
+      "ROOTCELL_SPY_MAX_BYTES=6442450944",
+      "ROOTCELL_SPY_SPOOL_MAX_BYTES=1073741824",
+      "ROOTCELL_SPY_STORE_RAW=false",
+      "ROOTCELL_SPY_BIND=127.0.0.1",
+      "ROOTCELL_SPY_PORT=6174",
+      "",
+    ].join("\n"));
+    expect(renderSpyEnv({
+      ROOTCELL_SPY_ENABLED: "yes",
+      ROOTCELL_SPY_RETENTION_DAYS: "14",
+      ROOTCELL_SPY_BIND: "127.0.0.1",
+      ROOTCELL_SPY_PORT: "7000",
+    })).toContain("ROOTCELL_SPY_ENABLED=true\n");
+    expect(() => renderSpyEnv({ ROOTCELL_SPY_BIND: "bad\nvalue" })).toThrow("must not contain newlines");
+  });
+
+  test("chooses a fallback spy port when the preferred port is occupied", async () => {
+    const chosen = await chooseSpyLocalPort(6174, "127.0.0.1", (port) => Promise.resolve(port !== 6174));
+    expect(chosen).toBe(6175);
   });
 
   test("parses init-env provider mode", () => {
@@ -1033,6 +1060,16 @@ describe("VM and network providers", () => {
     expect(firewallModule).toContain("linkConfig.RequiredForOnline = false;");
     expect(firewallModule).toContain("Rootcell keeps DHCP routes and DNS disabled");
     expect(firewallModule).toContain("UseRoutes = false;");
+    expect(firewallModule).toContain("systemd.services.rootcell-spy");
+    expect(firewallModule).toContain("EnvironmentFile = \"/etc/agent-vm/spy.env\";");
+    expect(firewallModule).toContain("ROOTCELL_SPY_STATIC_DIR=/etc/agent-vm/spy-ui");
+    expect(firewallModule).toContain("source = ./dist/spy-service.js;");
+    expect(firewallModule).toContain("environment.etc.\"agent-vm/spy-ui\".source = ./dist/spy-ui;");
+    expect(firewallModule).toContain("systemd.packages = [ spyGeneratorPackage ];");
+    expect(firewallModule).toContain("lib/systemd/system-generators/rootcell-spy-generator");
+    expect(firewallModule).toContain("d /var/lib/rootcell-spy 0750 rootcell-spy rootcell-spy -");
+    expect(firewallModule).toContain("d /var/spool/rootcell-spy 2770 root rootcell-spy -");
+    expect(firewallModule).not.toContain("ps.textual");
 
     const agentModule = readFileSync("agent-vm.nix", "utf8");
     expect(agentModule).toContain('DHCP = "ipv4";');

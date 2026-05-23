@@ -524,6 +524,28 @@ V1 excludes:
   - Verified `bun run typecheck`, `bun run lint`, `bun run test`,
     `bun run test:spy-ui:unit`, `bun run build:spy-ui`, and
     `bun run test:spy-ui:e2e`.
+- Wired browser spy provisioning and launcher:
+  - Added host build scripts for the bundled Bun spy service and static React UI
+    artifacts.
+  - Added the firewall `rootcell-spy.service`, persistent store/spool
+    directories, generated `/etc/agent-vm/spy.env`, and provision-time
+    enable/start or disable/stop behavior.
+  - Added a systemd generator so the firewall service is wanted only when the
+    generated spy env enables it, while the Nix unit remains installed in every
+    firewall VM.
+  - Replaced the old `rootcell spy` terminal/TUI launcher with a browser
+    launcher using an SSH local port forward and `--no-open`.
+  - Removed the old user-facing `rootcell spy --tui`, `--raw`, and
+    `--no-dedupe` CLI options from argument parsing.
+  - Added provider/transport local port forwarding support shared by Lima and
+    AWS EC2.
+  - Verified `bun run typecheck`, `bun run lint`, `bun run build:spy`,
+    `bun run test`, and targeted firewall Nix service evaluation.
+  - Ran live provider integration against the already provisioned `default`
+    Lima VMs: enabled spy provisioning, confirmed firewall service health,
+    verified host-local tunnel fallback to port 6175, checked agent traffic
+    still routes through the firewall allowlist, closed the tunnel, and restored
+    the instance to `ROOTCELL_SPY_ENABLED=false`.
 
 ### V1
 
@@ -538,10 +560,12 @@ Build the Bedrock/Pi browser spy:
 - [x] Implement SQLite persistence, migrations, retention, and clear-data.
 - [x] Implement TS web service, API, SSE, and static asset serving.
 - [x] Implement React desktop UI with virtualized timeline and call inspector.
-- [ ] Wire `rootcell provision`, systemd service config, and `rootcell spy`
+- [x] Wire `rootcell provision`, systemd service config, and `rootcell spy`
    launcher/tunnel.
+- [x] Remove old user-facing `rootcell spy --tui`, `--raw`, and `--no-dedupe`
+  CLI flags.
 - [ ] Raise firewall disk/root volume defaults to 64 GiB.
-- [ ] Remove old TUI/terminal spy flags, tests, and docs.
+- [ ] Remove old TUI/terminal spy implementation files, tests, and docs.
 - [ ] Add `src/spy/README.md` and brief links from main/proxy docs.
 
 ### V1.5

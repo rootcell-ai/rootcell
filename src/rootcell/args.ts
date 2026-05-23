@@ -14,7 +14,7 @@ import {
   type SpyOptions,
 } from "./types.ts";
 
-const DEFAULT_SPY_OPTIONS: SpyOptions = { raw: false, dedupe: true, tui: false };
+const DEFAULT_SPY_OPTIONS: SpyOptions = { open: true };
 
 interface GlobalArgs {
   readonly instance?: string | readonly string[];
@@ -27,9 +27,7 @@ interface GuestArgs extends GlobalArgs {
 }
 
 interface SpyArgs extends GlobalArgs {
-  readonly raw?: boolean;
-  readonly dedupe?: boolean;
-  readonly tui?: boolean;
+  readonly open?: boolean;
 }
 
 interface EditArgs extends GlobalArgs {
@@ -166,20 +164,10 @@ function createParser(args: readonly string[]): Argv<GuestArgs & SpyArgs> {
       subcommandDescription("spy"),
       (argv: ParserArgv<SpyArgs>) => argv
         .parserConfiguration({ "unknown-options-as-args": false })
-        .option("raw", {
-          describe: "also print sanitized raw JSON bodies",
-          type: "boolean",
-          default: false,
-        })
-        .option("dedupe", {
-          describe: "elide repeated cache-marked prompt prefixes",
+        .option("open", {
+          describe: "open the browser after starting the local tunnel; use --no-open to disable",
           type: "boolean",
           default: true,
-        })
-        .option("tui", {
-          describe: "browse captured traffic in an interactive Textual TUI",
-          type: "boolean",
-          default: false,
         })
         .demandCommand(0, 0)
         .strictOptions(),
@@ -244,9 +232,7 @@ export function parseRootcellArgs(args: readonly string[]): ParsedRootcellArgs {
       rest,
       spyOptions: subcommand === "spy"
         ? parseSchema(SpyOptionsSchema, {
-          raw: argv.raw ?? false,
-          dedupe: argv.dedupe ?? true,
-          tui: argv.tui ?? false,
+          open: argv.open ?? true,
         }, "invalid spy options")
         : DEFAULT_SPY_OPTIONS,
     }, "invalid parsed rootcell args");

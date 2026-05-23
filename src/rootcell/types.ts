@@ -96,9 +96,7 @@ export const RootcellConfigSchema = z.object({
 export type RootcellConfig = Readonly<z.infer<typeof RootcellConfigSchema>>;
 
 export const SpyOptionsSchema = z.object({
-  raw: z.boolean(),
-  dedupe: z.boolean(),
-  tui: z.boolean(),
+  open: z.boolean(),
 });
 
 export type SpyOptions = Readonly<z.infer<typeof SpyOptionsSchema>>;

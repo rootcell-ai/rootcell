@@ -1,8 +1,9 @@
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { runAsyncInherited, runCapture, runInherited } from "../process.ts";
 import type { RootcellConfig } from "../types.ts";
-import type { CopyToGuestOptions, ExecOptions } from "../providers/types.ts";
+import type { CopyToGuestOptions, ExecOptions, LocalPortForwardHandle, LocalPortForwardOptions } from "../providers/types.ts";
 import type { CommandResult, InheritedCommandResult } from "../types.ts";
 import type { GuestTransport } from "./types.ts";
 
@@ -58,6 +59,79 @@ export class ProxyJumpSshTransport implements GuestTransport {
       `${alias}:${guestPath}`,
     ]);
     return Promise.resolve();
+  }
+
+  async forwardLocalPort(name: string, options: LocalPortForwardOptions): Promise<LocalPortForwardHandle> {
+    const child = spawn("ssh", [
+      "-F",
+      this.writeSshConfig(),
+      "-N",
+      "-L",
+      `${options.localHost}:${String(options.localPort)}:${options.remoteHost}:${String(options.remotePort)}`,
+      "-o",
+      "ExitOnForwardFailure=yes",
+      this.aliasFor(name),
+    ], {
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+
+    let stderr = "";
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+
+    const closed = new Promise<number>((resolve) => {
+      child.on("close", (code, signal) => {
+        resolve(code ?? statusFromSignal(signal));
+      });
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      const finish = (error?: Error): void => {
+        clearTimeout(timer);
+        child.removeListener("error", onError);
+        child.removeListener("close", onClose);
+        if (error === undefined) {
+          resolve();
+          return;
+        }
+        reject(error);
+      };
+      const onError = (error: Error): void => {
+        finish(error);
+      };
+      const onClose = (code: number | null, signal: NodeJS.Signals | null): void => {
+        const status = code ?? statusFromSignal(signal);
+        const detail = stderr.trim();
+        finish(new Error(`SSH local port forward failed with exit ${String(status)}${detail.length === 0 ? "" : `: ${detail}`}`));
+      };
+      const timer = setTimeout(() => {
+        finish();
+      }, 500);
+      child.once("error", onError);
+      child.once("close", onClose);
+    });
+
+    return {
+      ...options,
+      closed,
+      close: async () => {
+        if (child.exitCode !== null || child.signalCode !== null) {
+          await closed;
+          return;
+        }
+        child.kill("SIGTERM");
+        const killTimer = setTimeout(() => {
+          child.kill("SIGKILL");
+        }, 2_000);
+        try {
+          await closed;
+        } finally {
+          clearTimeout(killTimer);
+        }
+      },
+    };
   }
 
   forgetHostKey(name: string): void {
@@ -120,6 +194,16 @@ export function forgetKnownHost(knownHostsPath: string, host: string, port?: num
     return;
   }
   writeFileSync(knownHostsPath, kept.join("\n"), { encoding: "utf8", mode: 0o600 });
+}
+
+function statusFromSignal(signal: NodeJS.Signals | null): number {
+  if (signal === "SIGINT") {
+    return 130;
+  }
+  if (signal === "SIGTERM") {
+    return 143;
+  }
+  return 1;
 }
 
 function knownHostsLineMatchesHost(line: string, host: string, port?: number): boolean {

@@ -12,9 +12,7 @@ export const AGENT_IP = "192.168.109.11";
 export const NETWORK_PREFIX = "24";
 
 export const defaultSpyOptions = {
-  raw: false,
-  dedupe: true,
-  tui: false,
+  open: true,
 } as const;
 
 export function findRepoDir(importMetaUrl: string): string {

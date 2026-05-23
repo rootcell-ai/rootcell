@@ -54,6 +54,22 @@ export interface CopyToGuestOptions {
   readonly recursive?: boolean;
 }
 
+export interface LocalPortForwardOptions {
+  readonly localHost: string;
+  readonly localPort: number;
+  readonly remoteHost: string;
+  readonly remotePort: number;
+}
+
+export interface LocalPortForwardHandle {
+  readonly localHost: string;
+  readonly localPort: number;
+  readonly remoteHost: string;
+  readonly remotePort: number;
+  readonly closed: Promise<number>;
+  close(): Promise<void>;
+}
+
 export interface VmProvider<TAttachment extends VmNetworkAttachment = VmNetworkAttachment> {
   readonly id: string;
   status(name: string): Promise<VmStatus>;
@@ -77,6 +93,7 @@ export interface VmProvider<TAttachment extends VmNetworkAttachment = VmNetworkA
   execCapture(name: string, command: readonly string[], options?: ExecOptions): Promise<CommandResult>;
   execInteractive(name: string, command: readonly string[], options?: ExecOptions): Promise<number>;
   copyToGuest(name: string, hostPath: string, guestPath: string, options?: CopyToGuestOptions): Promise<void>;
+  forwardLocalPort(name: string, options: LocalPortForwardOptions): Promise<LocalPortForwardHandle>;
 }
 
 export interface ProviderBundle<TAttachment extends VmNetworkAttachment = VmNetworkAttachment> {

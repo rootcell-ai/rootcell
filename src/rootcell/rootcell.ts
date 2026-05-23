@@ -3,9 +3,9 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
-  readlinkSync,
   writeFileSync,
 } from "node:fs";
+import { createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { parseRootcellArgs } from "./args.ts";
 import { loadDotEnv, nixString, parseSecretMappings } from "./env.ts";
@@ -19,7 +19,7 @@ import {
   loadRootcellInstance,
   seedRootcellInstanceFiles,
 } from "./instance.ts";
-import { commandExists, runCapture, runInherited } from "./process.ts";
+import { runCapture, runInherited } from "./process.ts";
 import { parseAwsEc2Config, parseRootcellVmProvider } from "./providers/aws-ec2-config.ts";
 import { createProviderBundle } from "./providers/factory.ts";
 import type { NetworkPlan, ProviderBundle, VmNetworkAttachment, VmStatus } from "./providers/types.ts";
@@ -56,8 +56,23 @@ const VM_FILES: VmFileSet = {
     "network.nix",
     "proxy",
     "src/bin/reload.ts",
+    "dist/spy-service.js",
+    "dist/spy-ui",
   ],
 };
+
+const SPY_REMOTE_HOST = "127.0.0.1";
+const SPY_DEFAULT_PORT = 6174;
+const SPY_ENV_DEFAULTS = {
+  ROOTCELL_SPY_ENABLED: "false",
+  ROOTCELL_SPY_RETENTION_DAYS: "7",
+  ROOTCELL_SPY_MAX_BYTES: "6442450944",
+  ROOTCELL_SPY_SPOOL_MAX_BYTES: "1073741824",
+  ROOTCELL_SPY_STORE_RAW: "false",
+  ROOTCELL_SPY_BIND: SPY_REMOTE_HOST,
+  ROOTCELL_SPY_PORT: String(SPY_DEFAULT_PORT),
+} as const;
+const SPY_ENV_KEYS = Object.keys(SPY_ENV_DEFAULTS) as (keyof typeof SPY_ENV_DEFAULTS)[];
 
 export interface VmListEntry {
   readonly instance: string;
@@ -169,6 +184,11 @@ export class RootcellApp<TAttachment extends VmNetworkAttachment> {
       return await this.printPubkey();
     }
 
+    if (subcommand === "spy" && !this.isSpyEnabled()) {
+      this.printSpyReadinessFailure("disabled");
+      return 1;
+    }
+
     await this.providers.network.preflight();
     await this.ensureExistingVmNetworksCompatible();
 
@@ -190,7 +210,9 @@ export class RootcellApp<TAttachment extends VmNetworkAttachment> {
         await this.providers.vm.forceStopIfRunning(name);
       },
     });
-    await this.ensureFirewall(subcommand === "provision");
+    if (!await this.ensureFirewall(subcommand === "provision", { allowProvision: subcommand !== "spy" })) {
+      return 1;
+    }
     this.ensureCa();
     await this.syncAllowlists();
     await this.waitForFirewallListeners();
@@ -554,111 +576,230 @@ exit 1
     return role === "agent" ? "agent-vm" : "firewall-vm";
   }
 
-  private hostTimeZone(): string {
-    if (process.env.TZ !== undefined && process.env.TZ.length > 0) {
-      return process.env.TZ;
+  private async runSpy(options: SpyOptions): Promise<number> {
+    const readiness = await this.checkFirewallSpyReadiness();
+    if (readiness !== "ready") {
+      if (readiness === "disabled") {
+        log("firewall spy config is disabled or stale.");
+        log("run ./rootcell provision, then try ./rootcell spy again.");
+        return 1;
+      }
+      this.printSpyReadinessFailure(readiness);
+      return 1;
     }
+
+    const remotePort = this.spyRemotePort();
+    const localPort = await chooseSpyLocalPort(SPY_DEFAULT_PORT);
+    const launchTs = Math.floor(Date.now() / 1000);
+    const tunnel = await this.providers.vm.forwardLocalPort(this.config.firewallVm, {
+      localHost: "127.0.0.1",
+      localPort,
+      remoteHost: SPY_REMOTE_HOST,
+      remotePort,
+    });
+
+    const url = `http://127.0.0.1:${String(localPort)}/?since=${String(launchTs)}`;
+    process.stdout.write(`${url}\n`);
+    log(`rootcell spy available at ${url} (Ctrl-C closes the tunnel)`);
+    if (options.open) {
+      this.openBrowser(url);
+    }
+
     try {
-      const link = readlinkSync("/etc/localtime");
-      for (const prefix of ["/usr/share/zoneinfo/", "/var/db/timezone/zoneinfo/"]) {
-        if (link.startsWith(prefix)) {
-          return link.slice(prefix.length);
-        }
-      }
-      const marker = "/zoneinfo/";
-      const markerAt = link.lastIndexOf(marker);
-      if (markerAt >= 0) {
-        return link.slice(markerAt + marker.length);
-      }
-    } catch {
-      // Fall through to systemsetup.
+      return await this.waitForSpyTunnel(tunnel.closed);
+    } finally {
+      await tunnel.close();
     }
-    if (commandExists("systemsetup")) {
-      return runCapture("systemsetup", ["-gettimezone"], { allowFailure: true }).stdout.replace(/^Time Zone: /, "").trim();
-    }
-    return "";
   }
 
-  private async runSpy(options: SpyOptions): Promise<number> {
-    const spySession = `/run/agent-vm-spy/enabled.${String(process.pid)}`;
-    await this.providers.vm.exec(this.config.firewallVm, ["sudo", "install", "-d", "-m", "1777", "/run/agent-vm-spy"]);
-    await this.providers.vm.exec(this.config.firewallVm, ["sudo", "install", "-m", "0666", "/dev/null", "/run/agent-vm-spy/events.ndjson"]);
-    await this.providers.vm.exec(this.config.firewallVm, ["sudo", "touch", "/run/agent-vm-spy/enabled", spySession]);
-    await this.providers.vm.exec(this.config.firewallVm, ["sudo", "chmod", "0666", "/run/agent-vm-spy/enabled", spySession]);
-
-    const cleanup = async (): Promise<void> => {
-      const script = `
-rm -f '${spySession}'
-if ls /run/agent-vm-spy/enabled.* >/dev/null 2>&1; then
-  touch /run/agent-vm-spy/enabled
-  chmod 0666 /run/agent-vm-spy/enabled
-else
-  rm -f /run/agent-vm-spy/enabled
+  private async checkFirewallSpyReadiness(): Promise<"ready" | "disabled" | "missing" | "inactive" | "unhealthy"> {
+    const remotePort = this.spyRemotePort();
+    const script = `
+set -e
+if [ ! -f /etc/agent-vm/spy.env ]; then
+  echo missing-env
+  exit 10
+fi
+if ! grep -Eq '^ROOTCELL_SPY_ENABLED=(1|true|yes|on)$' /etc/agent-vm/spy.env; then
+  echo disabled
+  exit 11
+fi
+if ! systemctl cat rootcell-spy.service >/dev/null 2>&1; then
+  echo missing-unit
+  exit 12
+fi
+if [ ! -f /etc/agent-vm/spy-service.js ] || [ ! -f /etc/agent-vm/spy-ui/index.html ]; then
+  echo missing-assets
+  exit 13
+fi
+if ! systemctl is-active rootcell-spy.service >/dev/null 2>&1; then
+  echo inactive
+  exit 14
+fi
+if ! bun -e ${shellQuote(`const r = await fetch("http://${SPY_REMOTE_HOST}:${String(remotePort)}/api/health"); process.exit(r.ok ? 0 : 1);`)} >/dev/null 2>&1; then
+  echo unhealthy
+  exit 15
 fi
 `;
-      await this.providers.vm.exec(this.config.firewallVm, ["sudo", "sh", "-lc", script], {
-        allowFailure: true,
-        ignoredOutput: true,
-      });
-    };
-
-    const onSignal = (signal: NodeJS.Signals): void => {
-      void cleanup().finally(() => {
-        process.exit(signal === "SIGINT" ? 130 : 143);
-      });
-    };
-    process.once("SIGINT", onSignal);
-    process.once("SIGTERM", onSignal);
-
-    log(`spying on Bedrock Runtime traffic from ${this.config.firewallVm} (Ctrl-C to stop)...`);
-    let status: number;
-    if (options.tui) {
-      const tuiArgs = ["--events", "/run/agent-vm-spy/events.ndjson"];
-      const tuiEnv = ["PYTHONUNBUFFERED=1"];
-      if (options.raw) {
-        tuiArgs.push("--raw");
-      }
-      if (!options.dedupe) {
-        tuiArgs.push("--no-dedupe");
-      }
-      const zone = this.hostTimeZone();
-      if (zone.length > 0) {
-        tuiEnv.push(`AGENT_SPY_LOCAL_TZ=${zone}`);
-      }
-      status = await this.providers.vm.execInteractive(this.config.firewallVm, [
-        "sudo",
-        "env",
-        ...tuiEnv,
-        "python3",
-        "/etc/agent-vm/agent_spy_tui.py",
-        ...tuiArgs,
-      ]);
-    } else {
-      const formatterArgs = ["tail"];
-      if (options.raw) {
-        formatterArgs.push("--raw");
-      }
-      if (!options.dedupe) {
-        formatterArgs.push("--no-dedupe");
-      }
-      status = await this.providers.vm.execInteractive(this.config.firewallVm, [
-        "sudo",
-        "env",
-        "PYTHONUNBUFFERED=1",
-        "python3",
-        "/etc/agent-vm/agent_spy.py",
-        ...formatterArgs,
-      ]);
+    const result = await this.providers.vm.execCapture(this.config.firewallVm, ["bash", "-lc", script], {
+      allowFailure: true,
+    });
+    if (result.status === 0) {
+      return "ready";
     }
-
-    process.removeListener("SIGINT", onSignal);
-    process.removeListener("SIGTERM", onSignal);
-    await cleanup();
-    return status;
+    const marker = result.stdout.trim();
+    if (marker === "disabled") {
+      return "disabled";
+    }
+    if (marker === "inactive") {
+      return "inactive";
+    }
+    if (marker === "unhealthy") {
+      return "unhealthy";
+    }
+    return "missing";
   }
 
-  private async ensureFirewall(force: boolean): Promise<void> {
+  private printSpyReadinessFailure(readiness: "disabled" | "missing" | "inactive" | "unhealthy"): void {
+    if (readiness === "disabled") {
+      log(`spy is disabled for instance '${this.config.instanceName}'.`);
+      log(`set ROOTCELL_SPY_ENABLED=true in ${this.config.envPath}, then run ./rootcell provision.`);
+      return;
+    }
+    if (readiness === "inactive") {
+      log("rootcell-spy.service is not active on the firewall VM.");
+      log("run ./rootcell provision, then try ./rootcell spy again.");
+      return;
+    }
+    if (readiness === "unhealthy") {
+      log("rootcell-spy.service is active but /api/health is not responding.");
+      log("run ./rootcell provision or inspect journalctl -u rootcell-spy.service on the firewall VM.");
+      return;
+    }
+    log("spy service files or assets are missing on the firewall VM.");
+    log("run ./rootcell provision, then try ./rootcell spy again.");
+  }
+
+  private async waitForSpyTunnel(tunnelClosed: Promise<number>): Promise<number> {
+    let signalStatus: number | undefined;
+    const signalPromise = new Promise<number>((resolve) => {
+      const onSignal = (signal: NodeJS.Signals): void => {
+        signalStatus = signal === "SIGINT" ? 130 : 143;
+        resolve(signalStatus);
+      };
+      process.once("SIGINT", onSignal);
+      process.once("SIGTERM", onSignal);
+      void tunnelClosed.finally(() => {
+        process.removeListener("SIGINT", onSignal);
+        process.removeListener("SIGTERM", onSignal);
+      });
+    });
+    const tunnelPromise = tunnelClosed.then((status) => {
+      if (signalStatus === undefined) {
+        log("SSH tunnel closed.");
+      }
+      return status === 0 ? 0 : 1;
+    });
+    return await Promise.race([signalPromise, tunnelPromise]);
+  }
+
+  private openBrowser(url: string): void {
+    const command = process.platform === "darwin"
+      ? "open"
+      : process.platform === "win32"
+        ? "cmd"
+        : "xdg-open";
+    const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
+    try {
+      const result = runInherited(command, args, { allowFailure: true, ignoredOutput: true });
+      if (result.status !== 0) {
+        log(`could not open browser automatically; open ${url}`);
+      }
+    } catch {
+      log(`could not open browser automatically; open ${url}`);
+    }
+  }
+
+  private spyRemotePort(): number {
+    return positiveIntegerFromEnv(process.env.ROOTCELL_SPY_PORT, SPY_DEFAULT_PORT);
+  }
+
+  private isSpyEnabled(): boolean {
+    return envBoolean(process.env.ROOTCELL_SPY_ENABLED, false);
+  }
+
+  private buildSpyArtifacts(): void {
+    log("building spy service and browser assets...");
+    runInherited("bun", ["run", "build:spy"], {
+      cwd: this.config.repoDir,
+    });
+  }
+
+  private async configureFirewallSpyService(): Promise<void> {
+    this.writeSpyEnv();
+    const hostPath = join(this.config.generatedDir, "spy.env");
+    const stagedPath = "/tmp/.rootcell-spy.env.staged";
+    await this.providers.vm.copyToGuest(this.config.firewallVm, hostPath, stagedPath);
+    await this.providers.vm.exec(this.config.firewallVm, [
+      "sudo",
+      "install",
+      "-m",
+      "0644",
+      "-o",
+      "root",
+      "-g",
+      "root",
+      stagedPath,
+      "/etc/agent-vm/spy.env",
+    ]);
+    await this.providers.vm.exec(this.config.firewallVm, ["rm", "-f", stagedPath]);
+    await this.providers.vm.exec(this.config.firewallVm, [
+      "sudo",
+      "systemctl",
+      "daemon-reload",
+    ]);
+
+    if (this.isSpyEnabled()) {
+      await this.providers.vm.exec(this.config.firewallVm, [
+        "sudo",
+        "systemctl",
+        "restart",
+        "rootcell-spy.service",
+      ]);
+      return;
+    }
+
+    await this.providers.vm.exec(this.config.firewallVm, [
+      "sudo",
+      "systemctl",
+      "stop",
+      "rootcell-spy.service",
+    ], {
+      allowFailure: true,
+      ignoredOutput: true,
+    });
+    await this.providers.vm.exec(this.config.firewallVm, [
+      "sudo",
+      "systemctl",
+      "disable",
+      "rootcell-spy.service",
+    ], {
+      allowFailure: true,
+      ignoredOutput: true,
+    });
+  }
+
+  private writeSpyEnv(): void {
+    writeFileSync(join(this.config.generatedDir, "spy.env"), renderSpyEnv(process.env), "utf8");
+  }
+
+  private async ensureFirewall(force: boolean, options: { readonly allowProvision: boolean } = { allowProvision: true }): Promise<boolean> {
     let needsProvision = force;
+    if (!options.allowProvision && (await this.providers.vm.status(this.config.firewallVm)).state === "missing") {
+      log("firewall VM is missing.");
+      log("run ./rootcell provision, then try ./rootcell spy again.");
+      return false;
+    }
     if ((await this.providers.vm.ensureRunning({
       role: "firewall",
       name: this.config.firewallVm,
@@ -667,13 +808,16 @@ fi
       needsProvision = true;
     }
     if (!needsProvision) {
+      const spyActiveCheck = this.isSpyEnabled() ? " && systemctl is-active rootcell-spy.service >/dev/null 2>&1" : "";
       const check = `
 systemctl is-active mitmproxy-explicit >/dev/null 2>&1 \\
  && systemctl is-active mitmproxy-transparent >/dev/null 2>&1 \\
  && systemctl is-active dnsmasq >/dev/null 2>&1 \\
  && test -x /etc/agent-vm/agent_spy.py \\
- && test -x /etc/agent-vm/agent_spy_tui.py \\
- && python3 -c "import textual"
+ && test -f /etc/agent-vm/spy-service.js \\
+ && test -f /etc/agent-vm/spy-ui/index.html \\
+ && test -f /etc/agent-vm/spy.env \\
+ && systemctl cat rootcell-spy.service >/dev/null 2>&1${spyActiveCheck}
 `;
       if ((await this.providers.vm.exec(this.config.firewallVm, ["bash", "-lc", check], {
         allowFailure: true,
@@ -683,10 +827,16 @@ systemctl is-active mitmproxy-explicit >/dev/null 2>&1 \\
       }
     }
     if (!needsProvision) {
-      return;
+      return true;
+    }
+    if (!options.allowProvision) {
+      log("firewall spy service is not provisioned for browser launch.");
+      log("run ./rootcell provision, then try ./rootcell spy again.");
+      return false;
     }
 
     log("provisioning firewall VM (first run takes ~5 min)...");
+    this.buildSpyArtifacts();
     this.writeGitLocalNix();
     this.ensureCa();
     await this.copyRepoIntoVm(this.config.firewallVm, VM_FILES.firewall);
@@ -705,7 +855,9 @@ sudo nixos-rebuild switch --flake .#${this.nixosConfiguration("firewall")}
       "mitmproxy-explicit",
       "mitmproxy-transparent",
     ]);
+    await this.configureFirewallSpyService();
     log("firewall provisioning complete.");
+    return true;
   }
 
   private async ensureAgent(force: boolean): Promise<void> {
@@ -979,6 +1131,74 @@ function editPath(paths: ReturnType<typeof instancePaths>, target: (typeof EDIT_
     return paths.envPath;
   }
   return join(paths.proxyDir, EDIT_PROXY_FILES[target]);
+}
+
+export function renderSpyEnv(env: NodeJS.ProcessEnv = process.env): string {
+  return [
+    "# Generated by ./rootcell provision. DO NOT EDIT.",
+    ...SPY_ENV_KEYS.map((key) => {
+      const raw = env[key];
+      const value = key === "ROOTCELL_SPY_ENABLED"
+        ? (envBoolean(raw, false) ? "true" : "false")
+        : raw === undefined || raw.trim().length === 0 ? SPY_ENV_DEFAULTS[key] : raw.trim();
+      return `${key}=${envFileValue(value)}`;
+    }),
+    "",
+  ].join("\n");
+}
+
+export async function chooseSpyLocalPort(
+  preferredPort = SPY_DEFAULT_PORT,
+  host = "127.0.0.1",
+  portAvailable: (port: number, host: string) => Promise<boolean> = isLocalPortAvailable,
+): Promise<number> {
+  for (let offset = 0; offset < 100; offset += 1) {
+    const candidate = preferredPort + offset;
+    if (await portAvailable(candidate, host)) {
+      return candidate;
+    }
+  }
+  throw new Error(`no available local port found starting at ${String(preferredPort)}`);
+}
+
+function envFileValue(value: string): string {
+  if (/[\r\n]/.test(value)) {
+    throw new Error("spy environment values must not contain newlines");
+  }
+  if (/^[A-Za-z0-9_./:=@%+-]+$/.test(value)) {
+    return value;
+  }
+  return `"${value.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"")}"`;
+}
+
+function positiveIntegerFromEnv(value: string | undefined, fallback: number): number {
+  if (value === undefined || value.trim().length === 0) {
+    return fallback;
+  }
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function envBoolean(value: string | undefined, fallback: boolean): boolean {
+  if (value === undefined || value.trim().length === 0) {
+    return fallback;
+  }
+  return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
+}
+
+async function isLocalPortAvailable(port: number, host: string): Promise<boolean> {
+  return await new Promise<boolean>((resolveAvailable) => {
+    const server = createServer();
+    server.unref();
+    server.once("error", () => {
+      resolveAvailable(false);
+    });
+    server.listen({ host, port }, () => {
+      server.close(() => {
+        resolveAvailable(true);
+      });
+    });
+  });
 }
 
 function missingVmEntries(instanceName: string): readonly VmListEntry[] {

@@ -23,9 +23,9 @@ export async function expectFirewallServices(flow: IntegrationFlow): Promise<voi
 }
 
 export async function expectSpyWiring(flow: IntegrationFlow): Promise<void> {
-  flow.hostCommandOk("bash", ["-c", `'${join(flow.repoDir, "rootcell")}' --instance ${TEST_INSTANCE} spy --help | grep -q -- '--tui'`]);
-  flow.hostCommandOk("bash", ["-c", `'${join(flow.repoDir, "rootcell")}' --instance ${TEST_INSTANCE} spy --tui --raw --no-dedupe --help | grep -q -- '--tui'`]);
-  await flow.firewallSh("test -x /etc/agent-vm/agent_spy.py && test -x /etc/agent-vm/agent_spy_tui.py && command -v python3 >/dev/null && python3 -c \"import textual\" && test -d /run/agent-vm-spy");
+  flow.hostCommandOk("bash", ["-c", `'${join(flow.repoDir, "rootcell")}' --instance ${TEST_INSTANCE} spy --help | grep -q -- '--no-open'`]);
+  flow.hostCommandFails("bash", ["-c", `'${join(flow.repoDir, "rootcell")}' --instance ${TEST_INSTANCE} spy --tui --help >/dev/null 2>&1`]);
+  await flow.firewallSh("test -x /etc/agent-vm/agent_spy.py && test -f /etc/agent-vm/spy-service.js && test -f /etc/agent-vm/spy-ui/index.html && test -f /etc/agent-vm/spy.env && systemctl cat rootcell-spy.service >/dev/null && test -d /var/lib/rootcell-spy && test -d /var/spool/rootcell-spy");
 }
 
 export async function expectPrivateNetworkRouting(flow: IntegrationFlow): Promise<void> {

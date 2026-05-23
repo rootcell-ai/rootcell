@@ -9,6 +9,18 @@ let
   reloadSh = pkgs.runCommand "agent-vm-reload-sh" {} ''
     ln -s /etc/agent-vm/reload.ts "$out"
   '';
+  spyGenerator = pkgs.writeShellScript "rootcell-spy-generator" ''
+    set -eu
+    normal_dir="''${1:?missing generator output dir}"
+    env_file=/etc/agent-vm/spy.env
+    if [ -r "$env_file" ] && ${pkgs.gnugrep}/bin/grep -Eq '^ROOTCELL_SPY_ENABLED=(1|true|yes|on)$' "$env_file"; then
+      ${pkgs.coreutils}/bin/mkdir -p "$normal_dir/multi-user.target.wants"
+      ${pkgs.coreutils}/bin/ln -s /etc/systemd/system/rootcell-spy.service "$normal_dir/multi-user.target.wants/rootcell-spy.service"
+    fi
+  '';
+  spyGeneratorPackage = pkgs.runCommand "rootcell-spy-generator-package" {} ''
+    install -D -m 0755 ${spyGenerator} "$out/lib/systemd/system-generators/rootcell-spy-generator"
+  '';
 in
 
 # Firewall VM: a tiny appliance VM that brokers all egress for the agent VM.
@@ -72,9 +84,13 @@ in
   networking.hostName = "firewall-vm";
   environment.systemPackages = [
     pkgs.bun
-    (pkgs.python3.withPackages (ps: [ ps.textual ]))
   ];
   users.groups.rootcell-spy = {};
+  users.users.rootcell-spy = {
+    isSystemUser = true;
+    group = "rootcell-spy";
+  };
+  systemd.packages = [ spyGeneratorPackage ];
 
   # ── Networking ────────────────────────────────────────────────────────
   networking.useDHCP = false;
@@ -192,6 +208,7 @@ in
     "d /etc/agent-vm 0755 ${username} users -"
     "f /etc/agent-vm/dnsmasq-allowlist.conf 0644 root root -"
     "d /run/agent-vm-spy 1777 root root -"
+    "d /var/lib/rootcell-spy 0750 rootcell-spy rootcell-spy -"
     "d /var/spool/rootcell-spy 2770 root rootcell-spy -"
   ];
 
@@ -217,6 +234,11 @@ in
     source = ./proxy/agent_spy_tui.py;
     mode = "0755";
   };
+  environment.etc."agent-vm/spy-service.js" = {
+    source = ./dist/spy-service.js;
+    mode = "0644";
+  };
+  environment.etc."agent-vm/spy-ui".source = ./dist/spy-ui;
 
   # mitmproxy unconditionally materializes a `confdir` on startup. It
   # also LOOKS in confdir for `mitmproxy-ca.pem`; if present it uses
@@ -326,6 +348,30 @@ in
       # sandbox (DynamicUser + ProtectSystem + ReadOnlyPaths) stays.
       AmbientCapabilities = [ "CAP_NET_ADMIN" ];
       CapabilityBoundingSet = [ "CAP_NET_ADMIN" ];
+    };
+  };
+
+  systemd.services.rootcell-spy = {
+    description = "rootcell browser spy service";
+    after = [ "network.target" ];
+    unitConfig.ConditionPathExists = "/etc/agent-vm/spy.env";
+    serviceConfig = {
+      User = "rootcell-spy";
+      Group = "rootcell-spy";
+      EnvironmentFile = "/etc/agent-vm/spy.env";
+      Environment = "ROOTCELL_SPY_STATIC_DIR=/etc/agent-vm/spy-ui";
+      ExecStart = "${pkgs.bun}/bin/bun /etc/agent-vm/spy-service.js";
+      WorkingDirectory = "/var/lib/rootcell-spy";
+      StateDirectory = "rootcell-spy";
+      UMask = "0077";
+      ProtectSystem = "strict";
+      ProtectHome = true;
+      NoNewPrivileges = true;
+      PrivateTmp = true;
+      ReadOnlyPaths = "/etc/agent-vm";
+      ReadWritePaths = [ "/var/lib/rootcell-spy" "/var/spool/rootcell-spy" ];
+      Restart = "on-failure";
+      RestartSec = "2s";
     };
   };
 

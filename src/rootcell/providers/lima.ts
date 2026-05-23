@@ -9,7 +9,7 @@ import { forgetKnownHost, ProxyJumpSshTransport, sshConfigValue, type ProxyJumpS
 import type { RootcellConfig } from "../types.ts";
 import type { CommandResult, InheritedCommandResult } from "../types.ts";
 import type { LimaUserV2NetworkAttachment } from "./macos-lima-user-v2-network.ts";
-import type { CopyToGuestOptions, ExecOptions, VmProvider, VmRole, VmStatus } from "./types.ts";
+import type { CopyToGuestOptions, ExecOptions, LocalPortForwardHandle, LocalPortForwardOptions, VmProvider, VmRole, VmStatus } from "./types.ts";
 
 const LimaProviderSchema = z.custom<"lima">((value) => value === "lima", { message: "provider mismatch" });
 const LimaVmRoleSchema = z.custom<VmRole>(
@@ -229,6 +229,13 @@ export class LimaVmProvider implements VmProvider<LimaUserV2NetworkAttachment> {
       return this.copyToGuestBootstrap(name, hostPath, guestPath, options);
     }
     return this.transport.copyToGuest(name, hostPath, guestPath, options);
+  }
+
+  forwardLocalPort(name: string, options: LocalPortForwardOptions): Promise<LocalPortForwardHandle> {
+    if (this.shouldUseBootstrapSsh(name)) {
+      throw new Error(`cannot forward local ports to ${name} before final SSH networking is ready`);
+    }
+    return this.transport.forwardLocalPort(name, options);
   }
 
   forgetSshHostKey(name: string): Promise<void> {

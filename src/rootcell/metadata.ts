@@ -11,7 +11,7 @@ export const ROOTCELL_SUBCOMMANDS: readonly SubcommandMetadata[] = [
   { name: "provision", description: "re-copy files and rebuild both VMs" },
   { name: "allow", description: "hot-reload allowlists into the firewall VM" },
   { name: "pubkey", description: "print the agent VM SSH public key" },
-  { name: "spy", description: "tail formatted Bedrock traffic from the firewall VM" },
+  { name: "spy", description: "open the browser spy through a local SSH tunnel" },
 ] as const;
 
 export type RootcellSubcommand = (typeof ROOTCELL_SUBCOMMANDS)[number]["name"];
