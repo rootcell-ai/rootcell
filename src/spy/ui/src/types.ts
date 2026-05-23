@@ -51,10 +51,16 @@ export interface CallQuery {
   readonly cursor?: string | undefined;
   readonly limit?: number | undefined;
   readonly search?: string | undefined;
+  readonly provider?: string | undefined;
+  readonly modelId?: string | undefined;
+  readonly operation?: string | undefined;
+  readonly status?: string | undefined;
 }
 
 export interface UiFilters {
+  readonly provider: string;
   readonly model: string;
+  readonly operation: string;
   readonly status: string;
   readonly blockKind: string;
 }

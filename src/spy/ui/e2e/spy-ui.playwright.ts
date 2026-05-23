@@ -37,8 +37,13 @@ test("loads historical ranges and searches normalized text", async ({ page }) =>
   await page.goto("/?since=0");
   await page.getByRole("button", { name: "10 min" }).click();
   await expect(page.getByTestId("timeline-row").first()).toBeVisible();
+  await page.getByLabel("Filter by provider").selectOption("bedrock");
+  await page.getByLabel("Filter by operation").selectOption("invoke");
+  await expect(page.getByText("No provider calls in this range.")).toBeVisible();
   await page.getByLabel("Search normalized text").fill("Fixture capture");
   await page.getByRole("button", { name: "Search" }).click();
+  await expect(page.getByText("No provider calls in this range.")).toBeVisible();
+  await page.getByLabel("Filter by operation").selectOption("converse-stream");
   await expect(page.getByTestId("timeline-row").first()).toBeVisible();
 });
 

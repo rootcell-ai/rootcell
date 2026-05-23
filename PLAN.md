@@ -298,11 +298,11 @@ Do not compute or display per-block token estimates in v1.
 Endpoint names are provisional, but v1 should expose these boundaries:
 
 - `GET /api/health`
-- `GET /api/calls?since=&cursor=&limit=`
+- `GET /api/calls?since=&provider=&model_id=&operation=&status=&cursor=&limit=`
 - `GET /api/calls/:id`
 - `GET /api/calls/:id/diff`
 - `GET /api/calls/:id/stream-events`
-- `GET /api/search`
+- `GET /api/search?q=&since=&provider=&model_id=&operation=&status=&cursor=&limit=`
 - `POST /api/clear`
 - `GET /api/events` for SSE
 
@@ -634,6 +634,19 @@ V1 excludes:
     `bun test src/spy --timeout 10000`, `bun run test:spy-ui:unit`, and
     `bun run test:spy-ui:e2e` with localhost bind/browser permissions where
     required.
+- Completed V1 timeline filtering:
+  - Locked the V1 event-type definition to provider-call operation
+    (`provider_call.operation`), leaving stream event types as inspector detail.
+  - Extended `/api/calls` and `/api/search` to apply time, provider, model,
+    operation, status, and normalized-text filters before pagination.
+  - Updated the browser timeline controls to send provider/model/operation/status
+    filters to the API instead of post-filtering paged results locally.
+  - Added store, service, UI API, and Playwright coverage for filtered calls,
+    filtered search, invalid provider/status query values, and search constrained
+    by the active operation filter.
+  - Verified `bun run typecheck`, `bun run lint`, `bun run build:spy`,
+    `bun run test`, `bun run test:spy-ui:unit`, `bun run test:spy-ui:e2e`, and
+    `git diff --check` with localhost bind/browser permissions where required.
 
 ### V1
 
@@ -661,8 +674,8 @@ Build the Bedrock/Pi browser spy:
 Review date: 2026-05-23.
 
 The implementation history above is complete, and the V1-specific validation
-commands pass when local listener permissions are available. The review tracks
-the following acceptance gaps before V1 should be considered fully complete:
+commands pass when local listener permissions are available. All V1 review
+findings are complete:
 
 - [x] Add runtime validation for browser API and SSE payloads.
   - Added shared Zod schemas for health, call pages, details, diffs,
@@ -684,14 +697,17 @@ the following acceptance gaps before V1 should be considered fully complete:
     time.
   - Added store, service, UI API, and Playwright coverage that fails when
     required health fields are absent.
-- [ ] Complete V1 timeline filtering.
+- [x] Complete V1 timeline filtering.
   - V1 requires filtering by time, provider/model, event type, and normalized
     text.
-  - Time range, model, status, and normalized-text search exist, but provider
-    and event-type/operation filtering are missing from the UI flow.
-  - Decide whether "event type" means provider-call operation/status, stream
-    event type, or a dedicated timeline event classification, then implement it
-    consistently in the API/UI and tests.
+  - V1 event type means the provider-call operation stored as
+    `provider_call.operation`; stream event types remain inspector detail, not
+    timeline filters.
+  - `/api/calls` and `/api/search` apply time, provider, model, operation,
+    status, and normalized-text filters consistently before pagination.
+  - The browser timeline exposes provider, operation, status, model, time range,
+    and normalized-text filters without client-side post-filtering of paged
+    results.
 - [x] Expand the request composition summary to the exact V1 structural
   measures.
   - Added shared request composition Zod schemas and types, then exposed
@@ -913,16 +929,11 @@ The doc covers:
 - No in-UI settings editing.
 - No body secret redaction beyond auth headers/query credentials.
 
-## Open Technical Validations
+## Post-V1 Technical Validations
 
-- Confirm Bun's SQLite support is available and suitable in the pinned Nixpkgs
-  firewall runtime.
-- Validate whether mitmproxy can safely expose true streaming chunk timing. If
-  not, persist logical stream events decoded from completed AWS event-stream
-  bodies and label real arrival timing unavailable.
-- Measure firewall CPU/RAM under representative Bedrock/Pi streaming and
-  large-history fixtures, then decide whether to raise defaults.
-- Confirm systemd `DynamicUser` plus persistent `StateDirectory`/spool
-  permissions cleanly support TS service ownership and mitmproxy append access.
-- Finalize the exact provider-neutral spool schema after the first Bedrock/Pi
-  fixture pass.
+No V1-specific open questions or investigations remain.
+
+- Continue measuring firewall CPU/RAM under larger Bedrock/Pi captures before
+  changing CPU/RAM defaults.
+- Revisit true mitmproxy chunk arrival timing only if a later analysis view
+  needs wall-clock stream timing beyond decoded logical stream events.

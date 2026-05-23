@@ -170,6 +170,40 @@ describe("spy web service", () => {
     const searchPage = await jsonAs(searchResponse, SpyCallSummaryPageSchema);
     expect(searchPage.items.length).toBeGreaterThan(0);
 
+    const filteredCallsResponse = await fetch(`${handle.url}/api/calls?provider=bedrock&model_id=${encodeURIComponent("us.anthropic.claude-sonnet-4-6")}&operation=converse-stream&status=complete`);
+    const filteredCalls = await jsonAs(filteredCallsResponse, SpyCallSummaryPageSchema);
+    expect(filteredCalls.items).toHaveLength(5);
+
+    const unknownOperationResponse = await fetch(`${handle.url}/api/calls?operation=invoke`);
+    const unknownOperation = await jsonAs(unknownOperationResponse, SpyCallSummaryPageSchema);
+    expect(unknownOperation.items).toHaveLength(0);
+
+    const filteredSearchResponse = await fetch(`${handle.url}/api/search?q=${encodeURIComponent("Fixture capture")}&since=1779496808&provider=bedrock&model_id=${encodeURIComponent("us.anthropic.claude-sonnet-4-6")}&operation=converse-stream&status=complete&limit=1`);
+    const filteredSearch = await jsonAs(filteredSearchResponse, SpyCallSummaryPageSchema);
+    expect(filteredSearch.items.map((item) => item.call.id)).toEqual(["call-fixture-flow-tool-result"]);
+
+    const firstSearchPage = await jsonAs(
+      await fetch(`${handle.url}/api/search?q=${encodeURIComponent("Fixture capture")}&limit=1&provider=bedrock&status=complete`),
+      SpyCallSummaryPageSchema,
+    );
+    expect(firstSearchPage.items).toHaveLength(1);
+    expect(firstSearchPage.nextCursor).toBeDefined();
+    const secondSearchPage = await jsonAs(
+      await fetch(`${handle.url}/api/search?q=${encodeURIComponent("Fixture capture")}&limit=1&provider=bedrock&status=complete&cursor=${encodeURIComponent(firstSearchPage.nextCursor ?? "")}`),
+      SpyCallSummaryPageSchema,
+    );
+    expect(secondSearchPage.items).toHaveLength(1);
+    expect(secondSearchPage.items[0]?.call.id).not.toBe(firstSearchPage.items[0]?.call.id);
+
+    const invalidProviderResponse = await fetch(`${handle.url}/api/calls?provider=openai`);
+    expect(invalidProviderResponse.status).toBe(400);
+
+    const invalidSearchProviderResponse = await fetch(`${handle.url}/api/search?q=Fixture&provider=openai`);
+    expect(invalidSearchProviderResponse.status).toBe(400);
+
+    const invalidStatusResponse = await fetch(`${handle.url}/api/search?q=Fixture&status=done`);
+    expect(invalidStatusResponse.status).toBe(400);
+
     const invalidCursorResponse = await fetch(`${handle.url}/api/calls?cursor=not-a-cursor`);
     expect(invalidCursorResponse.status).toBe(400);
 

@@ -14,7 +14,23 @@ describe("spy UI API helpers", () => {
   });
 
   test("uses search endpoint when query text is present", () => {
-    expect(callsUrl({ since: 123, search: "fixture capture" })).toBe("/api/search?limit=100&q=fixture+capture");
+    expect(callsUrl({ since: 123, search: "fixture capture" })).toBe("/api/search?limit=100&since=123&q=fixture+capture");
+  });
+
+  test("preserves timeline filters in call and search URLs", () => {
+    const query = {
+      since: 123,
+      provider: "bedrock",
+      modelId: "us.anthropic.claude-sonnet-4-6",
+      operation: "converse-stream",
+      status: "complete",
+    };
+    expect(callsUrl(query)).toBe(
+      "/api/calls?limit=100&since=123&provider=bedrock&model_id=us.anthropic.claude-sonnet-4-6&operation=converse-stream&status=complete",
+    );
+    expect(callsUrl({ ...query, search: "fixture capture" })).toBe(
+      "/api/search?limit=100&since=123&provider=bedrock&model_id=us.anthropic.claude-sonnet-4-6&operation=converse-stream&status=complete&q=fixture+capture",
+    );
   });
 
   test("encodes stream event call ids", () => {

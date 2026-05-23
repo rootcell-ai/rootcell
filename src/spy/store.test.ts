@@ -134,6 +134,20 @@ function retagResponse(event: SpoolResponseEvent, flowId: string, ts: number): S
   return SpoolResponseEventSchema.parse({ ...event, flow_id: flowId, ts });
 }
 
+function requestVariant(
+  event: SpoolRequestEvent,
+  overrides: Partial<Pick<SpoolRequestEvent, "flow_id" | "ts" | "model_id" | "operation">>,
+): SpoolRequestEvent {
+  return SpoolRequestEventSchema.parse({ ...event, ...overrides });
+}
+
+function responseVariant(
+  event: SpoolResponseEvent,
+  overrides: Partial<Pick<SpoolResponseEvent, "flow_id" | "ts" | "model_id" | "operation" | "status_code">>,
+): SpoolResponseEvent {
+  return SpoolResponseEventSchema.parse({ ...event, ...overrides });
+}
+
 function firstFixtureEvent(): SpoolEvent {
   const event = fixtureEvents()[0];
   if (event === undefined) {
@@ -227,6 +241,96 @@ describe("spy SQLite store", () => {
       expect(health.pendingCallCount).toBe(0);
       expect(health.droppedCaptureCount).toBe(0);
       expect(health.lastIngestAt).not.toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+
+  test("filters call summaries and normalized-text search by provider call fields", () => {
+    const { store } = createTestStore();
+    try {
+      const [baseRequest, baseResponse] = fixturePair();
+      const variants = [
+        {
+          flowId: "filter-a",
+          ts: 100,
+          modelId: "us.anthropic.claude-sonnet-4-6",
+          operation: "converse-stream",
+          statusCode: 200,
+        },
+        {
+          flowId: "filter-b",
+          ts: 200,
+          modelId: "us.anthropic.claude-opus-4-1",
+          operation: "converse-stream",
+          statusCode: 200,
+        },
+        {
+          flowId: "filter-c",
+          ts: 300,
+          modelId: "us.anthropic.claude-sonnet-4-6",
+          operation: "converse",
+          statusCode: 200,
+        },
+        {
+          flowId: "filter-d",
+          ts: 400,
+          modelId: "us.anthropic.claude-sonnet-4-6",
+          operation: "converse-stream",
+          statusCode: 500,
+        },
+      ];
+
+      for (const variant of variants) {
+        store.persistRequest(requestVariant(baseRequest, {
+          flow_id: variant.flowId,
+          ts: variant.ts,
+          model_id: variant.modelId,
+          operation: variant.operation,
+        }));
+        expect(store.persistResponse(responseVariant(baseResponse, {
+          flow_id: variant.flowId,
+          ts: variant.ts + 1,
+          model_id: variant.modelId,
+          operation: variant.operation,
+          status_code: variant.statusCode,
+        }))).toBe(true);
+      }
+
+      expect(store.listCallSummaries({ provider: "bedrock" }).items).toHaveLength(4);
+      expect(store.listCallSummaries({ modelId: "us.anthropic.claude-opus-4-1" }).items.map((item) => item.call.id))
+        .toEqual(["call-filter-b"]);
+      expect(store.listCallSummaries({ operation: "converse" }).items.map((item) => item.call.id))
+        .toEqual(["call-filter-c"]);
+      expect(store.listCallSummaries({ status: "error" }).items.map((item) => item.call.id))
+        .toEqual(["call-filter-d"]);
+      expect(store.listCallSummaries({
+        since: 250,
+        provider: "bedrock",
+        modelId: "us.anthropic.claude-sonnet-4-6",
+        operation: "converse-stream",
+        status: "complete",
+      }).items).toHaveLength(0);
+      expect(store.listCallSummaries({
+        since: 250,
+        modelId: "us.anthropic.claude-sonnet-4-6",
+        operation: "converse-stream",
+        status: "error",
+      }).items.map((item) => item.call.id)).toEqual(["call-filter-d"]);
+
+      const searchPage = store.searchCallSummaries({
+        query: "Fixture capture",
+        since: 250,
+        modelId: "us.anthropic.claude-sonnet-4-6",
+        operation: "converse",
+        status: "complete",
+      });
+      expect(searchPage.items.map((item) => item.call.id)).toEqual(["call-filter-c"]);
+      expect(store.searchCallSummaries({
+        query: "Fixture capture",
+        since: 350,
+        status: "complete",
+      }).items).toHaveLength(0);
     } finally {
       store.close();
     }

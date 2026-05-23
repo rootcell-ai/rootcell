@@ -170,11 +170,11 @@ the bounded spool and then emit rate-limited dropped markers when space allows.
 The service exposes same-origin JSON endpoints:
 
 - `GET /api/health`
-- `GET /api/calls?since=&cursor=&limit=`
+- `GET /api/calls?since=&provider=&model_id=&operation=&status=&cursor=&limit=`
 - `GET /api/calls/:id`
 - `GET /api/calls/:id/diff`
 - `GET /api/calls/:id/stream-events`
-- `GET /api/search?q=&cursor=&limit=`
+- `GET /api/search?q=&since=&provider=&model_id=&operation=&status=&cursor=&limit=`
 - `POST /api/clear` with `{"confirm": true}`
 - `GET /api/events` for SSE
 

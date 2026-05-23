@@ -45,12 +45,24 @@ export function callsUrl(query: CallQuery): string {
   if (query.cursor !== undefined) {
     params.set("cursor", query.cursor);
   }
+  if (query.since !== undefined) {
+    params.set("since", String(query.since));
+  }
+  if (query.provider !== undefined) {
+    params.set("provider", query.provider);
+  }
+  if (query.modelId !== undefined) {
+    params.set("model_id", query.modelId);
+  }
+  if (query.operation !== undefined) {
+    params.set("operation", query.operation);
+  }
+  if (query.status !== undefined) {
+    params.set("status", query.status);
+  }
   if (search !== undefined && search.length > 0) {
     params.set("q", search);
     return `/api/search?${params.toString()}`;
-  }
-  if (query.since !== undefined) {
-    params.set("since", String(query.since));
   }
   return `/api/calls?${params.toString()}`;
 }

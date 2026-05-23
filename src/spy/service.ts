@@ -12,6 +12,7 @@ import {
   type SpyStoreOptions,
   type SpyStreamEventsOptions,
 } from "./store.ts";
+import { ProviderCallStatusSchema } from "./schemas.ts";
 
 const DEFAULT_BIND = "127.0.0.1";
 const DEFAULT_PORT = 6174;
@@ -423,6 +424,7 @@ export function startSpyService(options: StartSpyServiceOptions = {}): SpyServic
 function listOptions(url: URL): SpyListCallsOptions {
   return {
     ...(numberParam(url, "since") === undefined ? {} : { since: numberParam(url, "since") }),
+    ...callFilters(url),
     ...(stringParam(url, "cursor") === undefined ? {} : { cursor: stringParam(url, "cursor") }),
     ...(numberParam(url, "limit") === undefined ? {} : { limit: numberParam(url, "limit") }),
   };
@@ -431,9 +433,47 @@ function listOptions(url: URL): SpyListCallsOptions {
 function searchOptions(url: URL): SpySearchCallsOptions {
   return {
     query: stringParam(url, "q") ?? "",
+    ...(numberParam(url, "since") === undefined ? {} : { since: numberParam(url, "since") }),
+    ...callFilters(url),
     ...(stringParam(url, "cursor") === undefined ? {} : { cursor: stringParam(url, "cursor") }),
     ...(numberParam(url, "limit") === undefined ? {} : { limit: numberParam(url, "limit") }),
   };
+}
+
+function callFilters(url: URL): Pick<SpyListCallsOptions, "provider" | "modelId" | "operation" | "status"> {
+  const provider = providerParam(url);
+  const modelId = stringParam(url, "model_id");
+  const operation = stringParam(url, "operation");
+  const status = statusParam(url);
+  return {
+    ...(provider === undefined ? {} : { provider }),
+    ...(modelId === undefined ? {} : { modelId }),
+    ...(operation === undefined ? {} : { operation }),
+    ...(status === undefined ? {} : { status }),
+  };
+}
+
+function providerParam(url: URL): "bedrock" | undefined {
+  const value = stringParam(url, "provider");
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value !== "bedrock") {
+    throw new HttpError(400, "invalid provider");
+  }
+  return value;
+}
+
+function statusParam(url: URL): SpyListCallsOptions["status"] {
+  const value = stringParam(url, "status");
+  if (value === undefined) {
+    return undefined;
+  }
+  const parsed = ProviderCallStatusSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new HttpError(400, "invalid status");
+  }
+  return parsed.data;
 }
 
 function streamOptions(url: URL): SpyStreamEventsOptions {

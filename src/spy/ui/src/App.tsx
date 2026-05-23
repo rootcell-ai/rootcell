@@ -55,6 +55,15 @@ import type {
 const api = new SpyApiClient();
 const CALL_LIMIT = 100;
 const ALL_FILTER = "all";
+const PROVIDER_OPTIONS = [
+  { value: "bedrock", label: "Bedrock" },
+] as const;
+const OPERATION_OPTIONS = [
+  { value: "invoke", label: "Invoke" },
+  { value: "invoke-with-response-stream", label: "Invoke Stream" },
+  { value: "converse", label: "Converse" },
+  { value: "converse-stream", label: "Converse Stream" },
+] as const;
 
 type LoadState = "idle" | "loading" | "error";
 
@@ -85,7 +94,13 @@ export function App(): React.ReactElement {
   const [customStart, setCustomStart] = React.useState(() => datetimeLocalValue(initialSinceFromLocation(window.location)));
   const [searchDraft, setSearchDraft] = React.useState("");
   const [search, setSearch] = React.useState("");
-  const [filters, setFilters] = React.useState<UiFilters>({ model: ALL_FILTER, status: ALL_FILTER, blockKind: ALL_FILTER });
+  const [filters, setFilters] = React.useState<UiFilters>({
+    provider: ALL_FILTER,
+    model: ALL_FILTER,
+    operation: ALL_FILTER,
+    status: ALL_FILTER,
+    blockKind: ALL_FILTER,
+  });
   const [calls, setCalls] = React.useState<readonly SpyCallSummary[]>([]);
   const [nextCursor, setNextCursor] = React.useState<string | undefined>();
   const [callState, setCallState] = React.useState<LoadState>("idle");
@@ -107,17 +122,29 @@ export function App(): React.ReactElement {
         since,
         search,
         limit: CALL_LIMIT,
+        provider: filterQueryValue(filters.provider),
+        modelId: filterQueryValue(filters.model),
+        operation: filterQueryValue(filters.operation),
+        status: filterQueryValue(filters.status),
         ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
       });
       setCalls((current) => options.append === true ? [...current, ...page.items] : page.items);
       setNextCursor(page.nextCursor);
       setCallState("idle");
-      setSelectedCallId((current) => current ?? page.items[0]?.call.id);
+      setSelectedCallId((current) => {
+        if (options.append === true) {
+          return current ?? page.items[0]?.call.id;
+        }
+        if (current !== undefined && page.items.some((item) => item.call.id === current)) {
+          return current;
+        }
+        return page.items[0]?.call.id;
+      });
     } catch (error) {
       setCallState("error");
       setCallError(error instanceof Error ? error.message : "failed to load calls");
     }
-  }, [search, since]);
+  }, [filters.model, filters.operation, filters.provider, filters.status, search, since]);
 
   React.useEffect(() => {
     void loadCalls();
@@ -242,21 +269,14 @@ export function App(): React.ReactElement {
     };
   }, [selectedCallId]);
 
-  const filteredCalls = React.useMemo(() => {
-    return calls.filter((summary) => {
-      if (filters.status !== ALL_FILTER && summary.call.status !== filters.status) {
-        return false;
-      }
-      if (filters.model !== ALL_FILTER && summary.call.model_id !== filters.model) {
-        return false;
-      }
-      return true;
-    });
-  }, [calls, filters.model, filters.status]);
-
   const modelOptions = React.useMemo(() => {
-    return [...new Set(calls.map((summary) => summary.call.model_id))].sort();
-  }, [calls]);
+    return [
+      ...new Set([
+        ...calls.map((summary) => summary.call.model_id),
+        ...(filters.model === ALL_FILTER ? [] : [filters.model]),
+      ]),
+    ].sort();
+  }, [calls, filters.model]);
 
   const selectedSummary = React.useMemo(() => {
     return calls.find((summary) => summary.call.id === selectedCallId) ?? null;
@@ -396,7 +416,7 @@ export function App(): React.ReactElement {
             </div>
           )}
           <Timeline
-            calls={filteredCalls}
+            calls={calls}
             selectedCallId={selectedCallId}
             loading={callState === "loading"}
             hasMore={nextCursor !== undefined}
@@ -502,6 +522,30 @@ function TimelineControls(props: {
           </Button>
         </form>
         <Filter aria-hidden="true" className="text-stone-500" size={16} />
+        <Select
+          aria-label="Filter by provider"
+          value={filters.provider}
+          onChange={(event) => {
+            props.onFilters({ ...filters, provider: event.target.value });
+          }}
+        >
+          <option value={ALL_FILTER}>All providers</option>
+          {PROVIDER_OPTIONS.map((provider) => (
+            <option key={provider.value} value={provider.value}>{provider.label}</option>
+          ))}
+        </Select>
+        <Select
+          aria-label="Filter by operation"
+          value={filters.operation}
+          onChange={(event) => {
+            props.onFilters({ ...filters, operation: event.target.value });
+          }}
+        >
+          <option value={ALL_FILTER}>All operations</option>
+          {OPERATION_OPTIONS.map((operation) => (
+            <option key={operation.value} value={operation.value}>{operation.label}</option>
+          ))}
+        </Select>
         <Select
           aria-label="Filter by status"
           value={filters.status}
@@ -1273,6 +1317,10 @@ function secondsFromDatetimeLocal(value: string): number | null {
   const parsed = new Date(value);
   const ms = parsed.getTime();
   return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
+}
+
+function filterQueryValue(value: string): string | undefined {
+  return value === ALL_FILTER ? undefined : value;
 }
 
 function sseErrorMessage(error: unknown): string {

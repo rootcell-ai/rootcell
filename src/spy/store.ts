@@ -150,13 +150,20 @@ export interface SpyPaginatedResult<T> {
   readonly nextCursor?: string | undefined;
 }
 
-export interface SpyListCallsOptions {
+export interface SpyProviderCallFilters {
   readonly since?: number | undefined;
+  readonly provider?: ProviderCall["provider"] | undefined;
+  readonly modelId?: string | undefined;
+  readonly operation?: string | undefined;
+  readonly status?: ProviderCall["status"] | undefined;
+}
+
+export interface SpyListCallsOptions extends SpyProviderCallFilters {
   readonly cursor?: string | undefined;
   readonly limit?: number | undefined;
 }
 
-export interface SpySearchCallsOptions {
+export interface SpySearchCallsOptions extends SpyProviderCallFilters {
   readonly query: string;
   readonly cursor?: string | undefined;
   readonly limit?: number | undefined;
@@ -410,10 +417,7 @@ class BunSqliteSpyStore implements SpyStore {
     const conditions: string[] = [];
     const params: SqlParam[] = [];
 
-    if (options.since !== undefined) {
-      conditions.push("started_at >= ?");
-      params.push(options.since);
-    }
+    appendProviderCallFilters(conditions, params, options);
     if (cursor !== undefined) {
       conditions.push("(started_at < ? OR (started_at = ? AND id < ?))");
       params.push(cursor.startedAt, cursor.startedAt, cursor.id);
@@ -551,6 +555,7 @@ LIMIT ?
     const cursor = options.cursor === undefined ? undefined : decodeCallCursor(options.cursor);
     const callConditions: string[] = [];
     const params: SqlParam[] = [ftsQuery];
+    appendProviderCallFilters(callConditions, params, options, "pc");
     if (cursor !== undefined) {
       callConditions.push("(pc.started_at < ? OR (pc.started_at = ? AND pc.id < ?))");
       params.push(cursor.startedAt, cursor.startedAt, cursor.id);
@@ -1462,6 +1467,35 @@ function ftsQueryForSearch(query: string): string | null {
     return null;
   }
   return tokens.map((token) => `"${token.replaceAll("\"", "\"\"")}"`).join(" AND ");
+}
+
+function appendProviderCallFilters(
+  conditions: string[],
+  params: SqlParam[],
+  options: SpyProviderCallFilters,
+  alias = "",
+): void {
+  const column = (name: string): string => alias.length === 0 ? name : `${alias}.${name}`;
+  if (options.since !== undefined) {
+    conditions.push(`${column("started_at")} >= ?`);
+    params.push(options.since);
+  }
+  if (options.provider !== undefined) {
+    conditions.push(`${column("provider")} = ?`);
+    params.push(options.provider);
+  }
+  if (options.modelId !== undefined) {
+    conditions.push(`${column("model_id")} = ?`);
+    params.push(options.modelId);
+  }
+  if (options.operation !== undefined) {
+    conditions.push(`${column("operation")} = ?`);
+    params.push(options.operation);
+  }
+  if (options.status !== undefined) {
+    conditions.push(`${column("status")} = ?`);
+    params.push(options.status);
+  }
 }
 
 function blockSignature(block: NormalizedBlock): string {
