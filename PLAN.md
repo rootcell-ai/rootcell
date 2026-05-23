@@ -849,10 +849,13 @@ P3 is polish, minor copy, or secondary accessibility.
     instead of a too-small fixed estimate, and the footer sits outside the
     timeline scroll viewport so it cannot overlay row content. Added Playwright
     coverage for adjacent row overlap and footer coverage at max scroll.
-- [ ] [P0] SPY-QA-04: Make long inspectors navigable. The inspector often
+- [x] [P0] SPY-QA-04: Make long inspectors navigable. The inspector often
   measures taller than the visible viewport, Request/Response Blocks open by
   default for huge calls, and Usage Records/Network/Stream/Raw/Health become
   effectively buried.
+  - Fixed on 2026-05-23: added a sticky inspector section navigator, made
+    high-volume Request/Response block sections start collapsed, and covered
+    the navigation regression in Playwright.
 - [ ] [P1] SPY-QA-05: Virtualize or paginate Stream Events and reset stale loaded
   stream state on call/range changes. Loading 72-765 events renders hundreds or
   thousands of inline lines and can leave the operator stranded in an old deep

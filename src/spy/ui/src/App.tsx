@@ -56,6 +56,8 @@ const api = new SpyApiClient();
 const CALL_LIMIT = 100;
 const ALL_FILTER = "all";
 const TIMELINE_ROW_ESTIMATE = 138;
+const BLOCK_SECTION_AUTO_OPEN_MAX_BLOCKS = 6;
+const BLOCK_SECTION_AUTO_OPEN_MAX_BYTES = 24 * 1024;
 const PROVIDER_OPTIONS = [
   { value: "bedrock", label: "Bedrock" },
 ] as const;
@@ -67,6 +69,30 @@ const OPERATION_OPTIONS = [
 ] as const;
 
 type LoadState = "idle" | "loading" | "error";
+type InspectorSectionId =
+  | "summary"
+  | "composition"
+  | "request-blocks"
+  | "response-blocks"
+  | "diff"
+  | "usage"
+  | "network"
+  | "stream"
+  | "raw"
+  | "health";
+
+const INSPECTOR_SECTIONS: readonly { readonly id: InspectorSectionId; readonly label: string }[] = [
+  { id: "summary", label: "Summary" },
+  { id: "composition", label: "Composition" },
+  { id: "request-blocks", label: "Request" },
+  { id: "response-blocks", label: "Response" },
+  { id: "diff", label: "Diff" },
+  { id: "usage", label: "Usage" },
+  { id: "network", label: "Network" },
+  { id: "stream", label: "Stream" },
+  { id: "raw", label: "Raw" },
+  { id: "health", label: "Health" },
+] as const;
 
 interface DetailState {
   readonly callId: string;
@@ -740,6 +766,7 @@ function CallInspector(props: {
   readonly onLoadMoreStream: () => void;
 }): React.ReactElement {
   const detailState = props.detailState;
+  const showSectionNav = isLoadedDetailState(detailState);
   let content: React.ReactNode;
   if (props.summary === null) {
     content = <EmptyInspector />;
@@ -766,7 +793,7 @@ function CallInspector(props: {
 
   return (
     <aside className="spy-scrollbar min-h-0 min-w-0 overflow-auto bg-[#f3f0eb]">
-      <div className="sticky top-0 z-10 border-b border-stone-300 bg-white px-5 py-4">
+      <div className="sticky top-0 z-10 border-b border-stone-300 bg-white px-5 py-3">
         <div className="flex min-w-0 items-start justify-between gap-3">
           <div className="min-w-0">
             <h2 className="truncate text-base font-semibold">
@@ -778,6 +805,7 @@ function CallInspector(props: {
           </div>
           {props.summary === null ? null : <Badge tone={statusTone(props.summary.call.status)}>{props.summary.call.status}</Badge>}
         </div>
+        {showSectionNav ? <InspectorSectionNav /> : null}
       </div>
 
       <div className="space-y-4 p-5">
@@ -803,31 +831,46 @@ function InspectorContent(props: {
 }): React.ReactElement {
   const requestBlocks = props.detail.blocks.filter((block) => block.direction === "request");
   const responseBlocks = props.detail.blocks.filter((block) => block.direction === "response");
+  const blockSectionsDefaultOpen = shouldAutoOpenBlockSections(requestBlocks, responseBlocks);
   const diffByBlockId = React.useMemo(() => {
     return new Map(props.diff.blocks.map((entry) => [entry.block.id, entry.classification]));
   }, [props.diff.blocks]);
 
   return (
     <>
-      <SummaryPanel detail={props.detail} />
-      <RequestCompositionPanel composition={props.detail.requestComposition} />
-      <Section title="Request Blocks" defaultOpen>
+      <InspectorAnchor id="summary">
+        <SummaryPanel detail={props.detail} />
+      </InspectorAnchor>
+      <InspectorAnchor id="composition">
+        <RequestCompositionPanel composition={props.detail.requestComposition} />
+      </InspectorAnchor>
+      <Section
+        id="request-blocks"
+        title="Request Blocks"
+        meta={blockListMeta(requestBlocks)}
+        defaultOpen={blockSectionsDefaultOpen}
+      >
         <BlockToolbar filters={props.filters} onFilters={props.onFilters} />
         <BlockList blocks={requestBlocks} filterKind={props.filters.blockKind} diffByBlockId={diffByBlockId} />
       </Section>
-      <Section title="Response Blocks" defaultOpen>
+      <Section
+        id="response-blocks"
+        title="Response Blocks"
+        meta={blockListMeta(responseBlocks)}
+        defaultOpen={blockSectionsDefaultOpen}
+      >
         <BlockList blocks={responseBlocks} filterKind={props.filters.blockKind} diffByBlockId={diffByBlockId} />
       </Section>
-      <Section title="Diff Against Previous Request">
+      <Section id="diff" title="Diff Against Previous Request">
         <DiffPanel diff={props.diff} />
       </Section>
-      <Section title="Usage Records">
+      <Section id="usage" title="Usage Records">
         <UsagePanel records={props.detail.usageRecords} />
       </Section>
-      <Section title="Network Metadata">
+      <Section id="network" title="Network Metadata">
         <NetworkPanel events={props.detail.httpEvents} />
       </Section>
-      <Section title="Stream Events">
+      <Section id="stream" title="Stream Events">
         <StreamPanel
           streamState={props.streamState}
           count={props.detail.summary.streamEventCount}
@@ -835,14 +878,72 @@ function InspectorContent(props: {
           onLoadMore={props.onLoadMoreStream}
         />
       </Section>
-      <Section title="Raw Payloads">
+      <Section id="raw" title="Raw Payloads">
         <RawPayloadPanel rawPayloads={props.detail.rawPayloads} rawPayloadCount={props.detail.summary.rawPayloadCount} />
       </Section>
-      <Section title="Health">
+      <Section id="health" title="Health">
         <HealthPanel health={props.health} />
       </Section>
     </>
   );
+}
+
+function InspectorSectionNav(): React.ReactElement {
+  return (
+    <nav className="mt-3 flex gap-1 overflow-x-auto pb-0.5" aria-label="Inspector sections" data-testid="inspector-section-nav">
+      {INSPECTOR_SECTIONS.map((section) => (
+        <button
+          key={section.id}
+          type="button"
+          className="shrink-0 rounded-md border border-stone-200 bg-stone-50 px-2.5 py-1 text-xs font-medium text-stone-700 transition-colors hover:border-stone-400 hover:bg-stone-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 focus-visible:ring-offset-2"
+          aria-label={`Jump to ${section.label}`}
+          data-testid={`inspector-nav-${section.id}`}
+          onClick={() => {
+            scrollInspectorSection(section.id);
+          }}
+        >
+          {section.label}
+        </button>
+      ))}
+    </nav>
+  );
+}
+
+function InspectorAnchor(props: {
+  readonly id: InspectorSectionId;
+  readonly children: React.ReactNode;
+}): React.ReactElement {
+  return (
+    <section id={inspectorSectionDomId(props.id)} className="scroll-mt-36" data-testid={`inspector-section-${props.id}`}>
+      {props.children}
+    </section>
+  );
+}
+
+function scrollInspectorSection(id: InspectorSectionId): void {
+  const target = document.getElementById(inspectorSectionDomId(id));
+  if (target instanceof HTMLDetailsElement) {
+    target.open = true;
+  }
+  target?.scrollIntoView({ block: "start" });
+}
+
+function inspectorSectionDomId(id: InspectorSectionId): string {
+  return `spy-inspector-${id}`;
+}
+
+function shouldAutoOpenBlockSections(
+  requestBlocks: readonly NormalizedBlock[],
+  responseBlocks: readonly NormalizedBlock[],
+): boolean {
+  const blocks = [...requestBlocks, ...responseBlocks];
+  const byteSize = blocks.reduce((total, block) => total + block.byte_size, 0);
+  return blocks.length <= BLOCK_SECTION_AUTO_OPEN_MAX_BLOCKS && byteSize <= BLOCK_SECTION_AUTO_OPEN_MAX_BYTES;
+}
+
+function blockListMeta(blocks: readonly NormalizedBlock[]): string {
+  const byteSize = blocks.reduce((total, block) => total + block.byte_size, 0);
+  return `${formatNumber(blocks.length)} ${blocks.length === 1 ? "block" : "blocks"} · ${formatBytes(byteSize)}`;
 }
 
 function SummaryPanel(props: { readonly detail: SpyCallDetail }): React.ReactElement {
@@ -1223,13 +1324,25 @@ function HealthCell(props: { readonly label: string; readonly value: string }): 
 }
 
 function Section(props: {
+  readonly id: InspectorSectionId;
   readonly title: string;
+  readonly meta?: string | undefined;
   readonly defaultOpen?: boolean | undefined;
   readonly children: React.ReactNode;
 }): React.ReactElement {
   return (
-    <details className="rounded-md border border-stone-300 bg-white shadow-sm" open={props.defaultOpen}>
-      <summary className="cursor-pointer select-none px-4 py-3 text-sm font-semibold text-stone-900">{props.title}</summary>
+    <details
+      id={inspectorSectionDomId(props.id)}
+      className="scroll-mt-36 rounded-md border border-stone-300 bg-white shadow-sm"
+      data-testid={`inspector-section-${props.id}`}
+      open={props.defaultOpen}
+    >
+      <summary className="flex cursor-pointer select-none items-center gap-3 px-4 py-3 text-sm font-semibold text-stone-900">
+        <span>{props.title}</span>
+        {props.meta === undefined ? null : (
+          <span className="ml-auto text-xs font-medium text-stone-500">{props.meta}</span>
+        )}
+      </summary>
       <div className="border-t border-stone-200 p-4">{props.children}</div>
     </details>
   );

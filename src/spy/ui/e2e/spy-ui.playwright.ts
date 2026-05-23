@@ -141,7 +141,7 @@ test("selects a call and opens inspector sections", async ({ page }) => {
   await expect(page.getByTestId("request-composition").getByText("Current User Input", { exact: true })).toBeVisible();
   await expect(page.getByText("Request Blocks", { exact: true })).toBeVisible();
   await expect(page.getByText("Network Metadata", { exact: true })).toBeVisible();
-  await page.getByText("Health", { exact: true }).click();
+  await page.getByTestId("inspector-nav-health").click();
   await expect(page.getByText("Enabled", { exact: true }).first()).toBeVisible();
   await expect(page.getByText("DB size", { exact: true })).toBeVisible();
   await expect(page.getByText("Spool size", { exact: true })).toBeVisible();
@@ -150,6 +150,69 @@ test("selects a call and opens inspector sections", async ({ page }) => {
   await expect(page.getByText("Retention", { exact: true })).toBeVisible();
   await expect(page.getByText("Dropped captures", { exact: true })).toBeVisible();
   await expect(page.getByText("Last ingest", { exact: true })).toBeVisible();
+});
+
+test("jumps to buried inspector sections from the section navigator", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto("/?since=0");
+  await expect(page.getByTestId("timeline-row")).toHaveCount(5);
+  await page.getByTestId("timeline-row").first().click();
+  await expect(page.getByTestId("inspector-section-nav")).toBeVisible();
+
+  const initialMetrics = await page.evaluate(() => {
+    const aside = document.querySelector("aside");
+    const requestBlocks = document.querySelector('[data-testid="inspector-section-request-blocks"]');
+    const responseBlocks = document.querySelector('[data-testid="inspector-section-response-blocks"]');
+    const health = document.querySelector('[data-testid="inspector-section-health"]');
+    if (aside === null || requestBlocks === null || responseBlocks === null || health === null) {
+      throw new Error("missing inspector section");
+    }
+    return {
+      viewportHeight: window.innerHeight,
+      requestBlocksOpen: requestBlocks.hasAttribute("open"),
+      responseBlocksOpen: responseBlocks.hasAttribute("open"),
+      healthTop: health.getBoundingClientRect().top,
+      asideScrollTop: aside.scrollTop,
+      mainScrollTop: document.querySelector("main")?.scrollTop,
+    };
+  });
+
+  expect(initialMetrics.requestBlocksOpen).toBe(false);
+  expect(initialMetrics.responseBlocksOpen).toBe(false);
+  expect(initialMetrics.healthTop).toBeGreaterThan(initialMetrics.viewportHeight);
+  expect(initialMetrics.asideScrollTop).toBe(0);
+  expect(initialMetrics.mainScrollTop).toBe(0);
+
+  await page.getByTestId("inspector-nav-health").click();
+
+  const jumpedMetrics = await page.evaluate(() => {
+    const aside = document.querySelector("aside");
+    const main = document.querySelector("main");
+    const header = document.querySelector("header");
+    const health = document.querySelector('[data-testid="inspector-section-health"]');
+    if (aside === null || main === null || header === null || health === null) {
+      throw new Error("missing layout element");
+    }
+    const healthRect = health.getBoundingClientRect();
+    const headerRect = header.getBoundingClientRect();
+    return {
+      viewportHeight: window.innerHeight,
+      asideScrollTop: aside.scrollTop,
+      mainScrollTop: main.scrollTop,
+      headerTop: headerRect.top,
+      headerBottom: headerRect.bottom,
+      healthTop: healthRect.top,
+      healthBottom: healthRect.bottom,
+    };
+  });
+
+  expect(jumpedMetrics.asideScrollTop).toBeGreaterThan(0);
+  expect(jumpedMetrics.mainScrollTop).toBe(0);
+  expect(jumpedMetrics.headerTop).toBe(0);
+  expect(jumpedMetrics.headerBottom).toBeGreaterThan(0);
+  expect(jumpedMetrics.healthTop).toBeGreaterThanOrEqual(jumpedMetrics.headerBottom);
+  expect(jumpedMetrics.healthTop).toBeLessThan(jumpedMetrics.viewportHeight);
+  expect(jumpedMetrics.healthBottom).toBeLessThanOrEqual(jumpedMetrics.viewportHeight);
 });
 
 test("loads historical ranges and searches normalized text", async ({ page }) => {
