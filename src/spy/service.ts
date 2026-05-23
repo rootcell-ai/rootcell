@@ -241,7 +241,7 @@ class SpyHttpService {
       start: (controller) => {
         const keepalive = setInterval(() => {
           this.sendComment(controller, "keepalive");
-        }, 15_000);
+        }, 5_000);
         const client: SseClient = { id, controller, keepalive };
         this.clients.set(id, client);
         this.send(controller, "hello", { id });

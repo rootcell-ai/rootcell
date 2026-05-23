@@ -502,6 +502,28 @@ V1 excludes:
     gating, clear-data confirmation, SSE updates, static serving, and bad input
     handling.
   - Verified `bun run typecheck`, `bun run lint`, and `bun run test`.
+- Implemented the React desktop spy UI with virtualized timeline and call
+  inspector:
+  - Added a Vite + React + TypeScript app under `src/spy/ui` with Tailwind,
+    local shadcn-style primitives, lucide icons, and TanStack virtualization.
+  - Added UI package scripts for dev, build, unit tests, and Playwright e2e
+    tests, plus TSX-aware lint/typecheck wiring and locked frontend
+    dependencies.
+  - Built the live-from-now conversation-analysis screen with explicit
+    historical range controls, search, status/model/block-kind filters,
+    virtualized provider-call timeline rows, SSE refresh, and call selection.
+  - Built the call-native inspector with request/response block rendering,
+    semantic highlighting, composition summaries, provider usage, request diff,
+    network metadata and headers, on-demand stream event loading, raw payload
+    availability, health/settings data, and confirmed clear-data.
+  - Added a fixture-backed UI test server and Playwright coverage for app load,
+    SSE live updates, call selection, inspector sections, historical loading,
+    search, stream events on demand, and clear-data confirmation.
+  - Reduced the service SSE keepalive interval so long-lived browser event
+    streams stay open under Bun's default idle timeout.
+  - Verified `bun run typecheck`, `bun run lint`, `bun run test`,
+    `bun run test:spy-ui:unit`, `bun run build:spy-ui`, and
+    `bun run test:spy-ui:e2e`.
 
 ### V1
 
@@ -515,7 +537,7 @@ Build the Bedrock/Pi browser spy:
 - [x] Implement TypeScript Bedrock adapter on top of the captured fixtures.
 - [x] Implement SQLite persistence, migrations, retention, and clear-data.
 - [x] Implement TS web service, API, SSE, and static asset serving.
-- [ ] Implement React desktop UI with virtualized timeline and call inspector.
+- [x] Implement React desktop UI with virtualized timeline and call inspector.
 - [ ] Wire `rootcell provision`, systemd service config, and `rootcell spy`
    launcher/tunnel.
 - [ ] Raise firewall disk/root volume defaults to 64 GiB.
@@ -646,6 +668,7 @@ V1 tests:
   - opens inspector sections
   - loads historical range
   - searches
+  - loads stream events on demand
   - clears data
 
 Fixture strategy:
