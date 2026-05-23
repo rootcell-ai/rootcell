@@ -1,6 +1,15 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { SpyCallDetailSchema, SpyServiceHealthSchema } from "../../api-contracts.ts";
-import { SpyApiClient, callsUrl, fetchJson, parseSseEventData, streamEventsUrl } from "./api.ts";
+import {
+  SpyApiClient,
+  callsUrl,
+  fetchJson,
+  initialSinceFromLocation,
+  initialTimelineRangeFromLocation,
+  parseSseEventData,
+  streamEventsUrl,
+  timelineRangeUrl,
+} from "./api.ts";
 
 const originalFetch = globalThis.fetch;
 
@@ -9,6 +18,23 @@ afterEach(() => {
 });
 
 describe("spy UI API helpers", () => {
+  test("parses fixed since URLs separately from live mode", () => {
+    const now = (): number => 5000;
+
+    expect(initialTimelineRangeFromLocation({ search: "" }, now)).toEqual({ preset: "live", since: 5000 });
+    expect(initialTimelineRangeFromLocation({ search: "?since=0" }, now)).toEqual({ preset: "custom", since: 0 });
+    expect(initialTimelineRangeFromLocation({ search: "?preset=10m&since=123" }, now)).toEqual({ preset: "10m", since: 123 });
+    expect(initialTimelineRangeFromLocation({ search: "?preset=live&since=123" }, now)).toEqual({ preset: "live", since: 5000 });
+    expect(initialTimelineRangeFromLocation({ search: "?preset=nope&since=123" }, now)).toEqual({ preset: "custom", since: 123 });
+    expect(initialTimelineRangeFromLocation({ search: "?since=bad" }, now)).toEqual({ preset: "live", since: 5000 });
+    expect(initialSinceFromLocation({ search: "?since=0" }, now)).toBe(0);
+  });
+
+  test("builds canonical timeline range URLs", () => {
+    expect(timelineRangeUrl("10m", 123, "http://spy.local/?since=0&view=timeline#calls")).toBe("/?since=123&view=timeline&preset=10m#calls");
+    expect(timelineRangeUrl("live", 123, "http://spy.local/?since=0&view=timeline#calls")).toBe("/?view=timeline&preset=live#calls");
+  });
+
   test("builds call list URLs with since and cursors", () => {
     expect(callsUrl({ since: 123, cursor: "next", limit: 25 })).toBe("/api/calls?limit=25&cursor=next&since=123");
   });

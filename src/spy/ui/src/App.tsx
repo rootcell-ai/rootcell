@@ -16,7 +16,7 @@ import {
   WifiOff,
 } from "lucide-react";
 import * as React from "react";
-import { SpyApiClient, initialSinceFromLocation, parseSseEventData } from "./api.ts";
+import { SpyApiClient, initialTimelineRangeFromLocation, parseSseEventData, replaceTimelineRangeUrl } from "./api.ts";
 import { Badge } from "./components/ui/badge.tsx";
 import { Button } from "./components/ui/button.tsx";
 import { Input } from "./components/ui/input.tsx";
@@ -121,9 +121,10 @@ interface StreamState {
 }
 
 export function App(): React.ReactElement {
-  const [preset, setPreset] = React.useState<TimePreset>("live");
-  const [since, setSince] = React.useState(() => initialSinceFromLocation(window.location));
-  const [customStart, setCustomStart] = React.useState(() => datetimeLocalValue(initialSinceFromLocation(window.location)));
+  const initialRange = React.useMemo(() => initialTimelineRangeFromLocation(window.location), []);
+  const [preset, setPreset] = React.useState<TimePreset>(initialRange.preset);
+  const [since, setSince] = React.useState(initialRange.since);
+  const [customStart, setCustomStart] = React.useState(() => datetimeLocalValue(initialRange.since));
   const [searchDraft, setSearchDraft] = React.useState("");
   const [search, setSearch] = React.useState("");
   const [filters, setFilters] = React.useState<UiFilters>({
@@ -363,24 +364,27 @@ export function App(): React.ReactElement {
   }, [calls, filters.model]);
 
   function setPresetSince(nextPreset: TimePreset): void {
-    setPreset(nextPreset);
+    let next = since;
     if (nextPreset === "live") {
-      const next = currentSeconds();
-      setSince(next);
-      setCustomStart(datetimeLocalValue(next));
+      next = currentSeconds();
     } else if (nextPreset === "10m" || nextPreset === "1h" || nextPreset === "today") {
-      const next = secondsForPreset(nextPreset);
-      setSince(next);
-      setCustomStart(datetimeLocalValue(next));
+      next = secondsForPreset(nextPreset);
     }
+    setTimelineRange(nextPreset, next);
   }
 
   function applyCustomStart(): void {
     const next = secondsFromDatetimeLocal(customStart);
     if (next !== null) {
-      setPreset("custom");
-      setSince(next);
+      setTimelineRange("custom", next);
     }
+  }
+
+  function setTimelineRange(nextPreset: TimePreset, nextSince: number): void {
+    setPreset(nextPreset);
+    setSince(nextSince);
+    setCustomStart(datetimeLocalValue(nextSince));
+    replaceTimelineRangeUrl(nextPreset, nextSince);
   }
 
   function submitSearch(event: React.SyntheticEvent<HTMLFormElement>): void {

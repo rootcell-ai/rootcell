@@ -20,18 +20,67 @@ import type {
   SseCallsChangedPayload,
   SseEventName,
   SseHelloPayload,
+  TimePreset,
 } from "./types.ts";
 
 const DEFAULT_CALL_LIMIT = 100;
 const DEFAULT_STREAM_LIMIT = 100;
+const URL_PRESETS = new Set<TimePreset>(["live", "10m", "1h", "today", "custom"]);
 
-export function initialSinceFromLocation(location: Location, nowSeconds: () => number = currentSeconds): number {
-  const value = new URLSearchParams(location.search).get("since");
+export interface TimelineRangeState {
+  readonly preset: TimePreset;
+  readonly since: number;
+}
+
+export function initialTimelineRangeFromLocation(
+  location: Pick<Location, "search">,
+  nowSeconds: () => number = currentSeconds,
+): TimelineRangeState {
+  const params = new URLSearchParams(location.search);
+  const explicitPreset = parseTimePreset(params.get("preset"));
+  if (explicitPreset === "live") {
+    return { preset: "live", since: nowSeconds() };
+  }
+  const since = parseSince(params.get("since"));
+  if (since !== undefined) {
+    return {
+      preset: explicitPreset ?? "custom",
+      since,
+    };
+  }
+  return { preset: "live", since: nowSeconds() };
+}
+
+export function initialSinceFromLocation(location: Pick<Location, "search">, nowSeconds: () => number = currentSeconds): number {
+  return initialTimelineRangeFromLocation(location, nowSeconds).since;
+}
+
+function parseTimePreset(value: string | null): TimePreset | undefined {
+  return value !== null && URL_PRESETS.has(value as TimePreset) ? value as TimePreset : undefined;
+}
+
+function parseSince(value: string | null): number | undefined {
   if (value === null || value.trim().length === 0) {
-    return nowSeconds();
+    return undefined;
   }
   const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : nowSeconds();
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+export function timelineRangeUrl(preset: TimePreset, since: number, currentHref: string): string {
+  const url = new URL(currentHref);
+  if (preset === "live") {
+    url.searchParams.set("preset", "live");
+    url.searchParams.delete("since");
+  } else {
+    url.searchParams.set("preset", preset);
+    url.searchParams.set("since", String(since));
+  }
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
+export function replaceTimelineRangeUrl(preset: TimePreset, since: number): void {
+  window.history.replaceState(window.history.state, "", timelineRangeUrl(preset, since, window.location.href));
 }
 
 export function callsUrl(query: CallQuery): string {

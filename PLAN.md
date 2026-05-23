@@ -873,9 +873,14 @@ P3 is polish, minor copy, or secondary accessibility.
   - Fixed on 2026-05-23: the inspector now shows a `Pinned` badge and `Follow
     Latest` button when the selected call is older than the newest visible
     timeline row, while preserving pinned inspection by default.
-- [ ] [P1] SPY-QA-08: Keep URL/query state in sync with selected time range and
+- [x] [P1] SPY-QA-08: Keep URL/query state in sync with selected time range and
   distinguish fixed `since` URLs from true Live mode. Reloading old `since` URLs
   can show historical data while the header still says `Live from now`.
+  - Fixed on 2026-05-23: the browser now parses URL range state as a coherent
+    `preset`/`since` pair, treats fixed `since` URLs as non-live unless
+    `preset=live` is explicit, and writes canonical range query state when the
+    operator changes Live, 10 min, 1 hour, Today, or Custom. Added unit and
+    Playwright coverage for fixed `since` URLs, range changes, and reloads.
 - [ ] [P1] SPY-QA-09: Decide whether `10 min` and `1 hour` are rolling windows or
   fixed snapshots, then label/update them consistently. Refresh currently keeps
   the original fixed start.

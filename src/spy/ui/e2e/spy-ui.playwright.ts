@@ -18,6 +18,41 @@ test("loads fixture calls and receives live updates", async ({ page }) => {
   await expect(page.getByTestId("timeline-row")).toHaveCount(5);
 });
 
+test("keeps timeline range state synchronized with the URL", async ({ page }) => {
+  await page.goto("/?since=0");
+  await expect(page.getByTestId("timeline-row")).toHaveCount(5);
+
+  const initialState = await readRangeState(page);
+  expect(initialState.subtitle).toContain("Since ");
+  expect(initialState.activeButtons).toEqual([]);
+
+  await page.getByRole("button", { name: "10 min" }).click();
+  await expect(page.getByTestId("timeline-row")).toHaveCount(5);
+  const tenMinuteState = await readRangeState(page);
+  const tenMinuteUrl = new URL(page.url());
+  expect(tenMinuteState.subtitle).toContain("Since ");
+  expect(tenMinuteState.activeButtons).toEqual(["10 min"]);
+  expect(tenMinuteUrl.searchParams.get("preset")).toBe("10m");
+  expect(tenMinuteUrl.searchParams.get("since")).not.toBeNull();
+  expect(tenMinuteUrl.searchParams.get("since")).not.toBe("0");
+
+  await page.reload();
+  await expect(page.getByTestId("timeline-row")).toHaveCount(5);
+  const reloadedState = await readRangeState(page);
+  expect(reloadedState.subtitle).toBe(tenMinuteState.subtitle);
+  expect(reloadedState.activeButtons).toEqual(["10 min"]);
+
+  await page.getByRole("button", { name: "Live" }).click();
+  const liveUrl = new URL(page.url());
+  expect(liveUrl.searchParams.get("preset")).toBe("live");
+  expect(liveUrl.searchParams.has("since")).toBe(false);
+
+  await page.reload();
+  const liveState = await readRangeState(page);
+  expect(liveState.subtitle).toBe("Live from now");
+  expect(liveState.activeButtons).toEqual(["Live"]);
+});
+
 test("keeps timeline and inspector scroll containers inside the viewport", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto("/?since=0");
@@ -320,6 +355,27 @@ test("clears data with confirmation", async ({ page }) => {
   await page.getByRole("button", { name: "Clear", exact: true }).click();
   await expect(page.getByText("No provider calls in this range.")).toBeVisible();
 });
+
+async function readRangeState(page: Page): Promise<{
+  readonly activeButtons: readonly string[];
+  readonly subtitle: string;
+}> {
+  return page.evaluate(() => {
+    const labels = ["Live", "10 min", "1 hour", "Today"];
+    const subtitle = document.querySelector("header p");
+    if (subtitle === null) {
+      throw new Error("missing range subtitle");
+    }
+    const buttons = Array.from(document.querySelectorAll("button"))
+      .filter((button) => labels.includes(button.textContent.trim()));
+    return {
+      activeButtons: buttons
+        .filter((button) => button.className.includes("border-emerald-700"))
+        .map((button) => button.textContent.trim()),
+      subtitle: subtitle.textContent.trim(),
+    };
+  });
+}
 
 const HEAVY_STREAM_CALL_ID = "call-heavy-stream";
 const HEAVY_STREAM_TS = 1779562000;
