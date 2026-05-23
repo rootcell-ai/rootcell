@@ -75,6 +75,10 @@ ROOTCELL_LIMACTL=/path/to/limactl
 # LIMACTL=/path/to/limactl also works
 ```
 
+The Lima provider requires Lima 2.0.2 or newer because its generated YAML uses
+`ssh.overVsock: true` for the VZ bootstrap SSH path. The repo's `.#hostTools`
+package pins a compatible Lima release.
+
 rootcell does not override `LIMA_HOME`; Lima instances, the Lima user key, and
 user-v2 networks are managed through the normal Lima home. Set `LIMA_HOME`
 yourself if you want Lima state somewhere else.

@@ -68,6 +68,9 @@ in
 
     environment.enableAllTerminfo = true;
     services.lima.enable = !isAwsEc2;
+    # nixos-lima v0.0.5 boots with dbus-daemon; keep first switch from
+    # attempting an in-place migration to dbus-broker.
+    services.dbus.implementation = "dbus";
     networking.nat.enable = lib.mkForce false;
 
     # Lima's hostagent probes `/bin/bash` even when the configured user shell is

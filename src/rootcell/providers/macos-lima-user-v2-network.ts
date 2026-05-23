@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { resolveHostTool } from "../host-tools.ts";
 import { runCapture } from "../process.ts";
 import type { RootcellConfig } from "../types.ts";
+import { assertLimactlSupportsSshOverVsockYaml } from "./lima-version.ts";
 import type { NetworkPlan, NetworkProvider, VmNetworkAttachment, VmRole } from "./types.ts";
 
 export interface LimaUserV2NetworkAttachment extends VmNetworkAttachment {
@@ -74,7 +75,7 @@ export class MacOsLimaUserV2NetworkProvider implements NetworkProvider<LimaUserV
   }
 
   preflight(): Promise<void> {
-    this.ensureLimactl();
+    assertLimactlSupportsSshOverVsockYaml(this.ensureLimactl());
     return Promise.resolve();
   }
 

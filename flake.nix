@@ -2,7 +2,7 @@
   description = "rootcell: root-capable coding-agent workspaces with allowlisted egress";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
+    nixpkgs.url = "https://flakehub.com/f/DeterminateSystems/nixpkgs-weekly/0.1";
 
     home-manager = {
       url = "github:nix-community/home-manager/release-25.11";
@@ -42,12 +42,7 @@
       forEachDarwin = nixpkgs.lib.genAttrs [ "aarch64-darwin" "x86_64-darwin" ];
       darwinPkgs = forEachDarwin (sys:
         let
-          p = import nixpkgs {
-            system = sys;
-            config.permittedInsecurePackages = [
-              "lima-1.2.2"
-            ];
-          };
+          p = nixpkgs.legacyPackages.${sys};
         in {
           lima = p.lima;
           hostTools = p.buildEnv {

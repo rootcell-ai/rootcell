@@ -194,6 +194,10 @@ ROOTCELL_LIMACTL=/path/to/limactl      # Lima provider
 ROOTCELL_TERRAFORM=/path/to/tofu       # AWS EC2 provider
 ```
 
+The Lima provider requires Lima 2.0.2 or newer for `ssh.overVsock`; use
+`nix shell .#hostTools --command ./rootcell` if your PATH has an older
+`limactl`.
+
 The AWS EC2 provider uses OpenTofu's `tofu` command by default. Set
 `ROOTCELL_TERRAFORM=/path/to/terraform` if you want to use a Terraform binary
 you installed yourself.
