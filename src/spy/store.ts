@@ -9,7 +9,13 @@ import {
 import { applySpyMigrations, currentSpySchemaVersion } from "./migrations.ts";
 import {
   HttpEventRecordSchema,
+  NormalizedBlockSchema,
+  ProviderCallSchema,
+  RawPayloadRecordSchema,
   SpoolEventSchema,
+  StreamEventSchema,
+  UsageRecordSchema,
+  type DiffClassification,
   type HttpEventRecord,
   type NormalizedBlock,
   type ProviderCall,
@@ -26,6 +32,8 @@ import {
 
 const DEFAULT_RETENTION_DAYS = 7;
 const DEFAULT_MAX_BYTES = 6 * 1024 * 1024 * 1024;
+const DEFAULT_QUERY_LIMIT = 100;
+const MAX_QUERY_LIMIT = 500;
 
 export interface SpyStoreOptions {
   readonly dbPath: string;
@@ -72,10 +80,78 @@ export interface SpyHealthSnapshot {
   readonly metadata: Readonly<Record<string, string>>;
 }
 
+export interface SpyUsageSummary {
+  readonly inputTokens: number | null;
+  readonly outputTokens: number | null;
+  readonly cacheReadTokens: number | null;
+  readonly cacheWriteTokens: number | null;
+  readonly totalTokens: number | null;
+}
+
+export interface SpyCallSummary {
+  readonly call: ProviderCall;
+  readonly durationMs: number | null;
+  readonly usage: SpyUsageSummary;
+  readonly requestBlockCount: number;
+  readonly responseBlockCount: number;
+  readonly requestByteSize: number;
+  readonly responseByteSize: number;
+  readonly cacheMarkerCount: number;
+  readonly streamEventCount: number;
+  readonly rawPayloadCount: number;
+}
+
+export interface SpyPaginatedResult<T> {
+  readonly items: readonly T[];
+  readonly nextCursor?: string | undefined;
+}
+
+export interface SpyListCallsOptions {
+  readonly since?: number | undefined;
+  readonly cursor?: string | undefined;
+  readonly limit?: number | undefined;
+}
+
+export interface SpySearchCallsOptions {
+  readonly query: string;
+  readonly cursor?: string | undefined;
+  readonly limit?: number | undefined;
+}
+
+export interface SpyStreamEventsOptions {
+  readonly cursor?: string | undefined;
+  readonly limit?: number | undefined;
+}
+
+export interface SpyCallDetail {
+  readonly summary: SpyCallSummary;
+  readonly httpEvents: readonly HttpEventRecord[];
+  readonly blocks: readonly NormalizedBlock[];
+  readonly usageRecords: readonly UsageRecord[];
+  readonly rawPayloads: readonly RawPayloadRecord[];
+}
+
+export interface SpyBlockDiff {
+  readonly block: NormalizedBlock;
+  readonly classification: DiffClassification;
+  readonly previousBlockId?: string | undefined;
+}
+
+export interface SpyCallDiff {
+  readonly call: SpyCallSummary;
+  readonly previousCall: SpyCallSummary | null;
+  readonly blocks: readonly SpyBlockDiff[];
+}
+
 export interface SpyStore {
   ingestSpoolBatch(options?: IngestSpoolBatchOptions): IngestSpoolBatchResult;
   persistRequest(event: SpoolRequestEvent): void;
   persistResponse(event: SpoolResponseEvent): boolean;
+  listCallSummaries(options?: SpyListCallsOptions): SpyPaginatedResult<SpyCallSummary>;
+  getCallDetail(callId: string): SpyCallDetail | null;
+  getCallDiff(callId: string): SpyCallDiff | null;
+  getStreamEvents(callId: string, options?: SpyStreamEventsOptions): SpyPaginatedResult<StreamEvent>;
+  searchCallSummaries(options: SpySearchCallsOptions): SpyPaginatedResult<SpyCallSummary>;
   runRetention(): RetentionResult;
   clearData(): ClearDataResult;
   getHealthSnapshot(): SpyHealthSnapshot;
@@ -96,11 +172,121 @@ interface CountRow {
   readonly count: number;
 }
 
+interface SumRow {
+  readonly total: number | null;
+}
+
 interface IdRow {
   readonly id: string;
 }
 
 type PragmaRow = Readonly<Record<string, number>>;
+
+interface ProviderCallRow {
+  readonly id: string;
+  readonly provider: "bedrock";
+  readonly operation: string;
+  readonly model_id: string;
+  readonly status: ProviderCall["status"];
+  readonly started_at: number;
+  readonly completed_at: number | null;
+  readonly status_code: number | null;
+  readonly request_flow_id: string;
+  readonly response_flow_id: string | null;
+  readonly request_content_hash: string | null;
+  readonly response_content_hash: string | null;
+}
+
+interface HttpEventRow {
+  readonly id: string;
+  readonly call_id: string;
+  readonly direction: "request" | "response";
+  readonly observed_at: number;
+  readonly host: string;
+  readonly method: string;
+  readonly path: string;
+  readonly status_code: number | null;
+  readonly reason: string | null;
+  readonly headers_json: string;
+  readonly request_headers_json: string | null;
+  readonly body_text: string | null;
+  readonly body_b64: string | null;
+  readonly body_sha256: string | null;
+  readonly body_encoding: "aws-eventstream" | null;
+  readonly content_type: string | null;
+}
+
+interface NormalizedBlockRow {
+  readonly id: string;
+  readonly call_id: string;
+  readonly direction: "request" | "response";
+  readonly ordinal: number;
+  readonly role: string | null;
+  readonly kind: NormalizedBlock["kind"];
+  readonly source: string;
+  readonly provider_path: string | null;
+  readonly text: string | null;
+  readonly json: string | null;
+  readonly char_size: number;
+  readonly byte_size: number;
+  readonly content_hash: string;
+  readonly cache_marker: number;
+}
+
+interface UsageRecordRow {
+  readonly id: string;
+  readonly call_id: string;
+  readonly source: "provider-reported";
+  readonly input_tokens: number | null;
+  readonly output_tokens: number | null;
+  readonly cache_read_tokens: number | null;
+  readonly cache_write_tokens: number | null;
+  readonly total_tokens: number | null;
+  readonly raw_json: string | null;
+}
+
+interface StreamEventRow {
+  readonly id: string;
+  readonly call_id: string;
+  readonly ordinal: number;
+  readonly event_type: string;
+  readonly headers_json: string;
+  readonly payload_json: string | null;
+  readonly payload_text: string | null;
+  readonly payload_sha256: string | null;
+  readonly observed_at: number | null;
+}
+
+interface RawPayloadRow {
+  readonly id: string;
+  readonly call_id: string;
+  readonly direction: "request" | "response";
+  readonly content_type: string | null;
+  readonly body_text: string | null;
+  readonly body_b64: string | null;
+  readonly body_sha256: string | null;
+  readonly body_encoding: "aws-eventstream" | null;
+}
+
+interface UsageSummaryRow {
+  readonly input_tokens: number | null;
+  readonly output_tokens: number | null;
+  readonly cache_read_tokens: number | null;
+  readonly cache_write_tokens: number | null;
+  readonly total_tokens: number | null;
+}
+
+type SqlParam = string | number;
+
+interface CallCursor {
+  readonly startedAt: number;
+  readonly id: string;
+}
+
+interface StreamCursor {
+  readonly ordinal: number;
+  readonly id: string;
+}
 
 class BunSqliteSpyStore implements SpyStore {
   private readonly db: Database;
@@ -171,6 +357,174 @@ class BunSqliteSpyStore implements SpyStore {
 
   persistResponse(event: SpoolResponseEvent): boolean {
     return this.withWriteLock(() => this.persistResponseUnlocked(event));
+  }
+
+  listCallSummaries(options: SpyListCallsOptions = {}): SpyPaginatedResult<SpyCallSummary> {
+    const limit = queryLimit(options.limit);
+    const cursor = options.cursor === undefined ? undefined : decodeCallCursor(options.cursor);
+    const conditions: string[] = [];
+    const params: SqlParam[] = [];
+
+    if (options.since !== undefined) {
+      conditions.push("started_at >= ?");
+      params.push(options.since);
+    }
+    if (cursor !== undefined) {
+      conditions.push("(started_at < ? OR (started_at = ? AND id < ?))");
+      params.push(cursor.startedAt, cursor.startedAt, cursor.id);
+    }
+
+    const where = conditions.length === 0 ? "" : `WHERE ${conditions.join(" AND ")}`;
+    const rows = this.db.query(`
+SELECT id, provider, operation, model_id, status, started_at, completed_at,
+       status_code, request_flow_id, response_flow_id, request_content_hash,
+       response_content_hash
+FROM provider_call
+${where}
+ORDER BY started_at DESC, id DESC
+LIMIT ?
+`).all(...params, limit + 1) as ProviderCallRow[];
+
+    return this.paginatedCallSummaries(rows, limit);
+  }
+
+  getCallDetail(callId: string): SpyCallDetail | null {
+    const row = this.callRow(callId);
+    if (row === null) {
+      return null;
+    }
+
+    const summary = this.callSummaryForRow(row);
+    const httpEvents = this.db.query(`
+SELECT id, call_id, direction, observed_at, host, method, path, status_code,
+       reason, headers_json, request_headers_json, body_text, body_b64,
+       body_sha256, body_encoding, content_type
+FROM http_event
+WHERE call_id = ?
+ORDER BY observed_at ASC, direction ASC
+`).all(callId) as HttpEventRow[];
+
+    return {
+      summary,
+      httpEvents: httpEvents.map(httpEventFromRow),
+      blocks: this.blocksForCall(callId),
+      usageRecords: this.usageRecordsForCall(callId),
+      rawPayloads: this.rawPayloadsForCall(callId),
+    };
+  }
+
+  getCallDiff(callId: string): SpyCallDiff | null {
+    const row = this.callRow(callId);
+    if (row === null) {
+      return null;
+    }
+
+    const previousRow = this.db.query(`
+SELECT id, provider, operation, model_id, status, started_at, completed_at,
+       status_code, request_flow_id, response_flow_id, request_content_hash,
+       response_content_hash
+FROM provider_call
+WHERE provider = ?
+  AND model_id = ?
+  AND operation = ?
+  AND (started_at < ? OR (started_at = ? AND id < ?))
+ORDER BY started_at DESC, id DESC
+LIMIT 1
+`).get(row.provider, row.model_id, row.operation, row.started_at, row.started_at, row.id) as ProviderCallRow | null;
+
+    const currentBlocks = this.blocksForCall(callId, "request");
+    const previousBlocks = previousRow === null ? [] : this.blocksForCall(previousRow.id, "request");
+    const previousByHash = new Map<string, NormalizedBlock>();
+    const previousBySignature = new Map<string, NormalizedBlock>();
+    for (const block of previousBlocks) {
+      previousByHash.set(block.content_hash, block);
+      previousBySignature.set(blockSignature(block), block);
+    }
+
+    const diffs = currentBlocks.map((block): SpyBlockDiff => {
+      if (previousRow === null) {
+        return { block, classification: "unknown" };
+      }
+      const hashMatch = previousByHash.get(block.content_hash);
+      if (hashMatch !== undefined) {
+        return { block, classification: "repeated", previousBlockId: hashMatch.id };
+      }
+      const signatureMatch = previousBySignature.get(blockSignature(block));
+      if (signatureMatch !== undefined) {
+        return { block, classification: "changed", previousBlockId: signatureMatch.id };
+      }
+      return { block, classification: "new" };
+    });
+
+    return {
+      call: this.callSummaryForRow(row),
+      previousCall: previousRow === null ? null : this.callSummaryForRow(previousRow),
+      blocks: diffs,
+    };
+  }
+
+  getStreamEvents(callId: string, options: SpyStreamEventsOptions = {}): SpyPaginatedResult<StreamEvent> {
+    const limit = queryLimit(options.limit);
+    const cursor = options.cursor === undefined ? undefined : decodeStreamCursor(options.cursor);
+    const conditions = ["call_id = ?"];
+    const params: SqlParam[] = [callId];
+    if (cursor !== undefined) {
+      conditions.push("(ordinal > ? OR (ordinal = ? AND id > ?))");
+      params.push(cursor.ordinal, cursor.ordinal, cursor.id);
+    }
+
+    const rows = this.db.query(`
+SELECT id, call_id, ordinal, event_type, headers_json, payload_json,
+       payload_text, payload_sha256, observed_at
+FROM stream_event
+WHERE ${conditions.join(" AND ")}
+ORDER BY ordinal ASC, id ASC
+LIMIT ?
+`).all(...params, limit + 1) as StreamEventRow[];
+
+    const pageRows = rows.slice(0, limit);
+    const items = pageRows.map(streamEventFromRow);
+    if (rows.length <= limit) {
+      return { items };
+    }
+    const last = pageRows.at(-1);
+    return last === undefined ? { items } : { items, nextCursor: encodeStreamCursor({ ordinal: last.ordinal, id: last.id }) };
+  }
+
+  searchCallSummaries(options: SpySearchCallsOptions): SpyPaginatedResult<SpyCallSummary> {
+    const ftsQuery = ftsQueryForSearch(options.query);
+    if (ftsQuery === null) {
+      return { items: [] };
+    }
+
+    const limit = queryLimit(options.limit);
+    const cursor = options.cursor === undefined ? undefined : decodeCallCursor(options.cursor);
+    const callConditions: string[] = [];
+    const params: SqlParam[] = [ftsQuery];
+    if (cursor !== undefined) {
+      callConditions.push("(pc.started_at < ? OR (pc.started_at = ? AND pc.id < ?))");
+      params.push(cursor.startedAt, cursor.startedAt, cursor.id);
+    }
+    const callWhere = callConditions.length === 0 ? "" : `WHERE ${callConditions.join(" AND ")}`;
+
+    const rows = this.db.query(`
+WITH matched_call AS (
+  SELECT DISTINCT nb.call_id
+  FROM normalized_block_fts
+  JOIN normalized_block nb ON nb.id = normalized_block_fts.block_id
+  WHERE normalized_block_fts MATCH ?
+)
+SELECT pc.id, pc.provider, pc.operation, pc.model_id, pc.status, pc.started_at,
+       pc.completed_at, pc.status_code, pc.request_flow_id, pc.response_flow_id,
+       pc.request_content_hash, pc.response_content_hash
+FROM provider_call pc
+JOIN matched_call matched ON matched.call_id = pc.id
+${callWhere}
+ORDER BY pc.started_at DESC, pc.id DESC
+LIMIT ?
+`).all(...params, limit + 1) as ProviderCallRow[];
+
+    return this.paginatedCallSummaries(rows, limit);
   }
 
   runRetention(): RetentionResult {
@@ -527,6 +881,101 @@ INSERT INTO raw_payload (
     }
   }
 
+  private paginatedCallSummaries(rows: readonly ProviderCallRow[], limit: number): SpyPaginatedResult<SpyCallSummary> {
+    const pageRows = rows.slice(0, limit);
+    const items = pageRows.map((row) => this.callSummaryForRow(row));
+    if (rows.length <= limit) {
+      return { items };
+    }
+    const last = pageRows.at(-1);
+    return last === undefined ? { items } : {
+      items,
+      nextCursor: encodeCallCursor({ startedAt: last.started_at, id: last.id }),
+    };
+  }
+
+  private callRow(callId: string): ProviderCallRow | null {
+    return this.db.query(`
+SELECT id, provider, operation, model_id, status, started_at, completed_at,
+       status_code, request_flow_id, response_flow_id, request_content_hash,
+       response_content_hash
+FROM provider_call
+WHERE id = ?
+`).get(callId) as ProviderCallRow | null;
+  }
+
+  private callSummaryForRow(row: ProviderCallRow): SpyCallSummary {
+    const call = providerCallFromRow(row);
+    const completedAt = call.completed_at ?? null;
+    return {
+      call,
+      durationMs: completedAt === null ? null : Math.max(0, Math.round((completedAt - call.started_at) * 1000)),
+      usage: this.usageSummaryForCall(call.id),
+      requestBlockCount: this.countRows("normalized_block", "call_id = ? AND direction = 'request'", [call.id]),
+      responseBlockCount: this.countRows("normalized_block", "call_id = ? AND direction = 'response'", [call.id]),
+      requestByteSize: this.sumRows("normalized_block", "byte_size", "call_id = ? AND direction = 'request'", [call.id]),
+      responseByteSize: this.sumRows("normalized_block", "byte_size", "call_id = ? AND direction = 'response'", [call.id]),
+      cacheMarkerCount: this.countRows("normalized_block", "call_id = ? AND cache_marker = 1", [call.id]),
+      streamEventCount: this.countRows("stream_event", "call_id = ?", [call.id]),
+      rawPayloadCount: this.countRows("raw_payload", "call_id = ?", [call.id]),
+    };
+  }
+
+  private usageSummaryForCall(callId: string): SpyUsageSummary {
+    const row = this.db.query(`
+SELECT SUM(input_tokens) AS input_tokens,
+       SUM(output_tokens) AS output_tokens,
+       SUM(cache_read_tokens) AS cache_read_tokens,
+       SUM(cache_write_tokens) AS cache_write_tokens,
+       SUM(total_tokens) AS total_tokens
+FROM usage_record
+WHERE call_id = ?
+`).get(callId) as UsageSummaryRow | null;
+
+    return {
+      inputTokens: row?.input_tokens ?? null,
+      outputTokens: row?.output_tokens ?? null,
+      cacheReadTokens: row?.cache_read_tokens ?? null,
+      cacheWriteTokens: row?.cache_write_tokens ?? null,
+      totalTokens: row?.total_tokens ?? null,
+    };
+  }
+
+  private blocksForCall(callId: string, direction?: NormalizedBlock["direction"]): NormalizedBlock[] {
+    const where = direction === undefined ? "call_id = ?" : "call_id = ? AND direction = ?";
+    const params = direction === undefined ? [callId] : [callId, direction];
+    const rows = this.db.query(`
+SELECT id, call_id, direction, ordinal, role, kind, source, provider_path,
+       text, json, char_size, byte_size, content_hash, cache_marker
+FROM normalized_block
+WHERE ${where}
+ORDER BY direction ASC, ordinal ASC, id ASC
+`).all(...params) as NormalizedBlockRow[];
+    return rows.map(normalizedBlockFromRow);
+  }
+
+  private usageRecordsForCall(callId: string): UsageRecord[] {
+    const rows = this.db.query(`
+SELECT id, call_id, source, input_tokens, output_tokens, cache_read_tokens,
+       cache_write_tokens, total_tokens, raw_json
+FROM usage_record
+WHERE call_id = ?
+ORDER BY id ASC
+`).all(callId) as UsageRecordRow[];
+    return rows.map(usageRecordFromRow);
+  }
+
+  private rawPayloadsForCall(callId: string): RawPayloadRecord[] {
+    const rows = this.db.query(`
+SELECT id, call_id, direction, content_type, body_text, body_b64, body_sha256,
+       body_encoding
+FROM raw_payload
+WHERE call_id = ?
+ORDER BY direction ASC, id ASC
+`).all(callId) as RawPayloadRow[];
+    return rows.map(rawPayloadFromRow);
+  }
+
   private recordMalformedSpoolFile(path: string, error: unknown): void {
     this.db.transaction(() => {
       this.incrementCounter("spool_malformed_events", 1);
@@ -584,10 +1033,15 @@ ON CONFLICT(key) DO UPDATE SET
     return true;
   }
 
-  private countRows(table: string, where?: string): number {
+  private countRows(table: string, where?: string, params: readonly SqlParam[] = []): number {
     const sql = where === undefined ? `SELECT COUNT(*) AS count FROM ${table}` : `SELECT COUNT(*) AS count FROM ${table} WHERE ${where}`;
-    const row = this.db.query(sql).get() as CountRow | null;
+    const row = this.db.query(sql).get(...params) as CountRow | null;
     return row?.count ?? 0;
+  }
+
+  private sumRows(table: string, column: string, where: string, params: readonly SqlParam[]): number {
+    const row = this.db.query(`SELECT SUM(${column}) AS total FROM ${table} WHERE ${where}`).get(...params) as SumRow | null;
+    return row?.total ?? 0;
   }
 
   private clearGeneration(): number {
@@ -682,6 +1136,184 @@ ON CONFLICT(key) DO UPDATE SET
 
 export function openSpyStore(options: SpyStoreOptions): SpyStore {
   return new BunSqliteSpyStore(options);
+}
+
+function providerCallFromRow(row: ProviderCallRow): ProviderCall {
+  return ProviderCallSchema.parse({
+    id: row.id,
+    provider: row.provider,
+    operation: row.operation,
+    model_id: row.model_id,
+    status: row.status,
+    started_at: row.started_at,
+    ...(row.completed_at === null ? {} : { completed_at: row.completed_at }),
+    ...(row.status_code === null ? {} : { status_code: row.status_code }),
+    request_flow_id: row.request_flow_id,
+    ...(row.response_flow_id === null ? {} : { response_flow_id: row.response_flow_id }),
+    ...(row.request_content_hash === null ? {} : { request_content_hash: row.request_content_hash }),
+    ...(row.response_content_hash === null ? {} : { response_content_hash: row.response_content_hash }),
+  });
+}
+
+function httpEventFromRow(row: HttpEventRow): HttpEventRecord {
+  return HttpEventRecordSchema.parse({
+    id: row.id,
+    call_id: row.call_id,
+    direction: row.direction,
+    observed_at: row.observed_at,
+    host: row.host,
+    method: row.method,
+    path: row.path,
+    ...(row.status_code === null ? {} : { status_code: row.status_code }),
+    ...(row.reason === null ? {} : { reason: row.reason }),
+    headers: parseJson(row.headers_json),
+    ...(row.request_headers_json === null ? {} : { request_headers: parseJson(row.request_headers_json) }),
+    ...(row.body_text === null ? {} : { body_text: row.body_text }),
+    ...(row.body_b64 === null ? {} : { body_b64: row.body_b64 }),
+    ...(row.body_sha256 === null ? {} : { body_sha256: row.body_sha256 }),
+    ...(row.body_encoding === null ? {} : { body_encoding: row.body_encoding }),
+    ...(row.content_type === null ? {} : { content_type: row.content_type }),
+  });
+}
+
+function normalizedBlockFromRow(row: NormalizedBlockRow): NormalizedBlock {
+  return NormalizedBlockSchema.parse({
+    id: row.id,
+    call_id: row.call_id,
+    direction: row.direction,
+    ordinal: row.ordinal,
+    ...(row.role === null ? {} : { role: row.role }),
+    kind: row.kind,
+    source: row.source,
+    ...(row.provider_path === null ? {} : { provider_path: row.provider_path }),
+    ...(row.text === null ? {} : { text: row.text }),
+    ...(row.json === null ? {} : { json: parseJson(row.json) }),
+    char_size: row.char_size,
+    byte_size: row.byte_size,
+    content_hash: row.content_hash,
+    cache_marker: row.cache_marker === 1,
+  });
+}
+
+function usageRecordFromRow(row: UsageRecordRow): UsageRecord {
+  return UsageRecordSchema.parse({
+    id: row.id,
+    call_id: row.call_id,
+    source: row.source,
+    ...(row.input_tokens === null ? {} : { input_tokens: row.input_tokens }),
+    ...(row.output_tokens === null ? {} : { output_tokens: row.output_tokens }),
+    ...(row.cache_read_tokens === null ? {} : { cache_read_tokens: row.cache_read_tokens }),
+    ...(row.cache_write_tokens === null ? {} : { cache_write_tokens: row.cache_write_tokens }),
+    ...(row.total_tokens === null ? {} : { total_tokens: row.total_tokens }),
+    ...(row.raw_json === null ? {} : { raw: parseJson(row.raw_json) }),
+  });
+}
+
+function streamEventFromRow(row: StreamEventRow): StreamEvent {
+  return StreamEventSchema.parse({
+    id: row.id,
+    call_id: row.call_id,
+    ordinal: row.ordinal,
+    event_type: row.event_type,
+    headers: parseJson(row.headers_json),
+    ...(row.payload_json === null ? {} : { payload: parseJson(row.payload_json) }),
+    ...(row.payload_text === null ? {} : { payload_text: row.payload_text }),
+    ...(row.payload_sha256 === null ? {} : { payload_sha256: row.payload_sha256 }),
+    ...(row.observed_at === null ? {} : { observed_at: row.observed_at }),
+  });
+}
+
+function rawPayloadFromRow(row: RawPayloadRow): RawPayloadRecord {
+  return RawPayloadRecordSchema.parse({
+    id: row.id,
+    call_id: row.call_id,
+    direction: row.direction,
+    ...(row.content_type === null ? {} : { content_type: row.content_type }),
+    ...(row.body_text === null ? {} : { body_text: row.body_text }),
+    ...(row.body_b64 === null ? {} : { body_b64: row.body_b64 }),
+    ...(row.body_sha256 === null ? {} : { body_sha256: row.body_sha256 }),
+    ...(row.body_encoding === null ? {} : { body_encoding: row.body_encoding }),
+  });
+}
+
+function parseJson(value: string): unknown {
+  return JSON.parse(value) as unknown;
+}
+
+function queryLimit(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) {
+    return DEFAULT_QUERY_LIMIT;
+  }
+  return Math.min(MAX_QUERY_LIMIT, Math.max(1, Math.trunc(value)));
+}
+
+function encodeCallCursor(cursor: CallCursor): string {
+  return Buffer.from(JSON.stringify(cursor)).toString("base64url");
+}
+
+function decodeCallCursor(cursor: string): CallCursor {
+  const value = parseCursor(cursor);
+  if (
+    typeof value === "object"
+    && value !== null
+    && "startedAt" in value
+    && "id" in value
+    && typeof value.startedAt === "number"
+    && typeof value.id === "string"
+  ) {
+    return { startedAt: value.startedAt, id: value.id };
+  }
+  throw new Error("invalid call cursor");
+}
+
+function encodeStreamCursor(cursor: StreamCursor): string {
+  return Buffer.from(JSON.stringify(cursor)).toString("base64url");
+}
+
+function decodeStreamCursor(cursor: string): StreamCursor {
+  const value = parseCursor(cursor);
+  if (
+    typeof value === "object"
+    && value !== null
+    && "ordinal" in value
+    && "id" in value
+    && typeof value.ordinal === "number"
+    && typeof value.id === "string"
+  ) {
+    return { ordinal: value.ordinal, id: value.id };
+  }
+  throw new Error("invalid stream cursor");
+}
+
+function parseCursor(cursor: string): unknown {
+  try {
+    return JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as unknown;
+  } catch {
+    throw new Error("invalid cursor");
+  }
+}
+
+function ftsQueryForSearch(query: string): string | null {
+  const tokens = query
+    .trim()
+    .split(/[^A-Za-z0-9_]+/)
+    .filter((token) => token.length > 0)
+    .slice(0, 16);
+  if (tokens.length === 0) {
+    return null;
+  }
+  return tokens.map((token) => `"${token.replaceAll("\"", "\"\"")}"`).join(" AND ");
+}
+
+function blockSignature(block: NormalizedBlock): string {
+  return [
+    block.direction,
+    block.ordinal,
+    block.kind,
+    block.role ?? "",
+    block.source,
+    block.provider_path ?? "",
+  ].join("\u001f");
 }
 
 function httpEventFromRequest(event: SpoolRequestEvent, callId: string): HttpEventRecord {

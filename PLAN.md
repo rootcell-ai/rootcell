@@ -482,6 +482,26 @@ V1 excludes:
     updates, idempotency, raw payload gating, malformed/drop/error events,
     retention with FTS cleanup, and clear-data.
   - Verified `bun run typecheck`, `bun run lint`, and `bun run test`.
+- Implemented the TypeScript spy web service, API, SSE, and static asset
+  serving:
+  - Added `src/spy/service.ts` and `src/bin/spy-service.ts` for the Bun HTTP
+    service runtime.
+  - Added environment-backed service config with V1 defaults for bind address,
+    port, SQLite path, spool path, retention, size caps, raw payload storage,
+    ingestion cadence, and retention cadence.
+  - Extended `src/spy/store.ts` with read-side APIs for paginated call
+    summaries, call details, stream event pages, FTS search, and previous-call
+    request diffs.
+  - Implemented same-origin JSON endpoints for health, call list/detail, diff,
+    stream events, search, and confirmed clear-data.
+  - Implemented SSE notifications for initial connection, health changes, call
+    changes, clear-data events, and keepalive comments.
+  - Added static asset serving with index fallback for browser routes and path
+    traversal rejection.
+  - Added fixture-backed Bun coverage for API behavior, pagination, raw payload
+    gating, clear-data confirmation, SSE updates, static serving, and bad input
+    handling.
+  - Verified `bun run typecheck`, `bun run lint`, and `bun run test`.
 
 ### V1
 
@@ -494,7 +514,7 @@ Build the Bedrock/Pi browser spy:
 - [x] Replace Python spy with minimal provider-gated spool shim.
 - [x] Implement TypeScript Bedrock adapter on top of the captured fixtures.
 - [x] Implement SQLite persistence, migrations, retention, and clear-data.
-- [ ] Implement TS web service, API, SSE, and static asset serving.
+- [x] Implement TS web service, API, SSE, and static asset serving.
 - [ ] Implement React desktop UI with virtualized timeline and call inspector.
 - [ ] Wire `rootcell provision`, systemd service config, and `rootcell spy`
    launcher/tunnel.
