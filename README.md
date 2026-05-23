@@ -232,6 +232,9 @@ state root.
 ./rootcell --instance dev allow     # reload only the dev instance allowlists
 ```
 
+Detailed browser spy operator and developer notes live in
+[src/spy/README.md](src/spy/README.md).
+
 ## Allowing Network Access
 
 Network policy is per instance. On first run, `./rootcell` copies each tracked
@@ -378,6 +381,7 @@ instances/
                          per-instance state, allowlists, CA, SSH keys, and generated files
 proxy/                   allowlists and mitmproxy/dnsmasq firewall code
   agent_spy.py           Bedrock Runtime spool shim for the browser spy
+src/spy/                 browser spy service, Bedrock adapter, React UI, and docs
 pi/agent/                global pi instructions, skills, and extensions
 ```
 

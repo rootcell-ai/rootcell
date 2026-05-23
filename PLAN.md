@@ -581,6 +581,14 @@ V1 excludes:
   - Verified `python3 -m compileall proxy`, Python unit discovery,
     `bun run typecheck`, `bun run lint`, `bun run test`, cleanup `rg` checks,
     and the full `bun run test:integration` suite.
+- Documented the browser spy:
+  - Added `src/spy/README.md` covering enablement, launch flow, data locations,
+    retention settings, clear-data behavior, privacy/security implications,
+    troubleshooting, API shape, provider/harness organization, and build/test
+    commands.
+  - Added brief links from the main README and proxy README.
+  - Verified `git diff --check`, stale legacy spy wording checks, and
+    `bun run lint`.
 
 ### V1
 
@@ -601,7 +609,7 @@ Build the Bedrock/Pi browser spy:
   CLI flags.
 - [x] Raise firewall disk/root volume defaults to 64 GiB.
 - [x] Remove old TUI/terminal spy implementation files, tests, and docs.
-- [ ] Add `src/spy/README.md` and brief links from main/proxy docs.
+- [x] Add `src/spy/README.md` and brief links from main/proxy docs.
 
 ### V1.5
 
@@ -765,11 +773,11 @@ Completed validation for the 64 GiB firewall default:
 
 ## Documentation
 
-Add `src/spy/README.md` as the detailed operator/developer doc.
+The detailed operator/developer doc is `src/spy/README.md`.
 
-Briefly reference it from `README.md` and `proxy/README.md`.
+It is briefly referenced from `README.md` and `proxy/README.md`.
 
-Docs should cover:
+The doc covers:
 
 - Enabling spy in the instance `.env`.
 - Running `./rootcell provision`.
