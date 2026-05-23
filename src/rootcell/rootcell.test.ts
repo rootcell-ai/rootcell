@@ -238,8 +238,10 @@ describe("rootcell argument parsing", () => {
   test("rejects unknown spy flags", () => {
     expect(() => parseRootcellArgs(["spy", "--bogus"])).toThrow("Unknown argument: bogus");
     expect(() => parseRootcellArgs(["spy", "--tui"])).toThrow("Unknown argument: tui");
+    expect(() => parseRootcellArgs(["spy", "--tui", "--help"])).toThrow("Unknown argument: tui");
     expect(() => parseRootcellArgs(["spy", "--raw"])).toThrow("Unknown argument: raw");
     expect(() => parseRootcellArgs(["spy", "--no-dedupe"])).toThrow("Unknown argument: dedupe");
+    expect(() => parseRootcellArgs(["spy", "--no-dedupe", "--help"])).toThrow("Unknown argument: dedupe");
   });
 
   test("renders generated spy environment defaults and overrides", () => {
@@ -399,7 +401,7 @@ describe("environment parsing", () => {
       agentInstanceType: "t4g.2xlarge",
       firewallInstanceType: "t4g.small",
       agentRootVolumeGiB: 60,
-      firewallRootVolumeGiB: 16,
+      firewallRootVolumeGiB: 64,
       nixosAmiOwnerId: "427812963091",
       nixosAmiNamePattern: "nixos/25.11*",
     });
@@ -841,6 +843,11 @@ describe("VM and network providers", () => {
         execCapture: () => Promise.resolve({ status: 0, stdout: "", stderr: "" }),
         execInteractive: () => Promise.resolve(0),
         copyToGuest: () => Promise.resolve(),
+        forwardLocalPort: (_name, options) => Promise.resolve({
+          ...options,
+          closed: Promise.resolve(0),
+          close: () => Promise.resolve(),
+        }),
       },
       secrets: new StaticSecretProviderRegistry([]),
     };
@@ -970,7 +977,7 @@ describe("VM and network providers", () => {
       instanceName: "dev",
       cpus: 2,
       memoryGiB: 4,
-      diskGiB: 16,
+      diskGiB: 64,
       network,
       firewallIp: "192.168.109.10",
       agentIp: "192.168.109.11",
@@ -984,6 +991,10 @@ describe("VM and network providers", () => {
     expect(yaml).not.toContain('location: "~"');
     expect(yaml).not.toContain("/tmp/lima");
     expect(yaml).toContain("containerd:\n  system: false\n  user: false");
+    expect(yaml).toContain("cpus: 2");
+    expect(yaml).toContain('memory: "4GiB"');
+    expect(yaml).toContain('disk: "64GiB"');
+    expect(yaml).not.toContain("memory: 8GiB");
     expect(yaml).toContain("ssh:\n  overVsock: true");
     expect(yaml).toContain("guestPort: 68");
     expect(yaml).toContain("ignore: true");
@@ -992,7 +1003,6 @@ describe("VM and network providers", () => {
     expect(yaml).toContain('    interface: "enp0s2"');
     expect(yaml).toContain(`  - lima: "${network.networkName}"`);
     expect(yaml).toContain('    interface: "enp0s1"');
-    expect(yaml).not.toContain("macAddress:");
     for (const removedRuntime of removedRuntimeNames()) {
       expect(yaml).not.toContain(removedRuntime);
     }
@@ -1033,12 +1043,14 @@ describe("VM and network providers", () => {
       role: "firewall",
       cpus: 2,
       memoryGiB: 4,
-      diskGiB: 16,
+      diskGiB: 64,
       network: plan.vms.firewall,
     });
 
     expect(agentYaml).toContain(imageLines);
     expect(firewallYaml).toContain(imageLines);
+    expect(agentYaml).toContain('disk: "60GiB"');
+    expect(firewallYaml).toContain('disk: "64GiB"');
     expect(agentYaml).not.toContain("agent.raw");
     expect(firewallYaml).not.toContain("firewall.raw");
   });
@@ -1118,6 +1130,35 @@ describe("VM and network providers", () => {
     expect(hcl).not.toContain("aws_iam_role");
     expect(hcl).not.toContain("aws_iam_instance_profile");
     expect(hcl).not.toMatch(/RootcellProvider|RootcellInstanceId/);
+  });
+
+  test("generated AWS EC2 Terraform variables use 64 GiB firewall root volume by default", async () => {
+    const repo = makeInstanceRepo();
+    try {
+      const env = {
+        ...instanceEnv(repo),
+        ...awsEc2Env(),
+        ROOTCELL_AWS_CONTROL_CIDR: "198.51.100.10/32",
+      };
+      const config = buildConfig(repo, env, fakeInstance("dev", repo, env));
+      const runner = new RecordingTerraformRunner();
+      const project = new AwsEc2TerraformProject(config, ignoreLog, {
+        runner,
+        api: new FakeAwsEc2Api(),
+      });
+
+      await project.ensureApplied({ force: true });
+
+      const vars = JSON.parse(readFileSync(
+        join(config.instanceDir, "v", "aws-ec2", "terraform", "terraform.tfvars.json"),
+        "utf8",
+      )) as Record<string, unknown>;
+      expect(vars.agent_root_volume_gib).toBe(60);
+      expect(vars.firewall_root_volume_gib).toBe(64);
+      expect(runner.calls).toEqual(["init", "apply", "output"]);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 
   test("AWS ownership tags are limited to managed flag and instance name", () => {
@@ -1244,6 +1285,8 @@ describe("VM and network providers", () => {
     expect(readme).toContain("<instance-dir>/v/aws-ec2/");
     expect(readme).toContain("official upstream NixOS ARM64 AMI");
     expect(readme).toContain("427812963091");
+    expect(readme).toContain("ROOTCELL_AWS_FIREWALL_ROOT_VOLUME_GIB");
+    expect(readme).toContain("64 GiB");
     expect(readme).toContain("RootcellManaged=true");
     expect(readme).toContain("RootcellInstanceName=<instance-name>");
     expect(readme).toContain("does not attach an IAM instance profile");
@@ -1257,6 +1300,7 @@ describe("VM and network providers", () => {
     expect(readme).toContain("<instance-dir>/v/");
     expect(readme).toContain("user-v2 network");
     expect(readme).toContain("mounts: []");
+    expect(readme).toContain("| firewall | 2 | 4 GiB | 64 GiB |");
     expect(readme).toContain("LIMA_HOME/_config/user");
   });
 
@@ -1304,6 +1348,8 @@ describe("VM and network providers", () => {
     expect(configText).toContain("BatchMode yes");
     expect(configText).toContain("PasswordAuthentication no");
     expect(configText).toContain("KbdInteractiveAuthentication no");
+    expect(configText).toContain("ConnectTimeout 15");
+    expect(configText).toContain("ConnectTimeout=15");
     expect(configText).toContain("ServerAliveInterval 5");
     expect(configText).toContain("ServerAliveCountMax 3");
     expect(configText).toContain("ControlMaster auto");

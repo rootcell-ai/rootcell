@@ -364,7 +364,7 @@ export class LimaVmProvider implements VmProvider<LimaUserV2NetworkAttachment> {
       instanceName: this.config.instanceName,
       cpus: input.role === "agent" ? 8 : 2,
       memoryGiB: input.role === "agent" ? 16 : 4,
-      diskGiB: input.role === "agent" ? 60 : 16,
+      diskGiB: input.role === "agent" ? 60 : 64,
       network: input.network,
       firewallIp: this.config.firewallIp,
       agentIp: this.config.agentIp,
@@ -584,6 +584,9 @@ export function limaYaml(input: {
 }): string {
   const egressInterface = input.network.egressInterface ?? "enp0s2";
   let yaml = NIXOS_LIMA_UPSTREAM_YAML;
+  yaml = replaceTopLevelYamlBlock(yaml, "cpus", [`cpus: ${String(input.cpus)}`]);
+  yaml = replaceTopLevelYamlBlock(yaml, "memory", [`memory: ${yamlString(`${String(input.memoryGiB)}GiB`)}`]);
+  yaml = replaceTopLevelYamlBlock(yaml, "disk", [`disk: ${yamlString(`${String(input.diskGiB)}GiB`)}`]);
   yaml = replaceTopLevelYamlBlock(yaml, "mounts", ["mounts: []", ""]);
   yaml = replaceTopLevelYamlBlock(yaml, "ssh", [
     "ssh:",

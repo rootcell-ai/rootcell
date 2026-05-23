@@ -199,6 +199,7 @@ function createParser(args: readonly string[]): Argv<GuestArgs & SpyArgs> {
 }
 
 export function parseRootcellArgs(args: readonly string[]): ParsedRootcellArgs {
+  rejectUnknownSpyHelpOptions(args);
   const argv = createParser(args).parseSync();
   const firstToken = firstRootcellToken(args);
   if (
@@ -262,7 +263,44 @@ function parsedSubcommand(argv: ArgumentsCamelCase<GuestArgs & SpyArgs>): Rootce
   return typeof command === "string" && isRootcellSubcommand(command) ? command : undefined;
 }
 
+function rejectUnknownSpyHelpOptions(args: readonly string[]): void {
+  const firstToken = firstRootcellTokenWithIndex(args);
+  if (firstToken?.token !== "spy" || !args.includes("--help")) {
+    return;
+  }
+
+  for (let index = firstToken.index + 1; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === undefined || arg === "--") {
+      return;
+    }
+    if (!arg.startsWith("-")) {
+      continue;
+    }
+    if (arg === "--help" || arg === "--open" || arg === "--no-open" || arg.startsWith("--open=")) {
+      continue;
+    }
+    if (arg === "--instance" || arg === "-i" || arg === "--init-env" || arg === "--get-yargs-completions") {
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--instance=") || arg.startsWith("--init-env=") || arg.startsWith("--get-yargs-completions=") || (arg.startsWith("-i") && arg.length > 2)) {
+      continue;
+    }
+    throw new Error(`Unknown argument: ${unknownOptionName(arg)}`);
+  }
+}
+
+function unknownOptionName(arg: string): string {
+  const name = arg.replace(/^-+/, "").split("=")[0] ?? "";
+  return name.startsWith("no-") ? name.slice(3) : name;
+}
+
 function firstRootcellToken(args: readonly string[]): string | undefined {
+  return firstRootcellTokenWithIndex(args)?.token;
+}
+
+function firstRootcellTokenWithIndex(args: readonly string[]): { readonly token: string; readonly index: number } | undefined {
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === undefined || arg === "--") {
@@ -278,7 +316,7 @@ function firstRootcellToken(args: readonly string[]): string | undefined {
     if (arg.startsWith("-")) {
       continue;
     }
-    return arg;
+    return { token: arg, index };
   }
   return undefined;
 }

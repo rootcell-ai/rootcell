@@ -57,6 +57,20 @@ session secrets, and opens SSH through the firewall.
 OpenTofu runs for first create, explicit `rootcell provision`,
 state-backed start/stop transitions, and `rootcell remove`.
 
+Default EC2 sizing is:
+
+| VM | Instance type | Root volume |
+| --- | --- | --- |
+| agent | `t4g.2xlarge` | 60 GiB |
+| firewall | `t4g.small` | 64 GiB |
+
+Override root volume sizes only before creating or reprovisioning an instance:
+
+```sh
+ROOTCELL_AWS_AGENT_ROOT_VOLUME_GIB=60
+ROOTCELL_AWS_FIREWALL_ROOT_VOLUME_GIB=64
+```
+
 ## Upstream NixOS AMI
 
 AWS EC2 instances boot from the official upstream NixOS ARM64 AMI. Rootcell

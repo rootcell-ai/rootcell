@@ -7,6 +7,8 @@ import type { CopyToGuestOptions, ExecOptions, LocalPortForwardHandle, LocalPort
 import type { CommandResult, InheritedCommandResult } from "../types.ts";
 import type { GuestTransport } from "./types.ts";
 
+const SSH_CONNECT_TIMEOUT_SECONDS = 15;
+
 export interface ProxyJumpSshEndpoints {
   readonly firewallHost: string;
   readonly firewallPort?: number;
@@ -254,7 +256,7 @@ export function sshConfig(input: {
     "  BatchMode yes",
     "  PasswordAuthentication no",
     "  KbdInteractiveAuthentication no",
-    "  ConnectTimeout 5",
+    `  ConnectTimeout ${String(SSH_CONNECT_TIMEOUT_SECONDS)}`,
     "  ServerAliveInterval 5",
     "  ServerAliveCountMax 3",
     "  LogLevel ERROR",
@@ -271,7 +273,7 @@ export function sshConfig(input: {
     "  BatchMode yes",
     "  PasswordAuthentication no",
     "  KbdInteractiveAuthentication no",
-    "  ConnectTimeout 5",
+    `  ConnectTimeout ${String(SSH_CONNECT_TIMEOUT_SECONDS)}`,
     "  ServerAliveInterval 5",
     "  ServerAliveCountMax 3",
     "  LogLevel ERROR",
@@ -320,7 +322,7 @@ function proxyCommand(input: {
     "-o",
     "KbdInteractiveAuthentication=no",
     "-o",
-    "ConnectTimeout=5",
+    `ConnectTimeout=${String(SSH_CONNECT_TIMEOUT_SECONDS)}`,
     "-o",
     "ServerAliveInterval=5",
     "-o",

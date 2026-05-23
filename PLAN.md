@@ -546,6 +546,25 @@ V1 excludes:
     verified host-local tunnel fallback to port 6175, checked agent traffic
     still routes through the firewall allowlist, closed the tunnel, and restored
     the instance to `ROOTCELL_SPY_ENABLED=false`.
+- Raised firewall disk/root volume defaults to 64 GiB and verified provider
+  contracts:
+  - Updated Lima firewall sizing to emit `disk: "64GiB"` while preserving the
+    agent `60GiB` disk default and existing CPU/RAM defaults.
+  - Updated the AWS EC2 firewall root EBS default to 64 GiB while preserving the
+    agent 60 GiB default and explicit root-volume environment overrides.
+  - Updated provider docs to describe the Lima and AWS firewall/agent disk
+    defaults and AWS override environment variables.
+  - Added unit coverage for AWS default Terraform variables, AWS override
+    behavior, Lima YAML disk rendering, provider docs, and the spy CLI flag
+    removal regression where `spy --tui --help` must still fail.
+  - Rebased onto `origin/main`, retained the merged Lima control-path restart
+    fix, and raised generated ProxyJump SSH `ConnectTimeout` to 15 seconds after
+    repeated integration failures showed Lima's vsock-backed SSH endpoint could
+    accept a connection but miss the previous 5 second banner deadline.
+  - Verified `bun run typecheck`, `bun run lint`, `bun run test`,
+    `bun run test:integration`, and `bun run test:integration:clean`.
+  - Confirmed fresh Lima integration VM sizing with `limactl list`:
+    `firewall-test` uses `64GiB` and `agent-test` remains `60GiB`.
 
 ### V1
 
@@ -564,7 +583,7 @@ Build the Bedrock/Pi browser spy:
    launcher/tunnel.
 - [x] Remove old user-facing `rootcell spy --tui`, `--raw`, and `--no-dedupe`
   CLI flags.
-- [ ] Raise firewall disk/root volume defaults to 64 GiB.
+- [x] Raise firewall disk/root volume defaults to 64 GiB.
 - [ ] Remove old TUI/terminal spy implementation files, tests, and docs.
 - [ ] Add `src/spy/README.md` and brief links from main/proxy docs.
 
@@ -599,15 +618,18 @@ Broaden scope:
 
 ## Capacity Defaults
 
-Change firewall disk defaults:
+Completed firewall disk defaults:
 
 - Lima firewall disk: 64 GiB.
 - AWS firewall root volume: 64 GiB.
 - Keep agent disk default unchanged.
 
-Keep current CPU/RAM defaults as starting points, but validate with fixtures and
-raise them if the service, SQLite ingestion, or UI serving needs more headroom.
-Disk is cheap; do not optimize the service around artificially tiny capacity.
+Current CPU/RAM defaults remain unchanged. Existing instances are not migrated
+or resized automatically.
+
+Keep validating CPU/RAM with fixtures and live captures, then raise them only if
+the service, SQLite ingestion, or UI serving needs more headroom. Disk is cheap;
+do not optimize the service around artificially tiny capacity.
 
 ## Security And Privacy
 
@@ -694,6 +716,18 @@ V1 tests:
   - searches
   - loads stream events on demand
   - clears data
+- Integration tests:
+  - full provider contract flow with Lima user-v2 VMs
+  - clean provisioning cycle from deleted integration VMs and network state
+  - rootcell-managed VM stop/start restart path
+  - Lima control-path availability after VM restarts
+  - host SSH to firewall and proxied agent aliases
+  - firewall service and spy asset provisioning checks
+  - DNS, HTTPS, request-regex, and SSH policy enforcement
+  - CLI smoke test against a fresh named instance
+  - Lima firewall disk default `64GiB` while agent remains `60GiB`
+  - AWS Terraform variables render firewall root volume `64` by default
+  - AWS root-volume environment overrides still win
 
 Fixture strategy:
 
@@ -704,6 +738,14 @@ Fixture strategy:
   concrete gaps.
 - Cover normal calls, streaming, tool calls/results, cache markers, large
   history, error responses, disabled capture, raw disabled, and raw enabled.
+
+Completed validation for the 64 GiB firewall default:
+
+- `bun run typecheck`
+- `bun run lint`
+- `bun run test`
+- `bun run test:integration`
+- `bun run test:integration:clean`
 
 ## Documentation
 
