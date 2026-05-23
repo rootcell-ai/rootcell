@@ -16,7 +16,7 @@ import {
   WifiOff,
 } from "lucide-react";
 import * as React from "react";
-import { SpyApiClient, initialTimelineRangeFromLocation, parseSseEventData, replaceTimelineRangeUrl } from "./api.ts";
+import { SpyApiClient, initialTimelineRangeFromLocation, parseSseEventData, replaceTimelineRangeUrl, resolveTimelineSince } from "./api.ts";
 import { Badge } from "./components/ui/badge.tsx";
 import { Button } from "./components/ui/button.tsx";
 import { Input } from "./components/ui/input.tsx";
@@ -25,14 +25,12 @@ import {
   blockKindLabel,
   blockText,
   clipped,
-  currentSeconds,
   formatBytes,
   formatDateTime,
   formatDuration,
   formatNumber,
   formatTime,
   formatUsageTotal,
-  secondsForPreset,
   shortModelId,
   statusTone,
 } from "./format.ts";
@@ -162,7 +160,7 @@ export function App(): React.ReactElement {
     setCallError(undefined);
     try {
       const page = await api.calls({
-        since,
+        since: sinceForCallLoad(options.append === true),
         search,
         limit: CALL_LIMIT,
         provider: filterQueryValue(filters.provider),
@@ -187,7 +185,7 @@ export function App(): React.ReactElement {
       setCallState("error");
       setCallError(error instanceof Error ? error.message : "failed to load calls");
     }
-  }, [filters.model, filters.operation, filters.provider, filters.status, search, since]);
+  }, [filters.model, filters.operation, filters.provider, filters.status, preset, search, since]);
 
   React.useEffect(() => {
     void loadCalls();
@@ -364,13 +362,7 @@ export function App(): React.ReactElement {
   }, [calls, filters.model]);
 
   function setPresetSince(nextPreset: TimePreset): void {
-    let next = since;
-    if (nextPreset === "live") {
-      next = currentSeconds();
-    } else if (nextPreset === "10m" || nextPreset === "1h" || nextPreset === "today") {
-      next = secondsForPreset(nextPreset);
-    }
-    setTimelineRange(nextPreset, next);
+    setTimelineRange(nextPreset, resolveTimelineSince(nextPreset, since));
   }
 
   function applyCustomStart(): void {
@@ -385,6 +377,19 @@ export function App(): React.ReactElement {
     setSince(nextSince);
     setCustomStart(datetimeLocalValue(nextSince));
     replaceTimelineRangeUrl(nextPreset, nextSince);
+  }
+
+  function sinceForCallLoad(append: boolean): number {
+    if (append || !isRollingPreset(preset)) {
+      return since;
+    }
+    const nextSince = resolveTimelineSince(preset, since);
+    if (nextSince !== since) {
+      setSince(nextSince);
+      setCustomStart(datetimeLocalValue(nextSince));
+      replaceTimelineRangeUrl(preset, nextSince);
+    }
+    return nextSince;
   }
 
   function submitSearch(event: React.SyntheticEvent<HTMLFormElement>): void {
@@ -1639,6 +1644,10 @@ function blockBorderClass(kind: NormalizedBlock["kind"]): string {
     return "border-l-4 border-l-amber-500";
   }
   return "border-stone-200";
+}
+
+function isRollingPreset(preset: TimePreset): boolean {
+  return preset === "10m" || preset === "1h" || preset === "today";
 }
 
 function datetimeLocalValue(seconds: number): string {

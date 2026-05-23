@@ -881,9 +881,13 @@ P3 is polish, minor copy, or secondary accessibility.
     `preset=live` is explicit, and writes canonical range query state when the
     operator changes Live, 10 min, 1 hour, Today, or Custom. Added unit and
     Playwright coverage for fixed `since` URLs, range changes, and reloads.
-- [ ] [P1] SPY-QA-09: Decide whether `10 min` and `1 hour` are rolling windows or
+- [x] [P1] SPY-QA-09: Decide whether `10 min` and `1 hour` are rolling windows or
   fixed snapshots, then label/update them consistently. Refresh currently keeps
   the original fixed start.
+  - Fixed on 2026-05-23: `10 min` and `1 hour` now act as rolling windows on
+    refresh and SSE reloads, dynamic preset URLs no longer persist stale
+    `since` timestamps, and Playwright coverage verifies the refreshed API query
+    start advances.
 - [ ] [P1] SPY-QA-10: Keep service Health reachable independently of selected
   calls. Empty search/filter results clear the inspector and remove access to
   health even though `/api/health` is still valid.
@@ -1077,7 +1081,7 @@ Detailed issues and reproduction notes:
 - [ ] Time-range controls update the visible range and data, but the browser URL
   remains on the original `?since=...` query. Reloading or sharing the URL would
   not represent the current 10 minute, 1 hour, Today, or custom view.
-- [ ] Relative time ranges are fixed after selection instead of rolling. The
+- [x] Relative time ranges are fixed after selection instead of rolling. The
   `10 min` view selected at 05:20:21 PM still showed `Since May 23, 05:10:21 PM`
   at 05:23:25 PM, and the in-app refresh button did not advance the start time.
   At 05:24:47 PM it still showed the 05:14:07 PM call even though that call was
@@ -1086,6 +1090,8 @@ Detailed issues and reproduction notes:
   at 05:46:13 PM fixed the subtitle at `Since May 23, 05:36:13 PM`; pressing
   Refresh at 05:46:27 PM kept the same fixed start. For a live monitor, the
   `10 min` and `1 hour` labels read like moving windows.
+  Fixed on 2026-05-23 by making `10 min` and `1 hour` rolling presets that
+  recompute their API `since` timestamp on refresh and live-update reloads.
 - [ ] Custom range active state is represented by the `Apply` command button
   staying green while all range pills are inactive. The button has no ARIA state,
   and applying the minute-precision custom input rounded the prior 05:10:21 PM

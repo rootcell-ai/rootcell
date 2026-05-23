@@ -38,8 +38,8 @@ export function initialTimelineRangeFromLocation(
 ): TimelineRangeState {
   const params = new URLSearchParams(location.search);
   const explicitPreset = parseTimePreset(params.get("preset"));
-  if (explicitPreset === "live") {
-    return { preset: "live", since: nowSeconds() };
+  if (explicitPreset !== undefined && explicitPreset !== "custom") {
+    return { preset: explicitPreset, since: resolveTimelineSince(explicitPreset, undefined, nowSeconds) };
   }
   const since = parseSince(params.get("since"));
   if (since !== undefined) {
@@ -53,6 +53,29 @@ export function initialTimelineRangeFromLocation(
 
 export function initialSinceFromLocation(location: Pick<Location, "search">, nowSeconds: () => number = currentSeconds): number {
   return initialTimelineRangeFromLocation(location, nowSeconds).since;
+}
+
+export function resolveTimelineSince(
+  preset: TimePreset,
+  fixedSince: number | undefined,
+  nowSeconds: () => number = currentSeconds,
+): number {
+  const now = nowSeconds();
+  if (preset === "10m") {
+    return now - 10 * 60;
+  }
+  if (preset === "1h") {
+    return now - 60 * 60;
+  }
+  if (preset === "today") {
+    const start = new Date(now * 1000);
+    start.setHours(0, 0, 0, 0);
+    return Math.floor(start.getTime() / 1000);
+  }
+  if (preset === "custom" && fixedSince !== undefined) {
+    return fixedSince;
+  }
+  return now;
 }
 
 function parseTimePreset(value: string | null): TimePreset | undefined {
@@ -69,12 +92,12 @@ function parseSince(value: string | null): number | undefined {
 
 export function timelineRangeUrl(preset: TimePreset, since: number, currentHref: string): string {
   const url = new URL(currentHref);
-  if (preset === "live") {
-    url.searchParams.set("preset", "live");
-    url.searchParams.delete("since");
-  } else {
+  if (preset === "custom") {
     url.searchParams.set("preset", preset);
     url.searchParams.set("since", String(since));
+  } else {
+    url.searchParams.set("preset", preset);
+    url.searchParams.delete("since");
   }
   return `${url.pathname}${url.search}${url.hash}`;
 }

@@ -33,13 +33,12 @@ test("keeps timeline range state synchronized with the URL", async ({ page }) =>
   expect(tenMinuteState.subtitle).toContain("Since ");
   expect(tenMinuteState.activeButtons).toEqual(["10 min"]);
   expect(tenMinuteUrl.searchParams.get("preset")).toBe("10m");
-  expect(tenMinuteUrl.searchParams.get("since")).not.toBeNull();
-  expect(tenMinuteUrl.searchParams.get("since")).not.toBe("0");
+  expect(tenMinuteUrl.searchParams.has("since")).toBe(false);
 
   await page.reload();
   await expect(page.getByTestId("timeline-row")).toHaveCount(5);
   const reloadedState = await readRangeState(page);
-  expect(reloadedState.subtitle).toBe(tenMinuteState.subtitle);
+  expect(reloadedState.subtitle).toContain("Since ");
   expect(reloadedState.activeButtons).toEqual(["10 min"]);
 
   await page.getByRole("button", { name: "Live" }).click();
@@ -51,6 +50,44 @@ test("keeps timeline range state synchronized with the URL", async ({ page }) =>
   const liveState = await readRangeState(page);
   expect(liveState.subtitle).toBe("Live from now");
   expect(liveState.activeButtons).toEqual(["Live"]);
+});
+
+test("keeps relative time ranges rolling on refresh", async ({ page }) => {
+  const callSinceValues: number[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname !== "/api/calls" && url.pathname !== "/api/search") {
+      return;
+    }
+    const since = Number(url.searchParams.get("since"));
+    if (Number.isFinite(since)) {
+      callSinceValues.push(since);
+    }
+  });
+
+  await page.goto("/?since=0");
+  await expect(page.getByTestId("timeline-row")).toHaveCount(5);
+  await page.getByRole("button", { name: "10 min" }).click();
+  await expect.poll(() => callSinceValues.length).toBeGreaterThan(1);
+  const firstTenMinuteSince = callSinceValues.at(-1);
+  expect(firstTenMinuteSince).toBeDefined();
+  const firstSubtitle = (await readRangeState(page)).subtitle;
+
+  await page.waitForTimeout(2100);
+  const requestsBeforeRefresh = callSinceValues.length;
+  await page.getByLabel("Refresh calls").click();
+  await expect.poll(() => callSinceValues.length).toBeGreaterThan(requestsBeforeRefresh);
+
+  const refreshedTenMinuteSince = callSinceValues.at(-1);
+  expect(refreshedTenMinuteSince).toBeDefined();
+  expect(refreshedTenMinuteSince).toBeGreaterThan(firstTenMinuteSince ?? 0);
+  const refreshedState = await readRangeState(page);
+  expect(refreshedState.activeButtons).toEqual(["10 min"]);
+  expect(refreshedState.subtitle).not.toBe(firstSubtitle);
+
+  const url = new URL(page.url());
+  expect(url.searchParams.get("preset")).toBe("10m");
+  expect(url.searchParams.has("since")).toBe(false);
 });
 
 test("keeps timeline and inspector scroll containers inside the viewport", async ({ page }) => {

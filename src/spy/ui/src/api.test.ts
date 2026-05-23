@@ -7,6 +7,7 @@ import {
   initialSinceFromLocation,
   initialTimelineRangeFromLocation,
   parseSseEventData,
+  resolveTimelineSince,
   streamEventsUrl,
   timelineRangeUrl,
 } from "./api.ts";
@@ -23,15 +24,33 @@ describe("spy UI API helpers", () => {
 
     expect(initialTimelineRangeFromLocation({ search: "" }, now)).toEqual({ preset: "live", since: 5000 });
     expect(initialTimelineRangeFromLocation({ search: "?since=0" }, now)).toEqual({ preset: "custom", since: 0 });
-    expect(initialTimelineRangeFromLocation({ search: "?preset=10m&since=123" }, now)).toEqual({ preset: "10m", since: 123 });
+    expect(initialTimelineRangeFromLocation({ search: "?preset=10m&since=123" }, now)).toEqual({ preset: "10m", since: 4400 });
+    expect(initialTimelineRangeFromLocation({ search: "?preset=1h&since=123" }, now)).toEqual({ preset: "1h", since: 1400 });
+    expect(initialTimelineRangeFromLocation({ search: "?preset=custom&since=123" }, now)).toEqual({ preset: "custom", since: 123 });
     expect(initialTimelineRangeFromLocation({ search: "?preset=live&since=123" }, now)).toEqual({ preset: "live", since: 5000 });
     expect(initialTimelineRangeFromLocation({ search: "?preset=nope&since=123" }, now)).toEqual({ preset: "custom", since: 123 });
     expect(initialTimelineRangeFromLocation({ search: "?since=bad" }, now)).toEqual({ preset: "live", since: 5000 });
+    expect(initialTimelineRangeFromLocation({ search: "?preset=10m&since=bad" }, now)).toEqual({ preset: "10m", since: 4400 });
     expect(initialSinceFromLocation({ search: "?since=0" }, now)).toBe(0);
   });
 
+  test("resolves dynamic timeline presets from the current clock", () => {
+    const now = (): number => 1779579848;
+    const todayStart = new Date(now() * 1000);
+    todayStart.setHours(0, 0, 0, 0);
+
+    expect(resolveTimelineSince("live", 123, now)).toBe(1779579848);
+    expect(resolveTimelineSince("10m", 123, now)).toBe(1779579248);
+    expect(resolveTimelineSince("1h", 123, now)).toBe(1779576248);
+    expect(resolveTimelineSince("today", 123, now)).toBe(Math.floor(todayStart.getTime() / 1000));
+    expect(resolveTimelineSince("custom", 123, now)).toBe(123);
+  });
+
   test("builds canonical timeline range URLs", () => {
-    expect(timelineRangeUrl("10m", 123, "http://spy.local/?since=0&view=timeline#calls")).toBe("/?since=123&view=timeline&preset=10m#calls");
+    expect(timelineRangeUrl("10m", 123, "http://spy.local/?since=0&view=timeline#calls")).toBe("/?view=timeline&preset=10m#calls");
+    expect(timelineRangeUrl("1h", 123, "http://spy.local/?since=0&view=timeline#calls")).toBe("/?view=timeline&preset=1h#calls");
+    expect(timelineRangeUrl("today", 123, "http://spy.local/?since=0&view=timeline#calls")).toBe("/?view=timeline&preset=today#calls");
+    expect(timelineRangeUrl("custom", 123, "http://spy.local/?since=0&view=timeline#calls")).toBe("/?since=123&view=timeline&preset=custom#calls");
     expect(timelineRangeUrl("live", 123, "http://spy.local/?since=0&view=timeline#calls")).toBe("/?view=timeline&preset=live#calls");
   });
 
