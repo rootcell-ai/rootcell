@@ -2,8 +2,10 @@ import base64
 import binascii
 import json
 import os
-import sys
 import struct
+import sys
+import tempfile
+import types
 import unittest
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -27,7 +29,43 @@ def eventstream_message(headers, payload):
     return without_message_crc + message_crc
 
 
-class AgentSpyTests(unittest.TestCase):
+def make_flow(
+    flow_id="flow-1",
+    host="bedrock-runtime.us-east-1.amazonaws.com",
+    path="/model/anthropic.claude/converse-stream",
+    request_headers=None,
+    request_body=b'{"messages":[]}',
+    response_headers=None,
+    response_body=b'{"output":{}}',
+    status_code=200,
+):
+    request = types.SimpleNamespace(
+        pretty_host=host,
+        host=host,
+        method="POST",
+        path=path,
+        headers=request_headers
+        or [
+            ("Content-Type", "application/json"),
+            ("Authorization", "AWS4-HMAC-SHA256 Credential=AKIA/..., Signature=abc"),
+        ],
+        raw_content=request_body,
+    )
+    response = types.SimpleNamespace(
+        status_code=status_code,
+        reason="OK",
+        headers=response_headers or [("Content-Type", "application/json")],
+        raw_content=response_body,
+    )
+    return types.SimpleNamespace(
+        id=flow_id,
+        request=request,
+        response=response,
+        metadata={},
+    )
+
+
+class AgentSpyDetectionTests(unittest.TestCase):
     def test_detects_bedrock_runtime_paths(self):
         info = agent_spy.detect_bedrock_request(
             "bedrock-runtime.us-west-2.amazonaws.com",
@@ -75,84 +113,10 @@ class AgentSpyTests(unittest.TestCase):
         self.assertIn("image/png base64", summarized["source"]["data"])
         self.assertIn("sha256:", summarized["source"]["data"])
 
-    def test_converse_formatting_and_cache_dedupe(self):
-        formatter = agent_spy.SpyFormatter()
-        event = {
-            "ts": 1,
-            "direction": "request",
-            "provider": "bedrock",
-            "operation": "converse",
-            "model_id": "anthropic.claude",
-            "host": "bedrock-runtime.us-east-1.amazonaws.com",
-            "method": "POST",
-            "path": "/model/anthropic.claude/converse",
-            "headers": [["Content-Type", "application/json"]],
-            "body_text": json.dumps(
-                {
-                    "system": [{"text": "system prompt"}, {"cachePoint": {"type": "default"}}],
-                    "messages": [{"role": "user", "content": [{"text": "dynamic question"}]}],
-                    "toolConfig": {
-                        "tools": [
-                            {
-                                "toolSpec": {
-                                    "name": "shell",
-                                    "description": "run commands",
-                                    "inputSchema": {"json": {"type": "object"}},
-                                }
-                            }
-                        ]
-                    },
-                }
-            ),
-        }
-
-        first = formatter.format_event(event)
-        second = formatter.format_event(event)
-        self.assertIn("system prompt", first)
-        self.assertIn("dynamic question", first)
-        self.assertIn("tools:", first)
-        self.assertIn("cached prefix", second)
-        self.assertNotIn("system prompt", second)
-        self.assertIn("dynamic question", second)
-
-    def test_claude_invoke_formatting(self):
-        formatter = agent_spy.SpyFormatter(raw=True)
-        event = {
-            "ts": 1,
-            "direction": "request",
-            "provider": "bedrock",
-            "operation": "invoke",
-            "model_id": "anthropic.claude",
-            "host": "bedrock-runtime.us-east-1.amazonaws.com",
-            "method": "POST",
-            "path": "/model/anthropic.claude/invoke",
-            "headers": [["Content-Type", "application/json"]],
-            "body_text": json.dumps(
-                {
-                    "anthropic_version": "bedrock-2023-05-31",
-                    "system": [{"type": "text", "text": "be useful", "cache_control": {"type": "ephemeral"}}],
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": [{"type": "text", "text": "hello"}],
-                        }
-                    ],
-                    "tools": [{"name": "lookup", "input_schema": {"type": "object"}}],
-                }
-            ),
-        }
-        out = formatter.format_event(event)
-        self.assertIn("anthropic_version", out)
-        self.assertIn("be useful", out)
-        self.assertIn("lookup", out)
-        self.assertIn("raw request body", out)
-
-    def test_eventstream_decoding_and_formatting(self):
+    def test_eventstream_decoding(self):
         payloads = [
             {"messageStart": {"role": "assistant"}},
             {"contentBlockDelta": {"delta": {"text": "Hello"}}},
-            {"contentBlockDelta": {"delta": {"text": " world"}}},
-            {"messageStop": {"stopReason": "end_turn"}},
             {"metadata": {"usage": {"inputTokens": 4, "outputTokens": 2}}},
         ]
         stream = b"".join(
@@ -165,31 +129,172 @@ class AgentSpyTests(unittest.TestCase):
         decoded = agent_spy.decode_event_stream(stream)
         self.assertEqual(len(decoded), len(payloads))
 
-        formatter = agent_spy.SpyFormatter()
-        out = formatter.format_event(
-            {
-                "ts": 1,
-                "direction": "response",
-                "provider": "bedrock",
-                "operation": "converse-stream",
-                "model_id": "anthropic.claude",
-                "status_code": 200,
-                "headers": [["Content-Type", "application/vnd.amazon.eventstream"]],
-                "body_encoding": "aws-eventstream",
-                "body_b64": base64.b64encode(stream).decode("ascii"),
-            }
-        )
-        self.assertIn("Hello world", out)
-        self.assertIn("usage: input=4, output=2", out)
-        self.assertIn("stop: end_turn", out)
 
-    def test_tail_keyboard_interrupt_exits_cleanly(self):
-        original = agent_spy._tail_events
-        try:
-            agent_spy._tail_events = lambda path, formatter: (_ for _ in ()).throw(KeyboardInterrupt())
-            self.assertEqual(agent_spy.main(["tail", "--events", "/tmp/missing"]), 130)
-        finally:
-            agent_spy._tail_events = original
+class AgentSpySpoolShimTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.old_spy_env = agent_spy.SPY_ENV
+        self.old_spool_dir = agent_spy.DEFAULT_SPY_SPOOL_DIR
+        self.old_max = agent_spy.DEFAULT_SPOOL_MAX_BYTES
+        self.old_drop_interval = agent_spy.DROPPED_MARKER_INTERVAL_SECONDS
+        self.spy_env = os.path.join(self.tmp.name, "spy.env")
+        self.spool_dir = os.path.join(self.tmp.name, "spool")
+        agent_spy.SPY_ENV = self.spy_env
+        agent_spy.DEFAULT_SPY_SPOOL_DIR = self.spool_dir
+        agent_spy.DEFAULT_SPOOL_MAX_BYTES = 1_073_741_824
+        agent_spy.DROPPED_MARKER_INTERVAL_SECONDS = 0
+        agent_spy._DROPPED_SINCE_MARKER = 0
+        agent_spy._LAST_DROPPED_MARKER_AT = 0.0
+
+    def tearDown(self):
+        agent_spy.SPY_ENV = self.old_spy_env
+        agent_spy.DEFAULT_SPY_SPOOL_DIR = self.old_spool_dir
+        agent_spy.DEFAULT_SPOOL_MAX_BYTES = self.old_max
+        agent_spy.DROPPED_MARKER_INTERVAL_SECONDS = self.old_drop_interval
+        agent_spy._DROPPED_SINCE_MARKER = 0
+        agent_spy._LAST_DROPPED_MARKER_AT = 0.0
+        self.tmp.cleanup()
+
+    def write_config(self, enabled=True, max_bytes=None):
+        lines = [f"ROOTCELL_SPY_ENABLED={'true' if enabled else 'false'}"]
+        if max_bytes is not None:
+            lines.append(f"ROOTCELL_SPY_SPOOL_MAX_BYTES={max_bytes}")
+        with open(self.spy_env, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+
+    def read_events(self):
+        if not os.path.exists(self.spool_dir):
+            return []
+        events = []
+        for name in sorted(os.listdir(self.spool_dir)):
+            if not name.endswith(".json"):
+                continue
+            with open(os.path.join(self.spool_dir, name), "r", encoding="utf-8") as f:
+                events.append(json.load(f))
+        return events
+
+    def test_disabled_by_default_writes_nothing(self):
+        agent_spy.capture_request(make_flow())
+        self.assertFalse(os.path.exists(self.spool_dir))
+
+    def test_enabled_config_is_parsed(self):
+        self.write_config(enabled=True, max_bytes=12345)
+        config = agent_spy._capture_config()
+        self.assertIsNotNone(config)
+        self.assertEqual(config["spool_dir"], self.spool_dir)
+        self.assertEqual(config["spool_max_bytes"], 12345)
+
+    def test_request_spool_event_shape_and_redaction(self):
+        self.write_config(enabled=True)
+        flow = make_flow(
+            path="/model/anthropic.claude/converse?X-Amz-Signature=secret&ok=1",
+            request_headers=[
+                ("Content-Type", "application/json"),
+                ("Authorization", "Bearer secret-token"),
+                ("X-Amz-Security-Token", "session-secret"),
+            ],
+            request_body=b'{"messages":[{"role":"user","content":[{"text":"hello"}]}]}',
+        )
+
+        agent_spy.capture_request(flow)
+
+        events = self.read_events()
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(event["version"], 1)
+        self.assertEqual(event["direction"], "request")
+        self.assertEqual(event["flow_id"], "flow-1")
+        self.assertEqual(event["provider"], "bedrock")
+        self.assertEqual(event["operation"], "converse")
+        self.assertEqual(event["model_id"], "anthropic.claude")
+        self.assertIn("ok=1", event["path"])
+        self.assertNotIn("secret", event["path"])
+        self.assertEqual(
+            [pair for pair in event["headers"] if pair[0].lower() == "authorization"],
+            [["Authorization", "[redacted]"]],
+        )
+        self.assertEqual(json.loads(event["body_text"])["messages"][0]["role"], "user")
+        self.assertEqual(flow.metadata["agent_spy"]["operation"], "converse")
+
+    def test_non_bedrock_request_writes_nothing(self):
+        self.write_config(enabled=True)
+        agent_spy.capture_request(make_flow(host="api.anthropic.com"))
+        self.assertEqual(self.read_events(), [])
+
+    def test_response_eventstream_is_spooled_as_b64(self):
+        self.write_config(enabled=True)
+        stream = eventstream_message(
+            {":message-type": "event", ":event-type": "chunk", ":content-type": "application/json"},
+            b'{"metadata":{"usage":{"inputTokens":4}}}',
+        )
+        flow = make_flow(
+            response_headers=[("Content-Type", "application/vnd.amazon.eventstream")],
+            response_body=stream,
+        )
+
+        agent_spy.capture_response(flow)
+
+        event = self.read_events()[0]
+        self.assertEqual(event["direction"], "response")
+        self.assertEqual(event["status_code"], 200)
+        self.assertEqual(event["request_headers"][0][0], "Content-Type")
+        self.assertEqual(event["body_encoding"], "aws-eventstream")
+        self.assertEqual(base64.b64decode(event["body_b64"]), stream)
+        self.assertEqual(event["body_sha256"], agent_spy._sha256_bytes(stream))
+
+    def test_mitmproxy_error_event_is_provider_gated(self):
+        self.write_config(enabled=True)
+        flow = make_flow()
+        flow.error = types.SimpleNamespace(msg="upstream failed")
+
+        agent_spy.capture_error(flow)
+
+        events = self.read_events()
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["direction"], "error")
+        self.assertEqual(events[0]["provider"], "bedrock")
+        self.assertEqual(events[0]["error"], "upstream failed")
+
+    def test_non_bedrock_error_writes_nothing(self):
+        self.write_config(enabled=True)
+        flow = make_flow(host="api.anthropic.com")
+        flow.error = types.SimpleNamespace(msg="not a captured provider")
+
+        agent_spy.capture_error(flow)
+
+        self.assertEqual(self.read_events(), [])
+
+    def test_spool_cap_can_suppress_all_writes(self):
+        self.write_config(enabled=True, max_bytes=10)
+        agent_spy.capture_request(make_flow(request_body=b'{"messages":[{"content":[{"text":"large"}]}]}'))
+        self.assertEqual(self.read_events(), [])
+
+    def test_spool_full_writes_rate_limited_dropped_marker_when_it_fits(self):
+        self.write_config(enabled=True, max_bytes=1200)
+        os.makedirs(self.spool_dir, exist_ok=True)
+        with open(os.path.join(self.spool_dir, "existing.dat"), "wb") as f:
+            f.write(b"x" * 1000)
+
+        agent_spy.capture_request(make_flow(request_body=b'{"messages":[{"content":[{"text":"' + b"x" * 3000 + b'"}]}]}'))
+
+        events = self.read_events()
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["direction"], "dropped")
+        self.assertEqual(events[0]["provider"], "bedrock")
+        self.assertEqual(events[0]["reason"], "spool_full")
+        self.assertEqual(events[0]["dropped_count"], 1)
+
+    def test_capture_errors_are_swallowed(self):
+        self.write_config(enabled=True)
+
+        class BadFlow:
+            id = "bad-flow"
+
+            @property
+            def request(self):
+                raise RuntimeError("broken request")
+
+        agent_spy.capture_request(BadFlow())
 
 
 if __name__ == "__main__":

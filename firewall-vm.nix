@@ -74,6 +74,7 @@ in
     pkgs.bun
     (pkgs.python3.withPackages (ps: [ ps.textual ]))
   ];
+  users.groups.rootcell-spy = {};
 
   # ── Networking ────────────────────────────────────────────────────────
   networking.useDHCP = false;
@@ -191,6 +192,7 @@ in
     "d /etc/agent-vm 0755 ${username} users -"
     "f /etc/agent-vm/dnsmasq-allowlist.conf 0644 root root -"
     "d /run/agent-vm-spy 1777 root root -"
+    "d /var/spool/rootcell-spy 2770 root rootcell-spy -"
   ];
 
   # ── mitmproxy ─────────────────────────────────────────────────────────
@@ -276,7 +278,8 @@ in
       ProtectHome = true;
       NoNewPrivileges = true;
       ReadOnlyPaths = "/etc/agent-vm";
-      ReadWritePaths = "/run/agent-vm-spy";
+      ReadWritePaths = [ "/run/agent-vm-spy" "/var/spool/rootcell-spy" ];
+      SupplementaryGroups = [ "rootcell-spy" ];
       Restart = "on-failure";
       RestartSec = "2s";
     };
@@ -308,7 +311,8 @@ in
       ProtectSystem = "strict";
       ProtectHome = true;
       ReadOnlyPaths = "/etc/agent-vm";
-      ReadWritePaths = "/run/agent-vm-spy";
+      ReadWritePaths = [ "/run/agent-vm-spy" "/var/spool/rootcell-spy" ];
+      SupplementaryGroups = [ "rootcell-spy" ];
       Restart = "on-failure";
       RestartSec = "2s";
       # Transparent mode binds the listening socket with IP_TRANSPARENT

@@ -430,6 +430,23 @@ V1 excludes:
   - Fixture validation, event-stream decoding, and migration tests.
 - Verified `bun run typecheck`, `bun run lint`, `bun run test`, direct
   `bun:sqlite` migration execution, and a fixture credential audit.
+- Replaced the mitmproxy-facing Python capture path with a minimal Bedrock
+  spool shim:
+  - Reads `/etc/agent-vm/spy.env` and captures only when
+    `ROOTCELL_SPY_ENABLED=true`.
+  - Provider-gates Bedrock Runtime request, response, and error events.
+  - Redacts auth headers and credential query parameters before spooling.
+  - Writes one atomic schema-shaped JSON file per event under
+    `/var/spool/rootcell-spy`.
+  - Enforces `ROOTCELL_SPY_SPOOL_MAX_BYTES` and emits rate-limited dropped
+    markers when the spool is full.
+  - Stores AWS event-stream responses as base64 with
+    `body_encoding=aws-eventstream` for TypeScript decoding.
+  - Added firewall group/tmpfiles/systemd sandbox permissions so mitmproxy can
+    write the sensitive spool path.
+  - Added Python unit coverage for disabled/default behavior, config parsing,
+    Bedrock detection, redaction, event-stream response encoding, provider-gated
+    errors, spool cap behavior, dropped markers, and failure swallowing.
 
 ### V1
 
@@ -439,7 +456,7 @@ Build the Bedrock/Pi browser spy:
 - [x] Capture sanitized real Pi/Bedrock fixtures to ground the schema and
   adapter work.
 - [x] Add initial AWS event-stream decoder.
-- [ ] Replace Python spy with minimal provider-gated spool shim.
+- [x] Replace Python spy with minimal provider-gated spool shim.
 - [ ] Implement TypeScript Bedrock adapter on top of the captured fixtures.
 - [ ] Implement SQLite persistence, migrations, retention, and clear-data.
 - [ ] Implement TS web service, API, SSE, and static asset serving.

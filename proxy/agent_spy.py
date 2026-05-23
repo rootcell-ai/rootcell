@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Bedrock traffic capture and formatting helpers for the firewall VM.
+"""Bedrock traffic capture helpers for the firewall VM.
 
 This module is intentionally stdlib-only. mitmproxy imports the capture
-helpers from its own Python environment, while `./rootcell spy` runs the same
-file as a CLI inside the firewall VM to tail and format captured events.
+helpers from its own Python environment. The mitmproxy-facing path is a minimal
+Bedrock-gated spool shim; the older formatter helpers remain below for tests
+and for the later CLI/TUI cleanup task.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import binascii
 import datetime as _dt
 import fnmatch
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -24,9 +26,17 @@ import urllib.parse
 from typing import Any, Iterable
 
 
-SPY_DIR = os.environ.get("AGENT_SPY_DIR", "/run/agent-vm-spy")
-SPY_ENABLED = os.path.join(SPY_DIR, "enabled")
-SPY_EVENTS = os.path.join(SPY_DIR, "events.ndjson")
+LEGACY_SPY_DIR = os.environ.get("AGENT_SPY_DIR", "/run/agent-vm-spy")
+SPY_EVENTS = os.path.join(LEGACY_SPY_DIR, "events.ndjson")
+
+SPY_ENV = os.environ.get("ROOTCELL_SPY_ENV", "/etc/agent-vm/spy.env")
+DEFAULT_SPY_SPOOL_DIR = "/var/spool/rootcell-spy"
+DEFAULT_SPOOL_MAX_BYTES = 1_073_741_824
+DROPPED_MARKER_INTERVAL_SECONDS = 30.0
+
+_SPOOL_COUNTER = itertools.count()
+_DROPPED_SINCE_MARKER = 0
+_LAST_DROPPED_MARKER_AT = 0.0
 
 EVENTSTREAM_CONTENT_TYPE = "application/vnd.amazon.eventstream"
 JSON_CONTENT_TYPES = {
@@ -266,17 +276,216 @@ def _response_body_bytes(flow: Any) -> bytes:
     return body
 
 
-def _write_event(event: dict[str, Any]) -> None:
-    if not os.path.exists(SPY_ENABLED):
-        return
-    line = json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
+def load_spy_config(path: str | None = None) -> dict[str, str]:
+    config_path = path or SPY_ENV
     try:
-        fd = os.open(SPY_EVENTS, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o666)
+        with open(config_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+    except OSError:
+        return {}
+
+    config: dict[str, str] = {}
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        if key:
+            config[key] = value
+    return config
+
+
+def _positive_int(value: str | None, default: int) -> int:
+    if value is None:
+        return default
+    try:
+        parsed = int(value, 10)
+    except ValueError:
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _capture_config() -> dict[str, Any] | None:
+    config = load_spy_config()
+    if config.get("ROOTCELL_SPY_ENABLED", "").strip().lower() != "true":
+        return None
+    return {
+        "spool_dir": DEFAULT_SPY_SPOOL_DIR,
+        "spool_max_bytes": _positive_int(config.get("ROOTCELL_SPY_SPOOL_MAX_BYTES"), DEFAULT_SPOOL_MAX_BYTES),
+    }
+
+
+def _spool_size_bytes(path: str) -> int:
+    total = 0
+    try:
+        with os.scandir(path) as entries:
+            for entry in entries:
+                try:
+                    if entry.is_file(follow_symlinks=False):
+                        total += entry.stat(follow_symlinks=False).st_size
+                except OSError:
+                    continue
+    except OSError:
+        return 0
+    return total
+
+
+def _filename_part(value: Any) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value))[:80].strip("._-")
+    return cleaned or "none"
+
+
+def _spool_file_name(event: dict[str, Any]) -> str:
+    return "-".join(
+        [
+            str(time.time_ns()),
+            str(os.getpid()),
+            _filename_part(event.get("flow_id", "no-flow")),
+            _filename_part(event.get("direction", "event")),
+            str(next(_SPOOL_COUNTER)),
+        ],
+    ) + ".json"
+
+
+def _write_all(fd: int, payload: bytes) -> None:
+    view = memoryview(payload)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise OSError("short spool write")
+        view = view[written:]
+
+
+def _atomic_write_spool_file(spool_dir: str, name: str, payload: bytes) -> bool:
+    tmp_name = f".{name}.tmp"
+    tmp_path = os.path.join(spool_dir, tmp_name)
+    final_path = os.path.join(spool_dir, name)
+    fd: int | None = None
+    try:
+        fd = os.open(tmp_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o640)
         try:
-            os.write(fd, line.encode("utf-8"))
+            _write_all(fd, payload)
         finally:
             os.close(fd)
+            fd = None
+        os.replace(tmp_path, final_path)
+        try:
+            os.chmod(final_path, 0o640)
+        except OSError:
+            pass
+        return True
     except OSError:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        return False
+
+
+def _write_dropped_marker(config: dict[str, Any], provider: str | None, reason: str) -> None:
+    global _DROPPED_SINCE_MARKER, _LAST_DROPPED_MARKER_AT
+    _DROPPED_SINCE_MARKER += 1
+    now = time.time()
+    if _LAST_DROPPED_MARKER_AT != 0 and now - _LAST_DROPPED_MARKER_AT < DROPPED_MARKER_INTERVAL_SECONDS:
+        return
+
+    event: dict[str, Any] = {
+        "version": 1,
+        "ts": now,
+        "direction": "dropped",
+        "reason": reason,
+        "dropped_count": _DROPPED_SINCE_MARKER,
+    }
+    if provider is not None:
+        event["provider"] = provider
+    if _write_spool_event(event, config, write_drop_marker=False):
+        _DROPPED_SINCE_MARKER = 0
+        _LAST_DROPPED_MARKER_AT = now
+
+
+def _write_spool_event(event: dict[str, Any], config: dict[str, Any], write_drop_marker: bool = True) -> bool:
+    payload = json.dumps(event, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    spool_dir = str(config["spool_dir"])
+    max_bytes = int(config["spool_max_bytes"])
+    try:
+        os.makedirs(spool_dir, mode=0o770, exist_ok=True)
+    except OSError:
+        return False
+
+    if _spool_size_bytes(spool_dir) + len(payload) > max_bytes:
+        if write_drop_marker:
+            provider = event.get("provider")
+            _write_dropped_marker(config, str(provider) if provider is not None else None, "spool_full")
+        return False
+
+    return _atomic_write_spool_file(spool_dir, _spool_file_name(event), payload)
+
+
+def _bedrock_info_for_flow(flow: Any) -> dict[str, str] | None:
+    metadata = getattr(flow, "metadata", None)
+    info = metadata.get("agent_spy") if isinstance(metadata, dict) else None
+    if isinstance(info, dict) and info.get("provider") == "bedrock":
+        return {str(key): str(value) for key, value in info.items()}
+
+    request = getattr(flow, "request", None)
+    if request is None:
+        return None
+    return detect_bedrock_request(
+        getattr(request, "pretty_host", None) or getattr(request, "host", None),
+        str(getattr(request, "path", "")),
+        getattr(request, "headers", None),
+    )
+
+
+def _flow_id(flow: Any) -> str | None:
+    value = getattr(flow, "id", None)
+    return str(value) if value is not None else None
+
+
+def _attach_body(event: dict[str, Any], body: bytes, *, force_encoding: str | None = None) -> None:
+    if force_encoding == "aws-eventstream":
+        event["body_b64"] = base64.b64encode(body).decode("ascii")
+        event["body_sha256"] = _sha256_bytes(body)
+        event["body_encoding"] = "aws-eventstream"
+        return
+
+    text = _decode_utf8(body)
+    if text is None:
+        event["body_b64"] = base64.b64encode(body).decode("ascii")
+        event["body_sha256"] = _sha256_bytes(body)
+    else:
+        event["body_text"] = text
+
+
+def _write_shim_error(flow: Any, message: str) -> None:
+    try:
+        config = _capture_config()
+        if config is None:
+            return
+        event: dict[str, Any] = {
+            "version": 1,
+            "ts": time.time(),
+            "direction": "error",
+            "error": message,
+        }
+        flow_id = _flow_id(flow)
+        if flow_id is not None:
+            event["flow_id"] = flow_id
+        info = _bedrock_info_for_flow(flow)
+        if info is None:
+            return
+        event["provider"] = "bedrock"
+        _write_spool_event(event, config)
+    except Exception:
         # The spy tap must never interfere with user traffic.
         return
 
@@ -285,7 +494,8 @@ def capture_request(flow: Any) -> None:
     """mitmproxy hook helper. Capture a validated Bedrock request if enabled."""
 
     try:
-        if not os.path.exists(SPY_ENABLED):
+        config = _capture_config()
+        if config is None:
             return
         request = flow.request
         info = detect_bedrock_request(
@@ -295,8 +505,6 @@ def capture_request(flow: Any) -> None:
         )
         if not info:
             return
-        if not _is_json_content_type(_header_value(getattr(request, "headers", None), "content-type")):
-            return
 
         metadata = getattr(flow, "metadata", None)
         if isinstance(metadata, dict):
@@ -305,32 +513,20 @@ def capture_request(flow: Any) -> None:
         body = _request_body_bytes(flow)
         event = _event_base(flow, "request", info)
         event["headers"] = redact_headers(getattr(request, "headers", None))
-        text = _decode_utf8(body)
-        if text is None:
-            event["body_b64"] = base64.b64encode(body).decode("ascii")
-            event["body_sha256"] = _sha256_bytes(body)
-        else:
-            event["body_text"] = text
-        _write_event(event)
+        _attach_body(event, body)
+        _write_spool_event(event, config)
     except Exception as exc:  # pragma: no cover - defensive for live traffic.
-        _write_event({"version": 1, "ts": time.time(), "direction": "error", "error": str(exc)})
+        _write_shim_error(flow, str(exc))
 
 
 def capture_response(flow: Any) -> None:
     """mitmproxy hook helper. Capture a Bedrock response if its request matched."""
 
     try:
-        if not os.path.exists(SPY_ENABLED):
+        config = _capture_config()
+        if config is None:
             return
-        metadata = getattr(flow, "metadata", None)
-        info = metadata.get("agent_spy") if isinstance(metadata, dict) else None
-        if not info:
-            request = flow.request
-            info = detect_bedrock_request(
-                getattr(request, "pretty_host", None) or getattr(request, "host", None),
-                str(getattr(request, "path", "")),
-                getattr(request, "headers", None),
-            )
+        info = _bedrock_info_for_flow(flow)
         if not info or getattr(flow, "response", None) is None:
             return
 
@@ -344,19 +540,39 @@ def capture_response(flow: Any) -> None:
         body = _response_body_bytes(flow)
         content_type = _header_value(getattr(response, "headers", None), "content-type")
         if _is_eventstream_content_type(content_type):
-            event["body_b64"] = base64.b64encode(body).decode("ascii")
-            event["body_sha256"] = _sha256_bytes(body)
-            event["body_encoding"] = "aws-eventstream"
+            _attach_body(event, body, force_encoding="aws-eventstream")
         else:
-            text = _decode_utf8(body)
-            if text is None:
-                event["body_b64"] = base64.b64encode(body).decode("ascii")
-                event["body_sha256"] = _sha256_bytes(body)
-            else:
-                event["body_text"] = text
-        _write_event(event)
+            _attach_body(event, body)
+        _write_spool_event(event, config)
     except Exception as exc:  # pragma: no cover - defensive for live traffic.
-        _write_event({"version": 1, "ts": time.time(), "direction": "error", "error": str(exc)})
+        _write_shim_error(flow, str(exc))
+
+
+def capture_error(flow: Any) -> None:
+    """mitmproxy hook helper. Capture Bedrock flow errors if spy is enabled."""
+
+    try:
+        config = _capture_config()
+        if config is None:
+            return
+        info = _bedrock_info_for_flow(flow)
+        if info is None:
+            return
+        flow_error = getattr(flow, "error", None)
+        message = getattr(flow_error, "msg", None) or str(flow_error or "mitmproxy flow error")
+        event: dict[str, Any] = {
+            "version": 1,
+            "ts": time.time(),
+            "direction": "error",
+            "provider": "bedrock",
+            "error": str(message),
+        }
+        flow_id = _flow_id(flow)
+        if flow_id is not None:
+            event["flow_id"] = flow_id
+        _write_spool_event(event, config)
+    except Exception:
+        return
 
 
 def _looks_base64(value: str) -> bool:
