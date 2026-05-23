@@ -2,13 +2,18 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
+import type { ZodType } from "zod";
 import {
-  type SpyCallDetail,
-  type SpyCallDiff,
-  type SpyCallSummary,
-  type SpyPaginatedResult,
-} from "./store.ts";
-import { SpoolEventSchema, type SpoolEvent, type StreamEvent } from "./schemas.ts";
+  ClearDataResultSchema,
+  SpyCallDetailSchema,
+  SpyCallDiffSchema,
+  SpyCallSummaryPageSchema,
+  SpyServiceHealthSchema,
+  StreamEventPageSchema,
+  SseEventNameSchema,
+  SseEventPayloadSchemas,
+} from "./api-contracts.ts";
+import { SpoolEventSchema, type SpoolEvent } from "./schemas.ts";
 import { startSpyService, type SpyServiceHandle } from "./service.ts";
 
 const FIXTURE_PATH = new URL("./fixtures/bedrock-pi-us-sonnet-4-6.ndjson", import.meta.url);
@@ -89,9 +94,9 @@ function writeSpoolEvents(spoolDir: string, events: readonly SpoolEvent[]): void
   });
 }
 
-async function jsonAs<T>(response: Response): Promise<T> {
+async function jsonAs<T>(response: Response, schema: ZodType<T>): Promise<T> {
   const parsed: unknown = await response.json();
-  return parsed as T;
+  return schema.parse(parsed);
 }
 
 describe("spy web service", () => {
@@ -108,17 +113,17 @@ describe("spy web service", () => {
 
     const healthResponse = await fetch(`${handle.url}/api/health`);
     expect(healthResponse.status).toBe(200);
-    const health = await jsonAs<{ readonly service: { readonly storeRaw: boolean }; readonly store: { readonly providerCallCount: number } }>(healthResponse);
+    const health = await jsonAs(healthResponse, SpyServiceHealthSchema);
     expect(health.service.storeRaw).toBe(false);
     expect(health.store.providerCallCount).toBe(5);
 
     const firstPageResponse = await fetch(`${handle.url}/api/calls?limit=2`);
-    const firstPage = await jsonAs<SpyPaginatedResult<SpyCallSummary>>(firstPageResponse);
+    const firstPage = await jsonAs(firstPageResponse, SpyCallSummaryPageSchema);
     expect(firstPage.items).toHaveLength(2);
     expect(firstPage.nextCursor).toBeDefined();
 
     const secondPageResponse = await fetch(`${handle.url}/api/calls?limit=2&cursor=${encodeURIComponent(firstPage.nextCursor ?? "")}`);
-    const secondPage = await jsonAs<SpyPaginatedResult<SpyCallSummary>>(secondPageResponse);
+    const secondPage = await jsonAs(secondPageResponse, SpyCallSummaryPageSchema);
     expect(secondPage.items).toHaveLength(2);
     expect(secondPage.items[0]?.call.id).not.toBe(firstPage.items[0]?.call.id);
 
@@ -129,7 +134,7 @@ describe("spy web service", () => {
 
     const detailResponse = await fetch(`${handle.url}/api/calls/${encodeURIComponent(callId)}`);
     expect(detailResponse.status).toBe(200);
-    const detail = await jsonAs<SpyCallDetail>(detailResponse);
+    const detail = await jsonAs(detailResponse, SpyCallDetailSchema);
     expect(detail.summary.call.id).toBe(callId);
     expect(detail.httpEvents).toHaveLength(2);
     expect(detail.blocks.length).toBeGreaterThan(0);
@@ -137,18 +142,18 @@ describe("spy web service", () => {
     expect(detail.rawPayloads).toHaveLength(0);
 
     const streamResponse = await fetch(`${handle.url}/api/calls/${encodeURIComponent(callId)}/stream-events?limit=2`);
-    const streamPage = await jsonAs<SpyPaginatedResult<StreamEvent>>(streamResponse);
+    const streamPage = await jsonAs(streamResponse, StreamEventPageSchema);
     expect(streamPage.items).toHaveLength(2);
     expect(streamPage.nextCursor).toBeDefined();
 
     const diffResponse = await fetch(`${handle.url}/api/calls/${encodeURIComponent(callId)}/diff`);
-    const diff = await jsonAs<SpyCallDiff>(diffResponse);
+    const diff = await jsonAs(diffResponse, SpyCallDiffSchema);
     expect(diff.call.call.id).toBe(callId);
     expect(diff.blocks.length).toBeGreaterThan(0);
     expect(diff.blocks.every((block) => ["new", "repeated", "changed", "unknown"].includes(block.classification))).toBe(true);
 
     const searchResponse = await fetch(`${handle.url}/api/search?q=${encodeURIComponent("Fixture capture")}`);
-    const searchPage = await jsonAs<SpyPaginatedResult<SpyCallSummary>>(searchResponse);
+    const searchPage = await jsonAs(searchResponse, SpyCallSummaryPageSchema);
     expect(searchPage.items.length).toBeGreaterThan(0);
 
     const invalidCursorResponse = await fetch(`${handle.url}/api/calls?cursor=not-a-cursor`);
@@ -163,13 +168,13 @@ describe("spy web service", () => {
     writeSpoolEvents(spoolDir, fixtureEvents());
     expect(handle.ingestOnce().ingested).toBe(10);
 
-    const page = await jsonAs<SpyPaginatedResult<SpyCallSummary>>(await fetch(`${handle.url}/api/calls?limit=1`));
+    const page = await jsonAs(await fetch(`${handle.url}/api/calls?limit=1`), SpyCallSummaryPageSchema);
     const callId = page.items[0]?.call.id;
     if (callId === undefined) {
       throw new Error("missing raw payload call id");
     }
 
-    const detail = await jsonAs<SpyCallDetail>(await fetch(`${handle.url}/api/calls/${encodeURIComponent(callId)}`));
+    const detail = await jsonAs(await fetch(`${handle.url}/api/calls/${encodeURIComponent(callId)}`), SpyCallDetailSchema);
     expect(detail.rawPayloads).toHaveLength(2);
     expect(detail.rawPayloads.some((payload) => payload.direction === "request" && payload.body_text !== undefined)).toBe(true);
     expect(detail.rawPayloads.some((payload) => payload.direction === "response" && payload.body_encoding === "aws-eventstream")).toBe(true);
@@ -193,9 +198,13 @@ describe("spy web service", () => {
       body: JSON.stringify({ confirm: true }),
     });
     expect(cleared.status).toBe(200);
+    expect(await jsonAs(cleared, ClearDataResultSchema)).toMatchObject({
+      deletedSpoolFiles: 1,
+      clearGeneration: 1,
+    });
     expect(readdirSync(spoolDir)).toEqual([]);
 
-    const health = await jsonAs<{ readonly store: { readonly providerCallCount: number } }>(await fetch(`${handle.url}/api/health`));
+    const health = await jsonAs(await fetch(`${handle.url}/api/health`), SpyServiceHealthSchema);
     expect(health.store.providerCallCount).toBe(0);
   });
 
@@ -208,18 +217,24 @@ describe("spy web service", () => {
     }
     const reader = response.body.getReader();
     try {
-      expect(await readSseUntil(reader, "event: hello")).toContain("event: health");
+      const initialEvents = await readSseUntil(reader, "event: hello");
+      expect(initialEvents).toContain("event: health");
+      expectValidSsePayloads(initialEvents);
 
       writeSpoolEvents(spoolDir, fixtureEvents().slice(0, 2));
       expect(handle.ingestOnce().ingested).toBe(2);
-      expect(await readSseUntil(reader, "event: calls-changed")).toContain("event: health");
+      const changedEvents = await readSseUntil(reader, "event: calls-changed");
+      expect(changedEvents).toContain("event: health");
+      expectValidSsePayloads(changedEvents);
 
       const cleared = await fetch(`${handle.url}/api/clear`, {
         method: "POST",
         body: JSON.stringify({ confirm: true }),
       });
       expect(cleared.status).toBe(200);
-      expect(await readSseUntil(reader, "event: cleared")).toContain("event: health");
+      const clearedEvents = await readSseUntil(reader, "event: cleared");
+      expect(clearedEvents).toContain("event: health");
+      expectValidSsePayloads(clearedEvents);
     } finally {
       await reader.cancel();
     }
@@ -273,4 +288,25 @@ async function readSseUntil(
 
 async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function expectValidSsePayloads(text: string): void {
+  const frames = text.split("\n\n").filter((frame) => frame.trim().length > 0);
+  for (const frame of frames) {
+    const lines = frame.split("\n");
+    if (lines.every((line) => line.startsWith(":"))) {
+      continue;
+    }
+    const rawEventName = lines.find((line) => line.startsWith("event: "))?.slice("event: ".length);
+    const data = lines
+      .filter((line) => line.startsWith("data: "))
+      .map((line) => line.slice("data: ".length))
+      .join("\n");
+    if (rawEventName === undefined || data.length === 0) {
+      throw new Error(`invalid SSE frame in test: ${frame}`);
+    }
+    const eventName = SseEventNameSchema.parse(rawEventName);
+    const payload = JSON.parse(data) as unknown;
+    SseEventPayloadSchemas[eventName].parse(payload);
+  }
 }

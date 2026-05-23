@@ -1,3 +1,13 @@
+import { z, type ZodType } from "zod";
+import {
+  ClearDataResultSchema,
+  SpyCallDetailSchema,
+  SpyCallDiffSchema,
+  SpyCallSummaryPageSchema,
+  SpyServiceHealthSchema,
+  StreamEventPageSchema,
+  SseEventPayloadSchemas,
+} from "../../api-contracts.ts";
 import type {
   CallQuery,
   ClearDataResult,
@@ -7,6 +17,9 @@ import type {
   SpyPaginatedResult,
   SpyServiceHealth,
   StreamEvent,
+  SseCallsChangedPayload,
+  SseEventName,
+  SseHelloPayload,
 } from "./types.ts";
 
 const DEFAULT_CALL_LIMIT = 100;
@@ -50,7 +63,7 @@ export function streamEventsUrl(callId: string, cursor?: string): string {
   return `/api/calls/${encodeURIComponent(callId)}/stream-events?${params.toString()}`;
 }
 
-export async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
+export async function fetchJson<T>(url: string, schema: ZodType<T>, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   headers.set("Accept", "application/json");
   const response = await fetch(url, {
@@ -61,32 +74,38 @@ export async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> 
     const detail = await response.text();
     throw new Error(`${String(response.status)} ${response.statusText}${detail.length > 0 ? `: ${detail}` : ""}`);
   }
-  return await response.json() as T;
+  let payload: unknown;
+  try {
+    payload = await response.json() as unknown;
+  } catch (error) {
+    throw new Error(`invalid JSON response from ${url}: ${errorMessage(error)}`, { cause: error });
+  }
+  return parseWithSchema(url, schema, payload);
 }
 
 export class SpyApiClient {
   health(): Promise<SpyServiceHealth> {
-    return fetchJson<SpyServiceHealth>("/api/health");
+    return fetchJson("/api/health", SpyServiceHealthSchema);
   }
 
   calls(query: CallQuery): Promise<SpyPaginatedResult<SpyCallSummary>> {
-    return fetchJson<SpyPaginatedResult<SpyCallSummary>>(callsUrl(query));
+    return fetchJson(callsUrl(query), SpyCallSummaryPageSchema);
   }
 
   callDetail(callId: string): Promise<SpyCallDetail> {
-    return fetchJson<SpyCallDetail>(`/api/calls/${encodeURIComponent(callId)}`);
+    return fetchJson(`/api/calls/${encodeURIComponent(callId)}`, SpyCallDetailSchema);
   }
 
   callDiff(callId: string): Promise<SpyCallDiff> {
-    return fetchJson<SpyCallDiff>(`/api/calls/${encodeURIComponent(callId)}/diff`);
+    return fetchJson(`/api/calls/${encodeURIComponent(callId)}/diff`, SpyCallDiffSchema);
   }
 
   streamEvents(callId: string, cursor?: string): Promise<SpyPaginatedResult<StreamEvent>> {
-    return fetchJson<SpyPaginatedResult<StreamEvent>>(streamEventsUrl(callId, cursor));
+    return fetchJson(streamEventsUrl(callId, cursor), StreamEventPageSchema);
   }
 
   clearData(): Promise<ClearDataResult> {
-    return fetchJson<ClearDataResult>("/api/clear", {
+    return fetchJson("/api/clear", ClearDataResultSchema, {
       method: "POST",
       body: JSON.stringify({ confirm: true }),
       headers: {
@@ -94,6 +113,51 @@ export class SpyApiClient {
       },
     });
   }
+}
+
+export function parseSseEventData(eventName: "hello", data: string): SseHelloPayload;
+export function parseSseEventData(eventName: "health", data: string): SpyServiceHealth;
+export function parseSseEventData(eventName: "calls-changed", data: string): SseCallsChangedPayload;
+export function parseSseEventData(eventName: "cleared", data: string): ClearDataResult;
+export function parseSseEventData(eventName: SseEventName, data: string): SseHelloPayload | SpyServiceHealth | SseCallsChangedPayload | ClearDataResult {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(data) as unknown;
+  } catch (error) {
+    throw new Error(`invalid SSE ${eventName} JSON: ${errorMessage(error)}`, { cause: error });
+  }
+  if (eventName === "hello") {
+    return parseWithSchema("SSE hello payload", SseEventPayloadSchemas.hello, payload);
+  }
+  if (eventName === "health") {
+    return parseWithSchema("SSE health payload", SseEventPayloadSchemas.health, payload);
+  }
+  if (eventName === "calls-changed") {
+    return parseWithSchema("SSE calls-changed payload", SseEventPayloadSchemas["calls-changed"], payload);
+  }
+  return parseWithSchema("SSE cleared payload", SseEventPayloadSchemas.cleared, payload);
+}
+
+function parseWithSchema<T>(source: string, schema: ZodType<T>, payload: unknown): T {
+  const parsed = schema.safeParse(payload);
+  if (!parsed.success) {
+    throw new Error(`invalid response from ${source}: ${formatZodError(parsed.error)}`);
+  }
+  return parsed.data;
+}
+
+function formatZodError(error: z.ZodError): string {
+  return error.issues
+    .slice(0, 3)
+    .map((issue) => {
+      const path = issue.path.length === 0 ? "<root>" : issue.path.join(".");
+      return `${path}: ${issue.message}`;
+    })
+    .join("; ");
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function currentSeconds(): number {

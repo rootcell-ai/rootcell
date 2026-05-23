@@ -15,7 +15,7 @@ import {
   WifiOff,
 } from "lucide-react";
 import * as React from "react";
-import { SpyApiClient, initialSinceFromLocation } from "./api.ts";
+import { SpyApiClient, initialSinceFromLocation, parseSseEventData } from "./api.ts";
 import { Badge } from "./components/ui/badge.tsx";
 import { Button } from "./components/ui/button.tsx";
 import { Input } from "./components/ui/input.tsx";
@@ -95,6 +95,7 @@ export function App(): React.ReactElement {
   const [streamState, setStreamState] = React.useState<StreamState | null>(null);
   const [health, setHealth] = React.useState<SpyServiceHealth | null>(null);
   const [sseConnected, setSseConnected] = React.useState(false);
+  const [sseError, setSseError] = React.useState<string | undefined>();
   const [clearOpen, setClearOpen] = React.useState(false);
   const [clearing, setClearing] = React.useState(false);
 
@@ -146,14 +147,45 @@ export function App(): React.ReactElement {
     const onError = (): void => {
       setSseConnected(false);
     };
+    const onHello = (event: MessageEvent<string>): void => {
+      try {
+        parseSseEventData("hello", event.data);
+        setSseConnected(true);
+        setSseError(undefined);
+      } catch (error) {
+        setSseConnected(false);
+        setSseError(sseErrorMessage(error));
+      }
+    };
     const onHealth = (event: MessageEvent<string>): void => {
-      setHealth(JSON.parse(event.data) as SpyServiceHealth);
-      setSseConnected(true);
+      try {
+        setHealth(parseSseEventData("health", event.data));
+        setSseConnected(true);
+        setSseError(undefined);
+      } catch (error) {
+        setSseConnected(false);
+        setSseError(sseErrorMessage(error));
+      }
     };
-    const onCallsChanged = (): void => {
-      void loadCalls();
+    const onCallsChanged = (event: MessageEvent<string>): void => {
+      try {
+        parseSseEventData("calls-changed", event.data);
+        setSseError(undefined);
+        void loadCalls();
+      } catch (error) {
+        setSseConnected(false);
+        setSseError(sseErrorMessage(error));
+      }
     };
-    const onCleared = (): void => {
+    const onCleared = (event: MessageEvent<string>): void => {
+      try {
+        parseSseEventData("cleared", event.data);
+        setSseError(undefined);
+      } catch (error) {
+        setSseConnected(false);
+        setSseError(sseErrorMessage(error));
+        return;
+      }
       setCalls([]);
       setNextCursor(undefined);
       setSelectedCallId(undefined);
@@ -164,16 +196,18 @@ export function App(): React.ReactElement {
 
     source.addEventListener("open", onOpen);
     source.addEventListener("error", onError);
+    source.addEventListener("hello", onHello as EventListener);
     source.addEventListener("health", onHealth as EventListener);
-    source.addEventListener("calls-changed", onCallsChanged);
-    source.addEventListener("cleared", onCleared);
+    source.addEventListener("calls-changed", onCallsChanged as EventListener);
+    source.addEventListener("cleared", onCleared as EventListener);
 
     return () => {
       source.removeEventListener("open", onOpen);
       source.removeEventListener("error", onError);
+      source.removeEventListener("hello", onHello as EventListener);
       source.removeEventListener("health", onHealth as EventListener);
-      source.removeEventListener("calls-changed", onCallsChanged);
-      source.removeEventListener("cleared", onCleared);
+      source.removeEventListener("calls-changed", onCallsChanged as EventListener);
+      source.removeEventListener("cleared", onCleared as EventListener);
       source.close();
     };
   }, [loadCalls]);
@@ -353,6 +387,12 @@ export function App(): React.ReactElement {
             <div className="mx-4 mt-3 flex items-center gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
               <AlertTriangle aria-hidden="true" size={16} />
               {callError}
+            </div>
+          )}
+          {sseError === undefined ? null : (
+            <div className="mx-4 mt-3 flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              <AlertTriangle aria-hidden="true" size={16} />
+              {sseError}
             </div>
           )}
           <Timeline
@@ -1165,4 +1205,9 @@ function secondsFromDatetimeLocal(value: string): number | null {
   const parsed = new Date(value);
   const ms = parsed.getTime();
   return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
+}
+
+function sseErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return `SSE validation failed: ${message}`;
 }

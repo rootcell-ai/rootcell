@@ -13,9 +13,12 @@ import type {
   SpyCallSummary,
   SpyHealthSnapshot,
   SpyPaginatedResult,
+  SpyServiceHealth,
   SpyUsageSummary,
-} from "../../store.ts";
-import type { SpyServiceHealth } from "../../service.ts";
+  SseCallsChangedPayload,
+  SseEventName,
+  SseHelloPayload,
+} from "../../api-contracts.ts";
 
 export type {
   ClearDataResult,
@@ -31,6 +34,9 @@ export type {
   SpyServiceHealth,
   SpyUsageSummary,
   StreamEvent,
+  SseCallsChangedPayload,
+  SseEventName,
+  SseHelloPayload,
   UsageRecord,
 };
 
@@ -48,5 +54,3 @@ export interface UiFilters {
   readonly status: string;
   readonly blockKind: string;
 }
-
-export type SseEventName = "hello" | "health" | "calls-changed" | "cleared";

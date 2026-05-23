@@ -589,6 +589,21 @@ V1 excludes:
   - Added brief links from the main README and proxy README.
   - Verified `git diff --check`, stale legacy spy wording checks, and
     `bun run lint`.
+- Added runtime validation for browser API and SSE payloads:
+  - Added `src/spy/api-contracts.ts` as a browser-safe shared Zod contract
+    module for health, call pages, details, diffs, stream-event pages,
+    clear-data results, and SSE event payloads.
+  - Rewired the React UI types and API client to infer from shared schemas and
+    parse every successful JSON response instead of trusting generic
+    `fetchJson<T>()` casts.
+  - Replaced unchecked browser SSE parsing with named event payload validation
+    for `hello`, `health`, `calls-changed`, and `cleared`, surfacing malformed
+    event data as a concise UI error.
+  - Updated service tests to validate real endpoint and SSE output through the
+    shared contracts, and added UI API tests for invalid response payloads and
+    malformed SSE payloads.
+  - Verified `bun run typecheck`, `bun run lint`, `bun run test` with localhost
+    bind permission, `bun run test:spy-ui:unit`, and `git diff --check`.
 
 ### V1
 
@@ -620,18 +635,16 @@ commands pass when local listener permissions are available. However, the review
 found the following acceptance gaps that must be fixed before V1 should be
 considered fully complete:
 
-- [ ] Add runtime validation for browser API and SSE payloads.
-  - Current backend boundaries use Zod for spool ingestion, clear requests, and
-    SQLite row readback, but the React UI still trusts dynamic JSON with type
-    assertions.
-  - Replace unchecked client parsing such as generic `fetchJson<T>()` casts and
-    `JSON.parse(event.data) as SpyServiceHealth` with shared or UI-local Zod
-    schemas for health, call pages, details, diffs, stream-event pages, and SSE
-    event payloads.
-  - Keep parsed values typed from `z.infer<...>` instead of hand-maintained
-    duplicate interfaces where practical.
-  - Add UI/API unit coverage for invalid response payloads and malformed SSE
-    payloads.
+- [x] Add runtime validation for browser API and SSE payloads.
+  - Added shared Zod schemas for health, call pages, details, diffs,
+    stream-event pages, clear-data results, and SSE event payloads.
+  - Replaced unchecked client parsing such as generic `fetchJson<T>()` casts and
+    `JSON.parse(event.data) as SpyServiceHealth` with schema-backed parsing.
+  - Kept browser-facing parsed values typed from the shared schema module
+    instead of importing server-only store/service types into the UI.
+  - Added UI/API unit coverage for invalid response payloads and malformed SSE
+    payloads, plus service coverage that parses real API/SSE output through the
+    shared contracts.
 - [ ] Complete the health/settings surface required by V1.
   - The UI must show enabled state, DB size, spool size, store/spool caps,
     retention days, dropped capture count, last ingest time, and service
