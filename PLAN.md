@@ -447,6 +447,21 @@ V1 excludes:
   - Added Python unit coverage for disabled/default behavior, config parsing,
     Bedrock detection, redaction, event-stream response encoding, provider-gated
     errors, spool cap behavior, dropped markers, and failure swallowing.
+- Implemented the TypeScript Bedrock adapter on top of the captured fixtures:
+  - Added `src/spy/bedrock.ts` with `normalizeBedrockCall` and
+    `normalizeBedrockSpoolEvents` entrypoints.
+  - Normalizes paired Bedrock request/response spool events into provider
+    calls, semantic request/response blocks, provider-reported usage records,
+    decoded stream events, and opt-in raw payload records.
+  - Supports the captured Bedrock Converse Stream request shape, AWS
+    event-stream response decoding, response text reconstruction, tool use
+    reconstruction, usage extraction, stable IDs, stable content hashes, and
+    conservative Pi/Bedrock provenance classification.
+  - Added fixture-backed unit coverage for all five real Pi/Bedrock
+    request/response pairs, request block classification, response tool/text
+    extraction, usage extraction, stream events, raw payload gating, and hash
+    stability.
+  - Verified `bun run typecheck`, `bun run lint`, and `bun run test`.
 
 ### V1
 
@@ -457,7 +472,7 @@ Build the Bedrock/Pi browser spy:
   adapter work.
 - [x] Add initial AWS event-stream decoder.
 - [x] Replace Python spy with minimal provider-gated spool shim.
-- [ ] Implement TypeScript Bedrock adapter on top of the captured fixtures.
+- [x] Implement TypeScript Bedrock adapter on top of the captured fixtures.
 - [ ] Implement SQLite persistence, migrations, retention, and clear-data.
 - [ ] Implement TS web service, API, SSE, and static asset serving.
 - [ ] Implement React desktop UI with virtualized timeline and call inspector.
