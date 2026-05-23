@@ -23,6 +23,20 @@ export interface NormalizedProviderCall {
   readonly rawPayloads: readonly RawPayloadRecord[];
 }
 
+export interface NormalizedProviderRequest {
+  readonly call: ProviderCall;
+  readonly blocks: readonly NormalizedBlock[];
+  readonly rawPayloads: readonly RawPayloadRecord[];
+}
+
+export interface NormalizedProviderResponse {
+  readonly call: ProviderCall;
+  readonly blocks: readonly NormalizedBlock[];
+  readonly usage: readonly UsageRecord[];
+  readonly streamEvents: readonly StreamEvent[];
+  readonly rawPayloads: readonly RawPayloadRecord[];
+}
+
 type BlockKind = NormalizedBlock["kind"];
 type Direction = NormalizedBlock["direction"];
 
@@ -67,33 +81,76 @@ export function normalizeBedrockCall(
     throw new Error(`cannot normalize Bedrock call with mismatched request/response metadata for flow ${request.flow_id}`);
   }
 
-  const callId = stableId("call", request.flow_id);
-  const requestBody = parseRequestBody(request);
-  const requestBlocks = normalizeRequestBlocks(callId, requestBody);
-  const responseNormalization = normalizeResponse(callId, response);
-  const blocks = [...requestBlocks, ...responseNormalization.blocks];
-  const status = response.status_code >= 400 ? "error" : "complete";
+  const normalizedRequest = normalizeBedrockRequest(request, options);
+  const normalizedResponse = normalizeBedrockResponse(response, options);
 
+  return {
+    call: {
+      ...normalizedRequest.call,
+      status: normalizedResponse.call.status,
+      completed_at: normalizedResponse.call.completed_at,
+      status_code: normalizedResponse.call.status_code,
+      response_flow_id: normalizedResponse.call.response_flow_id,
+      response_content_hash: normalizedResponse.call.response_content_hash,
+    },
+    blocks: [...normalizedRequest.blocks, ...normalizedResponse.blocks],
+    usage: normalizedResponse.usage,
+    streamEvents: normalizedResponse.streamEvents,
+    rawPayloads: [...normalizedRequest.rawPayloads, ...normalizedResponse.rawPayloads],
+  };
+}
+
+export function normalizeBedrockRequest(
+  request: SpoolRequestEvent,
+  options: BedrockAdapterOptions = {},
+): NormalizedProviderRequest {
+  const callId = bedrockCallIdForFlow(request.flow_id);
+  const requestBody = parseRequestBody(request);
   return {
     call: {
       id: callId,
       provider: "bedrock",
       operation: request.operation,
       model_id: request.model_id,
-      status,
+      status: "pending",
       started_at: request.ts,
+      request_flow_id: request.flow_id,
+      request_content_hash: hashUnknown(requestBody),
+    },
+    blocks: normalizeRequestBlocks(callId, requestBody),
+    rawPayloads: options.storeRaw === true ? [rawPayload(callId, "request", request)] : [],
+  };
+}
+
+export function normalizeBedrockResponse(
+  response: SpoolResponseEvent,
+  options: BedrockAdapterOptions = {},
+): NormalizedProviderResponse {
+  const callId = bedrockCallIdForFlow(response.flow_id);
+  const responseNormalization = normalizeResponse(callId, response);
+  return {
+    call: {
+      id: callId,
+      provider: "bedrock",
+      operation: response.operation,
+      model_id: response.model_id,
+      status: response.status_code >= 400 ? "error" : "complete",
+      started_at: response.ts,
       completed_at: response.ts,
       status_code: response.status_code,
-      request_flow_id: request.flow_id,
+      request_flow_id: response.flow_id,
       response_flow_id: response.flow_id,
-      request_content_hash: hashUnknown(requestBody),
       response_content_hash: hashUnknown(responseNormalization.blocks.map((block) => block.content_hash)),
     },
-    blocks,
+    blocks: responseNormalization.blocks,
     usage: responseNormalization.usage,
     streamEvents: responseNormalization.streamEvents,
-    rawPayloads: options.storeRaw === true ? rawPayloads(callId, request, response) : [],
+    rawPayloads: options.storeRaw === true ? [rawPayload(callId, "response", response)] : [],
   };
+}
+
+export function bedrockCallIdForFlow(flowId: string): string {
+  return stableId("call", flowId);
 }
 
 export function normalizeBedrockSpoolEvents(
@@ -686,27 +743,25 @@ function usageRecordFromMetadata(callId: string, index: number, payload: unknown
   };
 }
 
-function rawPayloads(
+function rawPayload(
   callId: string,
-  request: SpoolRequestEvent,
-  response: SpoolResponseEvent,
-): RawPayloadRecord[] {
-  return [
-    {
-      id: stableId("raw", callId, "request"),
-      call_id: callId,
-      direction: "request",
-      ...(headerValue(request.headers, "content-type") === undefined ? {} : { content_type: headerValue(request.headers, "content-type") }),
-      ...bodyFields(request),
-    },
-    {
-      id: stableId("raw", callId, "response"),
-      call_id: callId,
-      direction: "response",
-      ...(headerValue(response.headers, "content-type") === undefined ? {} : { content_type: headerValue(response.headers, "content-type") }),
-      ...bodyFields(response),
-    },
-  ];
+  direction: RawPayloadRecord["direction"],
+  event: {
+    readonly headers: readonly (readonly [string, string])[];
+    readonly body_text?: string | undefined;
+    readonly body_b64?: string | undefined;
+    readonly body_sha256?: string | undefined;
+    readonly body_encoding?: "aws-eventstream" | undefined;
+  },
+): RawPayloadRecord {
+  const contentType = headerValue(event.headers, "content-type");
+  return {
+    id: stableId("raw", callId, direction),
+    call_id: callId,
+    direction,
+    ...(contentType === undefined ? {} : { content_type: contentType }),
+    ...bodyFields(event),
+  };
 }
 
 function bodyFields(event: {

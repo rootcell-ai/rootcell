@@ -462,6 +462,26 @@ V1 excludes:
     extraction, usage extraction, stream events, raw payload gating, and hash
     stability.
   - Verified `bun run typecheck`, `bun run lint`, and `bun run test`.
+- Implemented SQLite persistence, retention, and clear-data for spy capture:
+  - Added `src/spy/store.ts` with `openSpyStore`, spool batch ingestion,
+    request persistence, response completion, retention, clear-data, health
+    snapshots, and close lifecycle.
+  - Added request-only and response-only Bedrock normalization entrypoints while
+    preserving the paired fixture normalizer.
+  - Added typed HTTP event records and a schema v2 migration with
+    `normalized_block_fts` synchronization triggers.
+  - Persists pending and completed provider calls, HTTP metadata, normalized
+    blocks, usage records, stream events, optional raw payloads, dropped/error
+    counters, and service metadata.
+  - Defers unmatched response spool files, deletes malformed spool files after
+    recording counters/metadata, and deletes valid spool files only after
+    successful commit.
+  - Converted `src/spy` tests to Bun's native test runner so `bun:sqlite` runs
+    directly, with the remaining unit tests still running under Vitest.
+  - Added fixture-backed store coverage for ingestion, pending-to-complete
+    updates, idempotency, raw payload gating, malformed/drop/error events,
+    retention with FTS cleanup, and clear-data.
+  - Verified `bun run typecheck`, `bun run lint`, and `bun run test`.
 
 ### V1
 
@@ -473,7 +493,7 @@ Build the Bedrock/Pi browser spy:
 - [x] Add initial AWS event-stream decoder.
 - [x] Replace Python spy with minimal provider-gated spool shim.
 - [x] Implement TypeScript Bedrock adapter on top of the captured fixtures.
-- [ ] Implement SQLite persistence, migrations, retention, and clear-data.
+- [x] Implement SQLite persistence, migrations, retention, and clear-data.
 - [ ] Implement TS web service, API, SSE, and static asset serving.
 - [ ] Implement React desktop UI with virtualized timeline and call inspector.
 - [ ] Wire `rootcell provision`, systemd service config, and `rootcell spy`

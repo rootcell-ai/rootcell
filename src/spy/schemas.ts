@@ -78,6 +78,9 @@ export const SpoolEventSchema = z.discriminatedUnion("direction", [
 export type SpoolEvent = Readonly<z.infer<typeof SpoolEventSchema>>;
 export type SpoolRequestEvent = Readonly<z.infer<typeof SpoolRequestEventSchema>>;
 export type SpoolResponseEvent = Readonly<z.infer<typeof SpoolResponseEventSchema>>;
+export type SpoolStreamChunkEvent = Readonly<z.infer<typeof SpoolStreamChunkEventSchema>>;
+export type SpoolErrorEvent = Readonly<z.infer<typeof SpoolErrorEventSchema>>;
+export type SpoolDroppedEvent = Readonly<z.infer<typeof SpoolDroppedEventSchema>>;
 
 export const ProviderCallStatusSchema = z.enum([
   "pending",
@@ -102,6 +105,27 @@ export const ProviderCallSchema = z.object({
 }).strict();
 
 export type ProviderCall = Readonly<z.infer<typeof ProviderCallSchema>>;
+
+export const HttpEventRecordSchema = z.object({
+  id: z.string().min(1),
+  call_id: z.string().min(1),
+  direction: z.enum(["request", "response"]),
+  observed_at: z.number(),
+  host: z.string().min(1),
+  method: z.string().min(1),
+  path: z.string().min(1),
+  status_code: z.number().int().nonnegative().optional(),
+  reason: z.string().optional(),
+  headers: z.array(SpyHeaderPairSchema),
+  request_headers: z.array(SpyHeaderPairSchema).optional(),
+  content_type: z.string().optional(),
+  body_text: z.string().optional(),
+  body_b64: z.string().optional(),
+  body_sha256: z.string().optional(),
+  body_encoding: z.enum(["aws-eventstream"]).optional(),
+}).strict();
+
+export type HttpEventRecord = Readonly<z.infer<typeof HttpEventRecordSchema>>;
 
 export const NormalizedBlockKindSchema = z.enum([
   "provider-envelope",

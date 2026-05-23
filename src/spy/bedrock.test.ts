@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test } from "bun:test";
 import {
   normalizeBedrockCall,
   normalizeBedrockSpoolEvents,
@@ -125,11 +125,10 @@ describe("Bedrock adapter", () => {
     expect(JSON.stringify(turnTwoRequest.map((block) => block.text))).toContain("RCSPY-ALPHA");
 
     const toolResult = callById(calls, "call-fixture-flow-tool-result");
-    expect(blocks(toolResult, "request").map((block) => block.kind)).toEqual(expect.arrayContaining([
-      "tool-call",
-      "tool-result",
-      "cache-marker",
-    ]));
+    const toolResultKinds = blocks(toolResult, "request").map((block) => block.kind);
+    expect(toolResultKinds.includes("tool-call")).toBe(true);
+    expect(toolResultKinds.includes("tool-result")).toBe(true);
+    expect(toolResultKinds.includes("cache-marker")).toBe(true);
     expect(firstBlock(toolResult, "request", "tool-result").text).toContain("success");
   });
 
@@ -163,12 +162,11 @@ describe("Bedrock adapter", () => {
     expect(toolCall.text).toContain("bash");
     expect(JSON.stringify(toolCall.json)).toContain("printf");
     expect(JSON.stringify(toolCall.json)).toContain("tool-fixture-ok");
-    expect(toolUse.streamEvents.map((event) => event.event_type)).toEqual(expect.arrayContaining([
-      "contentBlockStart",
-      "contentBlockDelta",
-      "messageStop",
-      "metadata",
-    ]));
+    const toolUseEventTypes = toolUse.streamEvents.map((event) => event.event_type);
+    expect(toolUseEventTypes.includes("contentBlockStart")).toBe(true);
+    expect(toolUseEventTypes.includes("contentBlockDelta")).toBe(true);
+    expect(toolUseEventTypes.includes("messageStop")).toBe(true);
+    expect(toolUseEventTypes.includes("metadata")).toBe(true);
   });
 
   test("preserves raw payloads only when requested and keeps hashes stable", () => {

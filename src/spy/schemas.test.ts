@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, test } from "vitest";
+import { Database } from "bun:sqlite";
+import { describe, expect, test } from "bun:test";
 import { decodeAwsEventStreamJson } from "./eventstream.ts";
 import { applySpyMigrations, currentSpySchemaVersion } from "./migrations.ts";
 import {
@@ -10,7 +11,6 @@ import {
 } from "./schemas.ts";
 
 const FIXTURE_PATH = new URL("./fixtures/bedrock-pi-us-sonnet-4-6.ndjson", import.meta.url);
-const bunSqlite = await import("bun:sqlite").catch(() => null);
 
 function fixtureEvents(): SpoolEvent[] {
   return readFileSync(FIXTURE_PATH, "utf8")
@@ -110,17 +110,12 @@ describe("spy fixture capture", () => {
 });
 
 describe("spy sqlite migrations", () => {
-  const testWithBunSqlite = bunSqlite === null ? test.skip : test;
-
-  testWithBunSqlite("creates the v1 schema and supports core provider call inserts", () => {
-    if (bunSqlite === null) {
-      throw new Error("bun:sqlite unavailable");
-    }
-    const db = new bunSqlite.Database(":memory:");
+  test("creates the current schema and supports core provider call inserts", () => {
+    const db = new Database(":memory:");
     try {
       applySpyMigrations(db);
-      expect(currentSpySchemaVersion()).toBe(1);
-      expect(db.query("SELECT version FROM schema_migration").get()).toEqual({ version: 1 });
+      expect(currentSpySchemaVersion()).toBe(2);
+      expect(db.query("SELECT MAX(version) AS version FROM schema_migration").get()).toEqual({ version: 2 });
 
       db.query(`
 INSERT INTO provider_call (

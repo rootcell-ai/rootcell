@@ -141,6 +141,43 @@ CREATE TABLE IF NOT EXISTS service_metadata (
 );
 `,
   },
+  {
+    version: 2,
+    name: "normalized block fts triggers",
+    sql: `
+CREATE TRIGGER IF NOT EXISTS normalized_block_fts_insert
+AFTER INSERT ON normalized_block
+WHEN NEW.text IS NOT NULL
+BEGIN
+  INSERT INTO normalized_block_fts(block_id, text)
+    VALUES (NEW.id, NEW.text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS normalized_block_fts_update
+AFTER UPDATE OF text ON normalized_block
+BEGIN
+  DELETE FROM normalized_block_fts WHERE block_id = OLD.id;
+  INSERT INTO normalized_block_fts(block_id, text)
+    SELECT NEW.id, NEW.text WHERE NEW.text IS NOT NULL;
+END;
+
+CREATE TRIGGER IF NOT EXISTS normalized_block_fts_delete
+AFTER DELETE ON normalized_block
+BEGIN
+  DELETE FROM normalized_block_fts WHERE block_id = OLD.id;
+END;
+
+INSERT INTO normalized_block_fts(block_id, text)
+  SELECT id, text
+  FROM normalized_block
+  WHERE text IS NOT NULL
+    AND NOT EXISTS (
+      SELECT 1
+      FROM normalized_block_fts
+      WHERE normalized_block_fts.block_id = normalized_block.id
+    );
+`,
+  },
 ];
 
 export function applySpyMigrations(db: Database): void {

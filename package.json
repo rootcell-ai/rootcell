@@ -5,12 +5,14 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "lint": "eslint \"src/**/*.{ts,js,mjs,cjs}\" eslint.config.ts vitest.config.ts",
-    "test": "vitest --project unit --run",
+    "test": "bun test src/spy --timeout 10000 && vitest --project unit --run",
+    "test:spy": "bun test src/spy --timeout 10000",
+    "test:unit:vitest": "vitest --project unit --run",
     "test:integration": "vitest --project integration --run",
     "test:integration:lima-smoke": "vitest --project integration --run src/rootcell/integration/providers/macos-lima-user-v2/cli-smoke.integration.test.ts",
     "test:integration:clean": "./test --clean",
     "test:integration:teardown": "./test --teardown",
-    "test:all": "vitest --run"
+    "test:all": "bun run test && bun run test:integration"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
