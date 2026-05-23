@@ -92,8 +92,9 @@ in
     dns = net.firewallUpstreamDns;
   };
 
-  # Private Lima user-v2 link to the agent VM.
-  # Static address; DHCP would conflict with the agent's static address.
+  # Private Lima user-v2 link to the agent VM. Lima's VZ hostagent waits for a
+  # DHCP lease on user-v2 before it opens the VSOCK SSH control path after
+  # restarts, but Rootcell keeps DHCP routes and DNS disabled here.
   systemd.network.networks."20-private" = {
     matchConfig = privateMatch;
     # The firewall boots before the agent, so the private user-v2 peer may not
@@ -101,9 +102,18 @@ in
     # this link; the static address is still configured by networkd.
     linkConfig.RequiredForOnline = false;
     networkConfig = {
-      DHCP = "no";
+      DHCP = "ipv4";
       IPv6AcceptRA = false;
       LinkLocalAddressing = "no";
+    };
+    dhcpV4Config = {
+      UseDNS = false;
+      UseDomains = false;
+      UseHostname = false;
+      UseMTU = false;
+      UseNTP = false;
+      UseRoutes = false;
+      UseTimezone = false;
     };
     address = [ "${net.firewallIp}/${toString net.networkPrefix}" ];
   };

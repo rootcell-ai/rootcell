@@ -32,7 +32,7 @@ describe.skipIf(!shouldRun)("macos-lima-user-v2 integration provider", { concurr
       privateIp: z.literal(FIREWALL_IP),
       hasEgress: z.literal(true),
     })));
-    expect(plan.vms.agent.reservedIps).toEqual(["192.168.109.2", "192.168.109.3"]);
+    expect(plan.vms.agent.reservedIps).toEqual(["192.168.109.2"]);
   });
 
   test("records running Lima VM state files and generated YAML", () => {
@@ -82,9 +82,21 @@ describe.skipIf(!shouldRun)("macos-lima-user-v2 integration provider", { concurr
     sshGuest(flow, "rootcell-agent", "true");
   });
 
+  test("keeps Lima VSOCK control after VM restarts", () => {
+    flow.hostCommandOk("limactl", ["shell", AGENT_VM_NAME, "true"]);
+    flow.hostCommandOk("limactl", ["shell", FIREWALL_VM_NAME, "true"]);
+    for (const vm of [AGENT_VM_NAME, FIREWALL_VM_NAME]) {
+      flow.hostCommandOk("limactl", ["stop", vm]);
+      flow.hostCommandOk("limactl", ["start", "--timeout", "3m", vm]);
+      flow.hostCommandOk("limactl", ["shell", vm, "true"]);
+    }
+  });
+
   test("passes the strict no-bypass user-v2 proof gate", async () => {
+    const agentInterface = flow.providers.network.plan().vms.agent.privateInterface;
     await flow.agentSh("test \"$(find /sys/class/net -mindepth 1 -maxdepth 1 ! -name lo | wc -l | tr -d \" \")\" = 1");
-    await flow.agentSh("! ip -4 -o addr show scope global | grep -v ' 192\\.168\\.109\\.11/24' | grep -q .");
+    await flow.agentSh(`ip -4 addr show dev ${shellQuote(agentInterface)} | grep -q ${shellQuote(` ${AGENT_IP}/24`)}`);
+    await flow.agentSh(`! ip -4 -o addr show scope global | grep -v ${shellQuote(`^[0-9]\\+: ${agentInterface}\\b`)} | grep -q .`);
     await flow.agentSh(`ip route show default | grep -q '^default via ${FIREWALL_IP} '`);
     await flow.agentSh(`ping -c 1 -W 2 ${FIREWALL_IP} >/dev/null`);
     flow.hostCommandFails("ssh", [

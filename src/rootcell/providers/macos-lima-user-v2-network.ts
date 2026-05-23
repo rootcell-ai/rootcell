@@ -162,11 +162,11 @@ export function limaUserV2ReservedIps(config: RootcellConfig): {
 } {
   const prefix = config.firewallIp.slice(0, config.firewallIp.lastIndexOf("."));
   const gatewayIp = `${prefix}.2`;
-  const dnsIp = `${prefix}.3`;
+  const dnsIp = gatewayIp;
   return {
     gatewayIp,
     dnsIp,
-    all: [gatewayIp, dnsIp],
+    all: [gatewayIp],
   };
 }
 

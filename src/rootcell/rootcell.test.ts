@@ -786,7 +786,7 @@ describe("VM and network providers", () => {
           privateInterface: z.literal("enp0s1"),
           privateIp: z.literal("192.168.109.11"),
           gatewayIp: z.literal("192.168.109.2"),
-          dnsIp: z.literal("192.168.109.3"),
+          dnsIp: z.literal("192.168.109.2"),
           reservedIps: z.array(z.string()),
           hasEgress: z.literal(false),
         }).strict(),
@@ -799,7 +799,7 @@ describe("VM and network providers", () => {
           egressInterface: z.literal("enp0s2"),
           privateIp: z.literal("192.168.109.10"),
           gatewayIp: z.literal("192.168.109.2"),
-          dnsIp: z.literal("192.168.109.3"),
+          dnsIp: z.literal("192.168.109.2"),
           reservedIps: z.array(z.string()),
           hasEgress: z.literal(true),
         }).strict(),
@@ -818,7 +818,7 @@ describe("VM and network providers", () => {
     expect(plan.vms.agent.kind).toBe("lima-user-v2");
     expect(plan.vms.agent.hasEgress).toBe(false);
     expect(plan.vms.firewall.hasEgress).toBe(true);
-    expect(plan.vms.agent.reservedIps).toEqual(["192.168.109.2", "192.168.109.3"]);
+    expect(plan.vms.agent.reservedIps).toEqual(["192.168.109.2"]);
   });
 
   test("AWS EC2 provider exposes public firewall and private-only agent attachments", () => {
@@ -848,12 +848,12 @@ describe("VM and network providers", () => {
     expect(awsVpcRouterIp(config)).toBe("192.168.109.1");
   });
 
-  test("user-v2 network plan reserves Lima gateway and DNS IPs", () => {
+  test("user-v2 network plan reserves Lima gateway and DNS IP", () => {
     const config = buildConfig("/repo", {}, fakeInstance("dev"));
     expect(limaUserV2ReservedIps(config)).toEqual({
       gatewayIp: "192.168.109.2",
-      dnsIp: "192.168.109.3",
-      all: ["192.168.109.2", "192.168.109.3"],
+      dnsIp: "192.168.109.2",
+      all: ["192.168.109.2"],
     });
   });
 
@@ -964,6 +964,14 @@ describe("VM and network providers", () => {
     const firewallModule = readFileSync("firewall-vm.nix", "utf8");
     expect(firewallModule).toContain("systemd.network.wait-online.enable = false;");
     expect(firewallModule).toContain("linkConfig.RequiredForOnline = false;");
+    expect(firewallModule).toContain("Rootcell keeps DHCP routes and DNS disabled");
+    expect(firewallModule).toContain("UseRoutes = false;");
+
+    const agentModule = readFileSync("agent-vm.nix", "utf8");
+    expect(agentModule).toContain('DHCP = "ipv4";');
+    expect(agentModule).toContain("UseDNS = false;");
+    expect(agentModule).toContain("UseRoutes = false;");
+    expect(agentModule).toContain("PreferredSource = net.agentIp;");
   });
 
   test("user-v2 proof gate rejects extra agent interfaces and default-route bypasses", () => {
@@ -974,9 +982,10 @@ describe("VM and network providers", () => {
       agentPrivateInterface: "enp0s1",
     });
     expect(script).toContain("find /sys/class/net -mindepth 1 -maxdepth 1 ! -name lo");
+    expect(script).toContain("ip -4 addr show dev \"$iface\" | grep -q \" $agent_ip/$prefix\"");
+    expect(script).toContain("! ip -4 -o addr show scope global | grep -v \"^[0-9]\\+: $iface\\b\" | grep -q .");
     expect(script).toContain("test \"$(ip route show default | wc -l | tr -d ' ')\" = 1");
     expect(script).toContain("ip route show default | grep -q \"^default via $firewall_ip dev $iface\\b\"");
-    expect(script).toContain("! ip -4 -o addr show scope global | grep -v");
   });
 
   test("generated AWS EC2 Terraform keeps IAM, IMDS, tagging, and networking invariants", () => {

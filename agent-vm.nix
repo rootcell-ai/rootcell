@@ -18,9 +18,10 @@ in
   # anyway. All meaningful filtering happens in the firewall VM.
   networking.firewall.enable = false;
 
-  # Networking: only the per-instance private Lima user-v2 link is configured, so
-  # there is no direct host control path a root-capable agent could reconfigure
-  # into egress.
+  # Networking: only the per-instance private Lima user-v2 link is configured.
+  # Lima's VZ hostagent still needs a DHCP lease on that link before it opens
+  # the VSOCK SSH control path after restarts, but Rootcell keeps ownership of
+  # the steady-state address, DNS, and default route below.
   networking.useDHCP = false;
   networking.useNetworkd = true;
   systemd.network.enable = true;
@@ -30,12 +31,24 @@ in
   systemd.network.networks."10-enp0s1" = {
     matchConfig = privateMatch;
     networkConfig = {
-      DHCP = "no";
+      DHCP = "ipv4";
       IPv6AcceptRA = false;
       LinkLocalAddressing = "no";
     };
+    dhcpV4Config = {
+      UseDNS = false;
+      UseDomains = false;
+      UseHostname = false;
+      UseMTU = false;
+      UseNTP = false;
+      UseRoutes = false;
+      UseTimezone = false;
+    };
     address = [ "${net.agentIp}/${toString net.networkPrefix}" ];
-    routes = [ { Gateway = net.agentDefaultGatewayIp; } ];
+    routes = [ {
+      Gateway = net.agentDefaultGatewayIp;
+      PreferredSource = net.agentIp;
+    } ];
     dns = [ net.firewallIp ];
   };
 
