@@ -178,6 +178,70 @@ INSERT INTO normalized_block_fts(block_id, text)
     );
 `,
   },
+  {
+    version: 3,
+    name: "token count cache",
+    sql: `
+CREATE TABLE IF NOT EXISTS token_count (
+  id TEXT PRIMARY KEY,
+  call_id TEXT NOT NULL REFERENCES provider_call(id) ON DELETE CASCADE,
+  subject_type TEXT NOT NULL CHECK (subject_type IN ('call', 'section', 'block')),
+  direction TEXT CHECK (direction IN ('request', 'response')),
+  block_id TEXT,
+  kind TEXT,
+  source_hash TEXT NOT NULL,
+  cache_key TEXT NOT NULL UNIQUE,
+  model_id TEXT NOT NULL,
+  tokens INTEGER,
+  provenance TEXT NOT NULL CHECK (provenance = 'provider_counted'),
+  counted_at REAL NOT NULL,
+  error TEXT
+);
+
+CREATE INDEX IF NOT EXISTS token_count_call_idx
+  ON token_count(call_id);
+CREATE INDEX IF NOT EXISTS token_count_subject_idx
+  ON token_count(subject_type, call_id, direction, block_id, kind);
+`,
+  },
+  {
+    version: 4,
+    name: "provider-only token count cache subjects",
+    sql: `
+CREATE TABLE IF NOT EXISTS token_count_next (
+  id TEXT PRIMARY KEY,
+  call_id TEXT NOT NULL REFERENCES provider_call(id) ON DELETE CASCADE,
+  subject_type TEXT NOT NULL CHECK (subject_type IN ('call', 'section', 'block', 'selection')),
+  direction TEXT CHECK (direction IN ('request', 'response')),
+  block_id TEXT,
+  kind TEXT,
+  label TEXT,
+  source_hash TEXT NOT NULL,
+  cache_key TEXT NOT NULL UNIQUE,
+  model_id TEXT NOT NULL,
+  tokens INTEGER,
+  provenance TEXT NOT NULL CHECK (provenance = 'provider_counted'),
+  counted_at REAL NOT NULL,
+  error TEXT
+);
+
+INSERT OR REPLACE INTO token_count_next (
+  id, call_id, subject_type, direction, block_id, kind, label, source_hash,
+  cache_key, model_id, tokens, provenance, counted_at, error
+)
+SELECT id, call_id, subject_type, direction, block_id, kind, NULL, source_hash,
+       cache_key, model_id, tokens, provenance, counted_at, error
+FROM token_count;
+
+DROP TABLE token_count;
+ALTER TABLE token_count_next RENAME TO token_count;
+
+CREATE INDEX IF NOT EXISTS token_count_call_idx
+  ON token_count(call_id);
+CREATE INDEX IF NOT EXISTS token_count_subject_idx
+  ON token_count(subject_type, call_id, direction, block_id, kind);
+`,
+  },
 ];
 
 export function applySpyMigrations(db: Database): void {

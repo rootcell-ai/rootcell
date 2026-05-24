@@ -389,6 +389,76 @@ describe("spy SQLite store", () => {
     }
   });
 
+  test("prepares, caches, and cascades token count records", () => {
+    let now = 1_000;
+    const { dbPath, spoolDir, store } = createTestStore({ now: () => now });
+    try {
+      writeSpoolEvents(spoolDir, fixturePair());
+      expect(store.ingestSpoolBatch()).toMatchObject({ ingested: 2 });
+
+      const callId = bedrockCallIdForFlow("fixture-flow-simple");
+      let detail = requiredDetail(store, callId);
+      const providerReported = detail.tokenCounts.find((record) =>
+        record.subjectType === "call" && record.direction === "request"
+      );
+      expect(providerReported).toMatchObject({
+        provenance: "provider_reported",
+        tokens: detail.summary.usage.inputTokens,
+      });
+
+      const block = detail.blocks.find((candidate) => candidate.direction === "request" && candidate.text !== undefined);
+      if (block === undefined) {
+        throw new Error("missing request text block");
+      }
+      const prepared = store.prepareTokenCountSubject({ type: "block", callId, blockId: block.id });
+      expect(prepared).not.toBeNull();
+      expect(prepared?.base).toMatchObject({
+        subjectType: "block",
+        blockId: block.id,
+      });
+
+      now = 1_100;
+      store.saveProviderTokenCount({
+        subjectType: "block",
+        callId,
+        blockId: block.id,
+        direction: block.direction,
+        kind: block.kind,
+        sourceHash: block.content_hash,
+        modelId: detail.summary.call.model_id,
+        tokens: 42,
+        provenance: "provider_counted",
+        countedAt: now,
+      });
+      detail = requiredDetail(store, callId);
+      expect(detail.tokenCounts.find((record) => record.subjectType === "block" && record.blockId === block.id))
+        .toMatchObject({ provenance: "provider_counted", tokens: 42 });
+      expect(countRows(dbPath, "token_count")).toBe(1);
+
+      const selection = store.prepareTokenCountSubject({ type: "selection", callId, text: "selected text", label: "selection" });
+      expect(selection?.cacheKey).toBeDefined();
+      now = 1_200;
+      store.saveProviderTokenCount({
+        subjectType: "selection",
+        callId,
+        label: "selection",
+        sourceHash: selection?.base.sourceHash ?? "",
+        modelId: detail.summary.call.model_id,
+        tokens: 7,
+        provenance: "provider_counted",
+        countedAt: now,
+      });
+      expect(store.getCachedProviderTokenCount(selection?.cacheKey ?? "missing"))
+        .toMatchObject({ subjectType: "selection", label: "selection", provenance: "provider_counted", tokens: 7 });
+      expect(countRows(dbPath, "token_count")).toBe(2);
+
+      store.clearData();
+      expect(countRows(dbPath, "token_count")).toBe(0);
+    } finally {
+      store.close();
+    }
+  });
+
   test("persists raw payloads only when raw storage is enabled", () => {
     const disabledComposition = (() => {
       const rawDisabled = createTestStore();

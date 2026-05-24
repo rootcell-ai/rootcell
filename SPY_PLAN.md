@@ -52,7 +52,7 @@ multi-conversation support straightforward, but those are not v1 scope.
 - Desktop-only UI. Do not spend v1 scope on mobile support.
 - No keyboard shortcut requirement. Design the browser UX on its own terms, not
   as a TUI clone.
-- Token counting for highlighted text and per-block token estimates are v1.5,
+- Token counting for highlighted text and per-block provider counts are v1.5,
   not v1.
 - Automated compaction detection is v1.5, not v1.
 - Broader charts/visual regression screenshots are v1.5 or later.
@@ -194,6 +194,7 @@ ROOTCELL_SPY_ENABLED=false
 # ROOTCELL_SPY_MAX_BYTES=6442450944
 # ROOTCELL_SPY_SPOOL_MAX_BYTES=1073741824
 # ROOTCELL_SPY_STORE_RAW=false
+# ROOTCELL_SPY_TOKEN_COUNT_MODE=provider
 # ROOTCELL_SPY_BIND=127.0.0.1
 # ROOTCELL_SPY_PORT=6174
 ```
@@ -205,6 +206,7 @@ Defaults:
 - Total spy store budget: 6 GiB.
 - Spool budget: 1 GiB.
 - Raw exact payload storage disabled.
+- Token count mode defaults to Bedrock CountTokens provider counting.
 - Firewall service binds `127.0.0.1:6174`.
 
 `./rootcell spy` should choose host-local port `6174` when available and fall
@@ -671,6 +673,40 @@ V1 excludes:
     `./rootcell spy --no-open` refuses to launch while disabled, the
     `rootcell-spy.service` is inactive, the SQLite store is preserved, the spool
     is empty, and a disabled-state Pi/Bedrock call writes no spool files.
+- Completed the V1.5 provider-only token accounting foundation:
+  - Added shared token-count API contracts for `call`, `section`, `block`, and
+    transient/cached `selection` subjects with `provider_reported`,
+    `provider_counted`, and `unavailable` provenance only.
+  - Removed local token estimates and the `estimated` provenance path. All
+    displayed token counts now come from provider-reported usage, Bedrock
+    CountTokens, or an explicit unavailable record.
+  - Added provider-routed `POST /api/token-count`; the browser asks the
+    firewall-hosted spy service, and the browser never calls Bedrock directly.
+  - Added Bedrock Runtime CountTokens support with model-id normalization for
+    Anthropic inference-profile ids such as `us.` and `global.` prefixed Haiku
+    model ids.
+  - Extended `GET /api/calls/:id` so call details backfill missing request,
+    section, and block counts through the provider and return cached/stored
+    token records.
+  - Added SQLite schema v4 and token-count cache persistence keyed by subject
+    identity, source hash, and model id, with cascade deletion through retention
+    and clear-data.
+  - Updated the inspector with token/provenance chips on block rows, token
+    columns in request composition, explicit provider-count controls, and
+    highlighted selection counting that stores provider results.
+  - Updated generated spy env defaults and docs so
+    `ROOTCELL_SPY_TOKEN_COUNT_MODE=provider` is the only supported mode, and
+    forwarded Bedrock credential env when token counting is enabled.
+  - Fixed live Bedrock CountTokens payload issues found during validation:
+    Anthropic inference-profile ids are converted to base model ids for
+    CountTokens, and isolated system-context block text uses a valid Converse
+    message wrapper instead of a system-only payload that Bedrock rejects.
+  - Rebuilt and provisioned the default firewall/agent VMs with the corrected
+    spy service and UI assets.
+  - Verified `bun run typecheck`, `bun run lint`, `bun run test:spy`,
+    `bun run test:spy-ui:unit`, `bun run test:spy-ui:e2e`,
+    `bun run build:spy`, and `git diff --check`; service tests that bind local
+    ports were run with localhost permissions when required.
 
 ### V1
 
@@ -759,18 +795,29 @@ notes, and follow-up verification baseline were moved to
 
 Add analysis depth:
 
-- Exact/estimated token counting for highlighted text, blocks, sections, and
+- [x] Shared token-count contracts for `call`, `section`, `block`, and
+  `selection` subjects.
+- [x] Provider-only token-count mode. Local estimates and `estimated`
+  provenance were removed.
+- [x] Provider-reported request totals are used when available.
+- [x] Provider-counted token counting for highlighted text, blocks, sections, and
   whole requests.
-- Provider-routed token-count backend; browser never calls LLM providers
+- [x] Provider-routed token-count backend; browser never calls LLM providers
   directly.
-- Per-block token provenance: `provider_reported`, `provider_counted`,
-  `estimated`, or `unavailable`.
-- Automated compaction candidate detection:
+- [x] Bedrock CountTokens support through the firewall spy service, including
+  Anthropic inference-profile model-id normalization.
+- [x] SQLite cache for provider-counted call, section, block, and selection
+  results with retention and clear-data deletion.
+- [x] Per-block token provenance: `provider_reported`, `provider_counted`, or
+  `unavailable`.
+- [x] Request composition token columns and block-row token/provenance chips.
+- [x] Explicit provider-count and highlighted-selection count UI actions.
+- [ ] Automated compaction candidate detection:
   - Pi-specific request patterns from fixtures.
   - Generic fallback heuristics.
   - Labels that distinguish Pi-specific candidates from heuristic candidates.
-- Dedicated compaction investigation view.
-- Visual regression/screenshot checks.
+- [ ] Dedicated compaction investigation view.
+- [ ] Visual regression/screenshot checks.
 
 ### V2
 

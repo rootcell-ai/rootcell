@@ -1,6 +1,10 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Database } from "bun:sqlite";
+import type {
+  SpyTokenCountRecord,
+  SpyTokenCountSubject,
+} from "./api-contracts.ts";
 import {
   bedrockCallIdForFlow,
   normalizeBedrockRequest,
@@ -29,6 +33,13 @@ import {
   type StreamEvent,
   type UsageRecord,
 } from "./schemas.ts";
+import {
+  textForBlock,
+  textForBlocks,
+  tokenCacheKey,
+  tokenSourceHash,
+  type TokenRecordBase,
+} from "./tokens.ts";
 
 const DEFAULT_RETENTION_DAYS = 7;
 const DEFAULT_MAX_BYTES = 6 * 1024 * 1024 * 1024;
@@ -177,10 +188,21 @@ export interface SpyStreamEventsOptions {
 export interface SpyCallDetail {
   readonly summary: SpyCallSummary;
   readonly requestComposition: SpyRequestComposition;
+  readonly tokenCounts: readonly SpyTokenCountRecord[];
   readonly httpEvents: readonly HttpEventRecord[];
   readonly blocks: readonly NormalizedBlock[];
   readonly usageRecords: readonly UsageRecord[];
   readonly rawPayloads: readonly RawPayloadRecord[];
+}
+
+export interface SpyPreparedTokenCountSubject {
+  readonly subject: SpyTokenCountSubject;
+  readonly base: TokenRecordBase;
+  readonly text: string;
+  readonly requestBodyText?: string | undefined;
+  readonly block?: NormalizedBlock | undefined;
+  readonly cacheKey?: string | undefined;
+  readonly providerReported?: SpyTokenCountRecord | undefined;
 }
 
 export interface SpyBlockDiff {
@@ -204,6 +226,9 @@ export interface SpyStore {
   getCallDiff(callId: string): SpyCallDiff | null;
   getStreamEvents(callId: string, options?: SpyStreamEventsOptions): SpyPaginatedResult<StreamEvent>;
   searchCallSummaries(options: SpySearchCallsOptions): SpyPaginatedResult<SpyCallSummary>;
+  prepareTokenCountSubject(subject: SpyTokenCountSubject): SpyPreparedTokenCountSubject | null;
+  getCachedProviderTokenCount(cacheKey: string): SpyTokenCountRecord | null;
+  saveProviderTokenCount(record: SpyTokenCountRecord): void;
   runRetention(): RetentionResult;
   clearData(): ClearDataResult;
   getHealthSnapshot(): SpyHealthSnapshot;
@@ -318,6 +343,23 @@ interface RawPayloadRow {
   readonly body_b64: string | null;
   readonly body_sha256: string | null;
   readonly body_encoding: "aws-eventstream" | null;
+}
+
+interface TokenCountRow {
+  readonly id: string;
+  readonly call_id: string;
+  readonly subject_type: SpyTokenCountRecord["subjectType"];
+  readonly direction: "request" | "response" | null;
+  readonly block_id: string | null;
+  readonly kind: NormalizedBlock["kind"] | null;
+  readonly label: string | null;
+  readonly source_hash: string;
+  readonly cache_key: string;
+  readonly model_id: string;
+  readonly tokens: number | null;
+  readonly provenance: "provider_counted";
+  readonly counted_at: number;
+  readonly error: string | null;
 }
 
 interface UsageSummaryRow {
@@ -454,12 +496,11 @@ ORDER BY observed_at ASC, direction ASC
 `).all(callId) as HttpEventRow[];
 
     const blocks = this.blocksForCall(callId);
+    const requestBlocks = blocks.filter((block) => block.direction === "request");
     return {
       summary,
-      requestComposition: requestCompositionForBlocks(
-        blocks.filter((block) => block.direction === "request"),
-        summary.usage,
-      ),
+      requestComposition: requestCompositionForBlocks(requestBlocks, summary.usage),
+      tokenCounts: this.tokenCountsForCall(summary, blocks),
       httpEvents: httpEvents.map(httpEventFromRow),
       blocks,
       usageRecords: this.usageRecordsForCall(callId),
@@ -596,6 +637,163 @@ LIMIT ?
 `).all(...params, limit + 1) as ProviderCallRow[];
 
     return this.paginatedCallSummaries(rows, limit);
+  }
+
+  prepareTokenCountSubject(subject: SpyTokenCountSubject): SpyPreparedTokenCountSubject | null {
+    const row = this.callRow(subject.callId);
+    if (row === null) {
+      return null;
+    }
+    const summary = this.callSummaryForRow(row);
+    const countedAt = this.now();
+
+    if (subject.type === "call") {
+      const blocks = this.blocksForCall(subject.callId, subject.direction);
+      const text = textForBlocks(blocks);
+      const sourceHash = row.request_content_hash ?? tokenSourceHash(text);
+      const base: TokenRecordBase = {
+        subjectType: "call",
+        callId: subject.callId,
+        direction: subject.direction,
+        sourceHash,
+        modelId: row.model_id,
+        countedAt,
+      };
+      const providerReported = summary.usage.inputTokens === null ? undefined : {
+        ...base,
+        tokens: summary.usage.inputTokens,
+        provenance: "provider_reported" as const,
+      };
+      return {
+        subject,
+        base,
+        text,
+        requestBodyText: this.requestBodyTextForCall(subject.callId),
+        cacheKey: tokenCacheKey(base),
+        providerReported,
+      };
+    }
+
+    if (subject.type === "section") {
+      const blocks = this.blocksForCall(subject.callId, subject.direction)
+        .filter((block) => block.kind === subject.kind);
+      const text = textForBlocks(blocks);
+      const sourceHash = tokenSourceHash(blocks.map((block) => block.content_hash).join("\n"));
+      const base: TokenRecordBase = {
+        subjectType: "section",
+        callId: subject.callId,
+        direction: subject.direction,
+        kind: subject.kind,
+        sourceHash,
+        modelId: row.model_id,
+        countedAt,
+      };
+      return {
+        subject,
+        base,
+        text,
+        cacheKey: tokenCacheKey(base),
+      };
+    }
+
+    if (subject.type === "block") {
+      const block = this.blockForCall(subject.callId, subject.blockId);
+      if (block === null) {
+        return null;
+      }
+      const text = textForBlock(block);
+      const base: TokenRecordBase = {
+        subjectType: "block",
+        callId: subject.callId,
+        blockId: subject.blockId,
+        direction: block.direction,
+        kind: block.kind,
+        sourceHash: block.content_hash,
+        modelId: row.model_id,
+        countedAt,
+      };
+      return {
+        subject,
+        base,
+        text,
+        block,
+        cacheKey: tokenCacheKey(base),
+      };
+    }
+
+    const sourceHash = tokenSourceHash(subject.text);
+    const base: TokenRecordBase = {
+      subjectType: "selection",
+      callId: subject.callId,
+      label: subject.label,
+      sourceHash,
+      modelId: row.model_id,
+      countedAt,
+    };
+    return {
+      subject,
+      base,
+      text: subject.text,
+      cacheKey: tokenCacheKey(base),
+    };
+  }
+
+  getCachedProviderTokenCount(cacheKey: string): SpyTokenCountRecord | null {
+    const row = this.db.query(`
+SELECT id, call_id, subject_type, direction, block_id, kind, label, source_hash,
+       cache_key, model_id, tokens, provenance, counted_at, error
+FROM token_count
+WHERE cache_key = ?
+`).get(cacheKey) as TokenCountRow | null;
+    return row === null ? null : tokenCountFromRow(row);
+  }
+
+  saveProviderTokenCount(record: SpyTokenCountRecord): void {
+    if (record.callId === undefined) {
+      return;
+    }
+    if (record.provenance !== "provider_counted") {
+      return;
+    }
+    const callId = record.callId;
+    const cacheKey = tokenCacheKey({
+      subjectType: record.subjectType,
+      callId,
+      blockId: record.blockId,
+      direction: record.direction,
+      kind: record.kind,
+      sourceHash: record.sourceHash,
+      modelId: record.modelId,
+    });
+    this.withWriteLock(() => {
+      this.db.query(`
+INSERT INTO token_count (
+  id, call_id, subject_type, direction, block_id, kind, label, source_hash, cache_key,
+  model_id, tokens, provenance, counted_at, error
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(cache_key) DO UPDATE SET
+  label = excluded.label,
+  tokens = excluded.tokens,
+  provenance = excluded.provenance,
+  counted_at = excluded.counted_at,
+  error = excluded.error
+`).run(
+        tokenCountId(record),
+        callId,
+        record.subjectType,
+        record.direction ?? null,
+        record.blockId ?? null,
+        record.kind ?? null,
+        record.label ?? null,
+        record.sourceHash,
+        cacheKey,
+        record.modelId,
+        record.tokens,
+        record.provenance,
+        record.countedAt,
+        record.error ?? null,
+      );
+    });
   }
 
   runRetention(): RetentionResult {
@@ -1029,6 +1227,59 @@ ORDER BY direction ASC, ordinal ASC, id ASC
     return rows.map(normalizedBlockFromRow);
   }
 
+  private blockForCall(callId: string, blockId: string): NormalizedBlock | null {
+    const row = this.db.query(`
+SELECT id, call_id, direction, ordinal, role, kind, source, provider_path,
+       text, json, char_size, byte_size, content_hash, cache_marker
+FROM normalized_block
+WHERE call_id = ? AND id = ?
+`).get(callId, blockId) as NormalizedBlockRow | null;
+    return row === null ? null : normalizedBlockFromRow(row);
+  }
+
+  private requestBodyTextForCall(callId: string): string | undefined {
+    const row = this.db.query(`
+SELECT body_text
+FROM http_event
+WHERE call_id = ? AND direction = 'request' AND body_text IS NOT NULL
+ORDER BY observed_at ASC, id ASC
+LIMIT 1
+`).get(callId) as { readonly body_text: string | null } | null;
+    return row?.body_text ?? undefined;
+  }
+
+  private tokenCountsForCall(summary: SpyCallSummary, blocks: readonly NormalizedBlock[]): SpyTokenCountRecord[] {
+    const records = new Map<string, SpyTokenCountRecord>();
+    const now = this.now();
+    const requestBlocks = blocks.filter((block) => block.direction === "request");
+    const requestText = textForBlocks(requestBlocks);
+    const requestBase: TokenRecordBase = {
+      subjectType: "call",
+      callId: summary.call.id,
+      direction: "request",
+      sourceHash: summary.call.request_content_hash ?? tokenSourceHash(requestText),
+      modelId: summary.call.model_id,
+      countedAt: now,
+    };
+    const inputTokens = summary.usage.inputTokens;
+    if (inputTokens !== null) {
+      addBestTokenRecord(records, { ...requestBase, tokens: inputTokens, provenance: "provider_reported" });
+    }
+
+    const cachedRows = this.db.query(`
+SELECT id, call_id, subject_type, direction, block_id, kind, label, source_hash,
+       cache_key, model_id, tokens, provenance, counted_at, error
+FROM token_count
+WHERE call_id = ?
+ORDER BY counted_at DESC, id ASC
+`).all(summary.call.id) as TokenCountRow[];
+    for (const row of cachedRows) {
+      addBestTokenRecord(records, tokenCountFromRow(row));
+    }
+
+    return [...records.values()].sort(compareTokenCountRecords);
+  }
+
   private usageRecordsForCall(callId: string): UsageRecord[] {
     const rows = this.db.query(`
 SELECT id, call_id, source, input_tokens, output_tokens, cache_read_tokens,
@@ -1307,6 +1558,83 @@ function requestCompositionForBlocks(
     mediaSummaryCharSize,
     mediaSummaryByteSize,
     usage,
+  };
+}
+
+function addBestTokenRecord(records: Map<string, SpyTokenCountRecord>, record: SpyTokenCountRecord): void {
+  const key = tokenRecordKey(record);
+  const existing = records.get(key);
+  if (existing === undefined || tokenRecordPriority(record) > tokenRecordPriority(existing)) {
+    records.set(key, record);
+  }
+}
+
+function tokenRecordKey(record: SpyTokenCountRecord): string {
+  return [
+    record.subjectType,
+    record.callId ?? "",
+    record.direction ?? "",
+    record.blockId ?? "",
+    record.kind ?? "",
+    record.label ?? "",
+  ].join(":");
+}
+
+function tokenRecordPriority(record: SpyTokenCountRecord): number {
+  if (record.provenance === "provider_reported") {
+    return 4;
+  }
+  if (record.provenance === "provider_counted") {
+    return 3;
+  }
+  return 1;
+}
+
+function compareTokenCountRecords(left: SpyTokenCountRecord, right: SpyTokenCountRecord): number {
+  const subject = left.subjectType.localeCompare(right.subjectType);
+  if (subject !== 0) {
+    return subject;
+  }
+  const direction = (left.direction ?? "").localeCompare(right.direction ?? "");
+  if (direction !== 0) {
+    return direction;
+  }
+  const ordinal = tokenKindOrdinal(left.kind) - tokenKindOrdinal(right.kind);
+  if (ordinal !== 0) {
+    return ordinal;
+  }
+  return (left.blockId ?? left.label ?? "").localeCompare(right.blockId ?? right.label ?? "");
+}
+
+function tokenKindOrdinal(kind: NormalizedBlock["kind"] | undefined): number {
+  return kind === undefined ? -1 : REQUEST_COMPOSITION_SECTION_ORDER.indexOf(kind);
+}
+
+function tokenCountId(record: SpyTokenCountRecord): string {
+  return [
+    "token",
+    record.callId ?? "transient",
+    record.subjectType,
+    record.direction ?? "none",
+    record.blockId ?? record.kind ?? "all",
+    record.sourceHash.slice(0, 16),
+  ].join("-");
+}
+
+function tokenCountFromRow(row: TokenCountRow): SpyTokenCountRecord {
+  return {
+    subjectType: row.subject_type,
+    callId: row.call_id,
+    ...(row.block_id === null ? {} : { blockId: row.block_id }),
+    ...(row.direction === null ? {} : { direction: row.direction }),
+    ...(row.kind === null ? {} : { kind: row.kind }),
+    ...(row.label === null ? {} : { label: row.label }),
+    sourceHash: row.source_hash,
+    modelId: row.model_id,
+    tokens: row.tokens,
+    provenance: row.provenance,
+    countedAt: row.counted_at,
+    ...(row.error === null ? {} : { error: row.error }),
   };
 }
 

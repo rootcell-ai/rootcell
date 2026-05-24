@@ -47,6 +47,14 @@ export const SpyHealthSnapshotSchema = z.object({
   metadata: z.record(z.string(), z.string()),
 }).strict();
 
+export const SpyTokenCountModeSchema = z.enum(["provider"]);
+export const SpyTokenCountProvenanceSchema = z.enum([
+  "provider_reported",
+  "provider_counted",
+  "unavailable",
+]);
+export const SpyTokenCountSubjectTypeSchema = z.enum(["call", "section", "block", "selection"]);
+
 export const SpyServiceHealthSchema = z.object({
   ok: z.literal(true),
   service: z.object({
@@ -57,6 +65,7 @@ export const SpyServiceHealthSchema = z.object({
     maxBytes: NonNegativeIntegerSchema,
     spoolMaxBytes: NonNegativeIntegerSchema,
     storeRaw: z.boolean(),
+    tokenCountMode: SpyTokenCountModeSchema,
     staticAssets: z.boolean(),
   }).strict(),
   store: SpyHealthSnapshotSchema,
@@ -68,6 +77,56 @@ export const SpyUsageSummarySchema = z.object({
   cacheReadTokens: NonNegativeIntegerSchema.nullable(),
   cacheWriteTokens: NonNegativeIntegerSchema.nullable(),
   totalTokens: NonNegativeIntegerSchema.nullable(),
+}).strict();
+
+export const SpyTokenCountRecordSchema = z.object({
+  subjectType: SpyTokenCountSubjectTypeSchema,
+  callId: z.string().min(1).optional(),
+  blockId: z.string().min(1).optional(),
+  direction: z.enum(["request", "response"]).optional(),
+  kind: NormalizedBlockKindSchema.optional(),
+  label: z.string().min(1).optional(),
+  sourceHash: z.string().min(1),
+  modelId: z.string().min(1),
+  tokens: NonNegativeIntegerSchema.nullable(),
+  provenance: SpyTokenCountProvenanceSchema,
+  countedAt: NonNegativeNumberSchema,
+  error: z.string().min(1).optional(),
+}).strict();
+
+export const SpyTokenCountSubjectSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("call"),
+    callId: z.string().min(1),
+    direction: z.literal("request"),
+  }).strict(),
+  z.object({
+    type: z.literal("section"),
+    callId: z.string().min(1),
+    direction: z.enum(["request", "response"]),
+    kind: NormalizedBlockKindSchema,
+  }).strict(),
+  z.object({
+    type: z.literal("block"),
+    callId: z.string().min(1),
+    blockId: z.string().min(1),
+  }).strict(),
+  z.object({
+    type: z.literal("selection"),
+    callId: z.string().min(1),
+    text: z.string(),
+    label: z.string().min(1).optional(),
+  }).strict(),
+]);
+
+export const SpyTokenCountRequestSchema = z.object({
+  mode: SpyTokenCountModeSchema.optional(),
+  subjects: z.array(SpyTokenCountSubjectSchema).min(1).max(100),
+}).strict();
+
+export const SpyTokenCountResponseSchema = z.object({
+  mode: SpyTokenCountModeSchema,
+  records: z.array(SpyTokenCountRecordSchema),
 }).strict();
 
 export const SpyCallSummarySchema = z.object({
@@ -126,6 +185,7 @@ export const StreamEventPageSchema = spyPaginatedResultSchema(StreamEventSchema)
 export const SpyCallDetailSchema = z.object({
   summary: SpyCallSummarySchema,
   requestComposition: SpyRequestCompositionSchema,
+  tokenCounts: z.array(SpyTokenCountRecordSchema),
   httpEvents: z.array(HttpEventRecordSchema),
   blocks: z.array(NormalizedBlockSchema),
   usageRecords: z.array(UsageRecordSchema),
@@ -167,6 +227,12 @@ export type IngestSpoolBatchResult = Readonly<z.infer<typeof IngestSpoolBatchRes
 export type RetentionResult = Readonly<z.infer<typeof RetentionResultSchema>>;
 export type SpyHealthSnapshot = Readonly<z.infer<typeof SpyHealthSnapshotSchema>>;
 export type SpyServiceHealth = Readonly<z.infer<typeof SpyServiceHealthSchema>>;
+export type SpyTokenCountMode = z.infer<typeof SpyTokenCountModeSchema>;
+export type SpyTokenCountProvenance = z.infer<typeof SpyTokenCountProvenanceSchema>;
+export type SpyTokenCountSubject = Readonly<z.infer<typeof SpyTokenCountSubjectSchema>>;
+export type SpyTokenCountRequest = Readonly<z.infer<typeof SpyTokenCountRequestSchema>>;
+export type SpyTokenCountRecord = Readonly<z.infer<typeof SpyTokenCountRecordSchema>>;
+export type SpyTokenCountResponse = Readonly<z.infer<typeof SpyTokenCountResponseSchema>>;
 export type SpyUsageSummary = Readonly<z.infer<typeof SpyUsageSummarySchema>>;
 export type SpyCallSummary = Readonly<z.infer<typeof SpyCallSummarySchema>>;
 export type SpyRequestCompositionSection = Readonly<z.infer<typeof SpyRequestCompositionSectionSchema>>;

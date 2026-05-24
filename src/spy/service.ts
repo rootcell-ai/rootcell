@@ -2,10 +2,23 @@ import { existsSync, statSync } from "node:fs";
 import { extname, isAbsolute, join, relative, resolve } from "node:path";
 import { z } from "zod";
 import {
+  AwsBedrockTokenCounter,
+  bedrockCountInputForText,
+  bedrockCountInputFromRequestBody,
+  type BedrockTokenCounter,
+} from "./bedrock-token-count.ts";
+import {
+  SpyTokenCountRequestSchema,
+  type SpyTokenCountMode,
+  type SpyTokenCountRecord,
+  type SpyTokenCountSubject,
+} from "./api-contracts.ts";
+import {
   openSpyStore,
   type IngestSpoolBatchResult,
   type RetentionResult,
   type SpyHealthSnapshot,
+  type SpyCallDetail,
   type SpyListCallsOptions,
   type SpySearchCallsOptions,
   type SpyStore,
@@ -13,6 +26,7 @@ import {
   type SpyStreamEventsOptions,
 } from "./store.ts";
 import { ProviderCallStatusSchema } from "./schemas.ts";
+import { unavailableTokenRecord } from "./tokens.ts";
 
 const DEFAULT_BIND = "127.0.0.1";
 const DEFAULT_PORT = 6174;
@@ -24,6 +38,8 @@ const DEFAULT_SPOOL_MAX_BYTES = 1024 * 1024 * 1024;
 const DEFAULT_INGEST_INTERVAL_MS = 500;
 const DEFAULT_RETENTION_INTERVAL_MS = 15 * 60 * 1000;
 const DEFAULT_INGEST_BATCH_LIMIT = 100;
+const DEFAULT_TOKEN_COUNT_MODE: SpyTokenCountMode = "provider";
+const TOKEN_COUNT_CONCURRENCY = 8;
 
 const ClearRequestSchema = z.object({
   confirm: z.literal(true),
@@ -40,6 +56,8 @@ export interface SpyServiceConfig {
   readonly maxBytes: number;
   readonly spoolMaxBytes: number;
   readonly storeRaw: boolean;
+  readonly tokenCountMode: SpyTokenCountMode;
+  readonly bedrockRegion: string;
   readonly ingestIntervalMs: number;
   readonly retentionIntervalMs: number;
   readonly ingestBatchLimit: number;
@@ -55,6 +73,7 @@ export interface SpyServiceHealth {
     readonly maxBytes: number;
     readonly spoolMaxBytes: number;
     readonly storeRaw: boolean;
+    readonly tokenCountMode: SpyTokenCountMode;
     readonly staticAssets: boolean;
   };
   readonly store: SpyHealthSnapshot;
@@ -64,6 +83,7 @@ export interface StartSpyServiceOptions {
   readonly config?: Partial<SpyServiceConfig> | undefined;
   readonly startIngestion?: boolean | undefined;
   readonly now?: (() => number) | undefined;
+  readonly tokenCounter?: BedrockTokenCounter | undefined;
 }
 
 export interface SpyServiceHandle {
@@ -100,6 +120,7 @@ class SpyHttpService {
   constructor(
     private readonly config: SpyServiceConfig,
     private readonly store: SpyStore,
+    private readonly tokenCounter: BedrockTokenCounter | undefined,
   ) {}
 
   start(startIngestion: boolean): void {
@@ -190,6 +211,10 @@ class SpyHttpService {
       this.broadcastHealth();
       return jsonResponse(result);
     }
+    if (request.method === "POST" && path === "/api/token-count") {
+      const body = SpyTokenCountRequestSchema.parse(await jsonBody(request));
+      return jsonResponse(await this.countTokens(body.subjects, body.mode ?? this.config.tokenCountMode));
+    }
 
     const streamMatch = /^\/api\/calls\/([^/]+)\/stream-events$/.exec(path);
     if (request.method === "GET" && streamMatch !== null) {
@@ -210,7 +235,7 @@ class SpyHttpService {
     const detailMatch = /^\/api\/calls\/([^/]+)$/.exec(path);
     if (request.method === "GET" && detailMatch !== null) {
       const callId = decodeURIComponent(detailMatch[1] ?? "");
-      const detail = this.store.getCallDetail(callId);
+      const detail = await this.getCallDetailWithTokenCounts(callId);
       if (detail === null) {
         throw new HttpError(404, "call not found");
       }
@@ -231,6 +256,7 @@ class SpyHttpService {
         maxBytes: this.config.maxBytes,
         spoolMaxBytes: this.config.spoolMaxBytes,
         storeRaw: this.config.storeRaw,
+        tokenCountMode: this.config.tokenCountMode,
         staticAssets: this.config.staticDir !== undefined,
       },
       store: this.store.getHealthSnapshot(),
@@ -264,6 +290,75 @@ class SpyHttpService {
         "X-Accel-Buffering": "no",
       },
     });
+  }
+
+  private async countTokens(
+    subjects: readonly SpyTokenCountSubject[],
+    mode: SpyTokenCountMode,
+  ): Promise<{ readonly mode: SpyTokenCountMode; readonly records: readonly SpyTokenCountRecord[] }> {
+    const records = await mapWithConcurrency(subjects, TOKEN_COUNT_CONCURRENCY, async (subject) => await this.countTokenSubject(subject));
+    return { mode, records };
+  }
+
+  private async countTokenSubject(subject: SpyTokenCountSubject): Promise<SpyTokenCountRecord> {
+    const prepared = this.store.prepareTokenCountSubject(subject);
+    if (prepared === null) {
+      return unavailableTokenRecord({
+        subjectType: subject.type,
+        callId: subject.callId,
+        ...(subject.type === "block" ? { blockId: subject.blockId } : {}),
+        ...(subject.type === "section" || subject.type === "call" ? { direction: subject.direction } : {}),
+        ...(subject.type === "section" ? { kind: subject.kind } : {}),
+        ...(subject.type === "selection" && subject.label !== undefined ? { label: subject.label } : {}),
+        sourceHash: "missing",
+        modelId: "unknown",
+        countedAt: Date.now() / 1000,
+      }, "call or subject not found");
+    }
+    if (prepared.providerReported !== undefined) {
+      return prepared.providerReported;
+    }
+    if (prepared.cacheKey !== undefined) {
+      const cached = this.store.getCachedProviderTokenCount(prepared.cacheKey);
+      if (cached !== null) {
+        return cached;
+      }
+    }
+    if (this.tokenCounter === undefined) {
+      return unavailableTokenRecord(prepared.base, "provider token counting is not configured");
+    }
+    try {
+      const input = prepared.requestBodyText === undefined
+        ? bedrockCountInputForText(prepared.text, prepared.block)
+        : bedrockCountInputFromRequestBody(prepared.requestBodyText) ?? bedrockCountInputForText(prepared.text, prepared.block);
+      const tokens = await this.tokenCounter.count({ modelId: prepared.base.modelId, input });
+      const record: SpyTokenCountRecord = {
+        ...prepared.base,
+        tokens,
+        provenance: "provider_counted",
+      };
+      this.store.saveProviderTokenCount(record);
+      return record;
+    } catch (error) {
+      return unavailableTokenRecord(prepared.base, errorMessage(error));
+    }
+  }
+
+  private async getCallDetailWithTokenCounts(callId: string): Promise<SpyCallDetail | null> {
+    const detail = this.store.getCallDetail(callId);
+    if (detail === null) {
+      return null;
+    }
+    const subjects = missingTokenCountSubjects(detail);
+    if (subjects.length === 0) {
+      return detail;
+    }
+    const counted = await this.countTokens(subjects, "provider");
+    const refreshed = this.store.getCallDetail(callId) ?? detail;
+    return {
+      ...refreshed,
+      tokenCounts: mergeTokenCounts(refreshed.tokenCounts, counted.records),
+    };
   }
 
   private serveStatic(path: string, requestHeaders: Headers): Response {
@@ -350,6 +445,8 @@ export function spyServiceConfigFromEnv(env: NodeJS.ProcessEnv = process.env): S
     maxBytes: envNumber(env.ROOTCELL_SPY_MAX_BYTES, DEFAULT_MAX_BYTES),
     spoolMaxBytes: envNumber(env.ROOTCELL_SPY_SPOOL_MAX_BYTES, DEFAULT_SPOOL_MAX_BYTES),
     storeRaw: envBoolean(env.ROOTCELL_SPY_STORE_RAW, false),
+    tokenCountMode: tokenCountModeFromEnv(env.ROOTCELL_SPY_TOKEN_COUNT_MODE),
+    bedrockRegion: nonEmpty(env.ROOTCELL_SPY_BEDROCK_REGION) ?? nonEmpty(env.AWS_REGION) ?? nonEmpty(env.AWS_DEFAULT_REGION) ?? "us-east-1",
     ingestIntervalMs: envNumber(env.ROOTCELL_SPY_INGEST_INTERVAL_MS, DEFAULT_INGEST_INTERVAL_MS),
     retentionIntervalMs: envNumber(env.ROOTCELL_SPY_RETENTION_INTERVAL_MS, DEFAULT_RETENTION_INTERVAL_MS),
     ingestBatchLimit: envNumber(env.ROOTCELL_SPY_INGEST_BATCH_LIMIT, DEFAULT_INGEST_BATCH_LIMIT),
@@ -367,17 +464,23 @@ export function startSpyService(options: StartSpyServiceOptions = {}): SpyServic
     ...(options.now === undefined ? {} : { now: options.now }),
   };
   const store = openSpyStore(storeOptions);
+  const tokenCounter = options.tokenCounter ?? (
+    hasBedrockCredentialEnv()
+      ? new AwsBedrockTokenCounter({ region: config.bedrockRegion })
+      : undefined
+  );
   let service: SpyHttpService | undefined;
   let server: Bun.Server<undefined> | undefined;
   let activeConfig = config;
   let lastListenError: unknown;
   for (const port of candidatePorts(config.port)) {
     activeConfig = { ...config, port };
-    service = new SpyHttpService(activeConfig, store);
+    service = new SpyHttpService(activeConfig, store, tokenCounter);
     try {
       server = Bun.serve({
         hostname: activeConfig.bind,
         port: activeConfig.port,
+        idleTimeout: 120,
         fetch: (request) => {
           if (service === undefined) {
             return jsonError(503, "service unavailable");
@@ -550,6 +653,10 @@ function responseForError(error: unknown): Response {
   return jsonError(500, error instanceof Error ? error.message : "internal error");
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function nonEmpty(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
@@ -568,6 +675,129 @@ function envBoolean(value: string | undefined, fallback: boolean): boolean {
     return fallback;
   }
   return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
+}
+
+function hasBedrockCredentialEnv(env: NodeJS.ProcessEnv = process.env): boolean {
+  return nonEmpty(env.AWS_BEARER_TOKEN_BEDROCK) !== undefined
+    || nonEmpty(env.AWS_ACCESS_KEY_ID) !== undefined
+    || nonEmpty(env.AWS_SECRET_ACCESS_KEY) !== undefined
+    || nonEmpty(env.AWS_SESSION_TOKEN) !== undefined
+    || nonEmpty(env.AWS_SECURITY_TOKEN) !== undefined;
+}
+
+function tokenCountModeFromEnv(value: string | undefined): SpyTokenCountMode {
+  const normalized = value?.trim().toLowerCase();
+  return normalized === "provider" ? "provider" : DEFAULT_TOKEN_COUNT_MODE;
+}
+
+function missingTokenCountSubjects(detail: SpyCallDetail): SpyTokenCountSubject[] {
+  const present = new Set(
+    detail.tokenCounts
+      .filter((record) => record.provenance !== "unavailable")
+      .map(recordSubjectKey),
+  );
+  const subjects: SpyTokenCountSubject[] = [];
+  const requestCall: SpyTokenCountSubject = {
+    type: "call",
+    callId: detail.summary.call.id,
+    direction: "request",
+  };
+  if (!present.has(subjectKey(requestCall))) {
+    subjects.push(requestCall);
+  }
+
+  const sectionKeys = new Set<string>();
+  for (const block of detail.blocks) {
+    const section: SpyTokenCountSubject = {
+      type: "section",
+      callId: detail.summary.call.id,
+      direction: block.direction,
+      kind: block.kind,
+    };
+    const key = subjectKey(section);
+    if (!sectionKeys.has(key)) {
+      sectionKeys.add(key);
+      if (!present.has(key)) {
+        subjects.push(section);
+      }
+    }
+
+    const blockSubject: SpyTokenCountSubject = {
+      type: "block",
+      callId: detail.summary.call.id,
+      blockId: block.id,
+    };
+    if (!present.has(subjectKey(blockSubject))) {
+      subjects.push(blockSubject);
+    }
+  }
+  return subjects;
+}
+
+function mergeTokenCounts(
+  existing: readonly SpyTokenCountRecord[],
+  counted: readonly SpyTokenCountRecord[],
+): readonly SpyTokenCountRecord[] {
+  const records = new Map(existing.map((record) => [recordSubjectKey(record), record]));
+  for (const record of counted) {
+    const key = recordSubjectKey(record);
+    const current = records.get(key);
+    if (current === undefined || current.provenance === "unavailable") {
+      records.set(key, record);
+    }
+  }
+  return [...records.values()];
+}
+
+function subjectKey(subject: SpyTokenCountSubject): string {
+  if (subject.type === "call") {
+    return ["call", subject.callId, subject.direction, "", "", ""].join(":");
+  }
+  if (subject.type === "section") {
+    return ["section", subject.callId, subject.direction, "", subject.kind, ""].join(":");
+  }
+  if (subject.type === "block") {
+    return ["block", subject.callId, "", subject.blockId, "", ""].join(":");
+  }
+  return ["selection", subject.callId, "", "", "", subject.label ?? subject.text].join(":");
+}
+
+function recordSubjectKey(record: SpyTokenCountRecord): string {
+  return [
+    record.subjectType,
+    record.callId ?? "",
+    record.direction ?? "",
+    record.blockId ?? "",
+    record.kind ?? "",
+    record.label ?? record.sourceHash,
+  ].join(":");
+}
+
+async function mapWithConcurrency<T, U>(
+  items: readonly T[],
+  concurrency: number,
+  mapper: (item: T) => Promise<U>,
+): Promise<U[]> {
+  const results = new Array<U>(items.length);
+  let nextIndex = 0;
+  async function worker(): Promise<void> {
+    for (;;) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= items.length) {
+        return;
+      }
+      const item = items[index] as T;
+      results[index] = await mapper(item);
+    }
+  }
+  await Promise.all(Array.from(
+    { length: Math.min(concurrency, items.length) },
+    async () => {
+      await worker();
+    },
+  ));
+  return results;
 }
 
 function candidatePorts(port: number): number[] {

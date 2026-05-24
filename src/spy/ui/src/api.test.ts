@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { SpyCallDetailSchema, SpyServiceHealthSchema } from "../../api-contracts.ts";
+import { SpyCallDetailSchema, SpyServiceHealthSchema, SpyTokenCountResponseSchema } from "../../api-contracts.ts";
 import {
   SpyApiClient,
   callsUrl,
@@ -129,6 +129,15 @@ describe("spy UI API helpers", () => {
         run: () => client.streamEvents("call/one"),
       },
       {
+        name: "token count",
+        endpoint: "/api/token-count",
+        valid: sampleTokenCountResponse,
+        run: () => client.tokenCount({
+          mode: "provider",
+          subjects: [{ type: "block", callId: "call-one", blockId: "block-one" }],
+        }),
+      },
+      {
         name: "clear data",
         endpoint: "/api/clear",
         valid: sampleClearResult,
@@ -149,6 +158,11 @@ describe("spy UI API helpers", () => {
     const missingComposition: Record<string, unknown> = { ...sampleDetail };
     delete missingComposition.requestComposition;
     expect(SpyCallDetailSchema.safeParse(missingComposition).success).toBe(false);
+  });
+
+  test("validates token count responses", () => {
+    expect(SpyTokenCountResponseSchema.safeParse(sampleTokenCountResponse).success).toBe(true);
+    expect(SpyTokenCountResponseSchema.safeParse({ mode: "provider", records: [{ tokens: 1 }] }).success).toBe(false);
   });
 
   test("requires explicit V1 health fields", () => {
@@ -280,6 +294,7 @@ const sampleHealth = {
     maxBytes: 6_442_450_944,
     spoolMaxBytes: 1_073_741_824,
     storeRaw: false,
+    tokenCountMode: "provider",
     staticAssets: true,
   },
   store: {
@@ -315,6 +330,18 @@ const sampleBlock = {
 const sampleDetail = {
   summary: sampleSummary,
   requestComposition: sampleRequestComposition,
+  tokenCounts: [{
+    subjectType: "block",
+    callId: "call-one",
+    blockId: "block-one",
+    direction: "request",
+    kind: "current-user-input",
+    sourceHash: "block-hash",
+    modelId: "us.anthropic.claude-sonnet-4-6",
+    tokens: 2,
+    provenance: "provider_counted",
+    countedAt: 1,
+  }],
   httpEvents: [{
     id: "http-call-one-request",
     call_id: "call-one",
@@ -337,6 +364,22 @@ const sampleDetail = {
     total_tokens: 18,
   }],
   rawPayloads: [],
+} as const;
+
+const sampleTokenCountResponse = {
+  mode: "provider",
+  records: [{
+    subjectType: "block",
+    callId: "call-one",
+    blockId: "block-one",
+    direction: "request",
+    kind: "current-user-input",
+    sourceHash: "block-hash",
+    modelId: "us.anthropic.claude-sonnet-4-6",
+    tokens: 2,
+    provenance: "provider_counted",
+    countedAt: 2,
+  }],
 } as const;
 
 const sampleDiff = {

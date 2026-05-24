@@ -5,6 +5,7 @@ import {
   SpyCallDiffSchema,
   SpyCallSummaryPageSchema,
   SpyServiceHealthSchema,
+  SpyTokenCountResponseSchema,
   StreamEventPageSchema,
   SseEventPayloadSchemas,
 } from "../../api-contracts.ts";
@@ -16,6 +17,8 @@ import type {
   SpyCallSummary,
   SpyPaginatedResult,
   SpyServiceHealth,
+  SpyTokenCountRequest,
+  SpyTokenCountResponse,
   StreamEvent,
   SseCallsChangedPayload,
   SseEventName,
@@ -186,6 +189,16 @@ export class SpyApiClient {
 
   streamEvents(callId: string, cursor?: string): Promise<SpyPaginatedResult<StreamEvent>> {
     return fetchJson(streamEventsUrl(callId, cursor), StreamEventPageSchema);
+  }
+
+  tokenCount(request: SpyTokenCountRequest): Promise<SpyTokenCountResponse> {
+    return fetchJson("/api/token-count", SpyTokenCountResponseSchema, {
+      method: "POST",
+      body: JSON.stringify(request),
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
   }
 
   clearData(): Promise<ClearDataResult> {

@@ -9,12 +9,14 @@ import {
   SpyCallDiffSchema,
   SpyCallSummaryPageSchema,
   SpyServiceHealthSchema,
+  SpyTokenCountResponseSchema,
   StreamEventPageSchema,
   SseEventNameSchema,
   SseEventPayloadSchemas,
 } from "./api-contracts.ts";
 import { SpoolEventSchema, type SpoolEvent } from "./schemas.ts";
 import { spyServiceConfigFromEnv, startSpyService, type SpyServiceHandle } from "./service.ts";
+import type { BedrockTokenCounter, BedrockTokenCountInput } from "./bedrock-token-count.ts";
 
 const FIXTURE_PATH = new URL("./fixtures/bedrock-pi-us-sonnet-4-6.ndjson", import.meta.url);
 
@@ -31,6 +33,24 @@ interface SseReader {
     | { readonly done: true; readonly value?: undefined }
     | { readonly done: false; readonly value: Uint8Array }
   >;
+}
+
+class FakeTokenCounter implements BedrockTokenCounter {
+  readonly inputs: BedrockTokenCountInput[] = [];
+
+  constructor(
+    private readonly result: number,
+    private readonly failure?: Error | undefined,
+  ) {}
+
+  async count(input: BedrockTokenCountInput): Promise<number> {
+    await Promise.resolve();
+    this.inputs.push(input);
+    if (this.failure !== undefined) {
+      throw this.failure;
+    }
+    return this.result;
+  }
 }
 
 const tempRoots: string[] = [];
@@ -56,6 +76,8 @@ function fixtureEvents(): SpoolEvent[] {
 function createTestService(options: {
   readonly storeRaw?: boolean | undefined;
   readonly startIngestion?: boolean | undefined;
+  readonly tokenCounter?: BedrockTokenCounter | undefined;
+  readonly tokenCountMode?: "provider" | undefined;
 } = {}): TestService {
   const root = mkdtempSync(join(tmpdir(), "rootcell-spy-service-"));
   tempRoots.push(root);
@@ -75,10 +97,12 @@ function createTestService(options: {
       spoolDir,
       staticDir,
       storeRaw: options.storeRaw === true,
+      ...(options.tokenCountMode === undefined ? {} : { tokenCountMode: options.tokenCountMode }),
       ingestIntervalMs: 60_000,
       retentionIntervalMs: 60_000,
     },
     startIngestion: options.startIngestion ?? false,
+    tokenCounter: options.tokenCounter,
   });
   serviceHandles.push(handle);
   return { root, dbPath, spoolDir, staticDir, handle };
@@ -104,6 +128,10 @@ describe("spy web service", () => {
     expect(spyServiceConfigFromEnv({}).enabled).toBe(true);
     expect(spyServiceConfigFromEnv({ ROOTCELL_SPY_ENABLED: "false" }).enabled).toBe(false);
     expect(spyServiceConfigFromEnv({ ROOTCELL_SPY_ENABLED: "true" }).enabled).toBe(true);
+    expect(spyServiceConfigFromEnv({}).tokenCountMode).toBe("provider");
+    expect(spyServiceConfigFromEnv({ ROOTCELL_SPY_TOKEN_COUNT_MODE: "estimate" }).tokenCountMode).toBe("provider");
+    expect(spyServiceConfigFromEnv({ ROOTCELL_SPY_TOKEN_COUNT_MODE: "provider" }).tokenCountMode).toBe("provider");
+    expect(spyServiceConfigFromEnv({ AWS_REGION: "us-west-2" }).bedrockRegion).toBe("us-west-2");
   });
 
   test("serves health, paginated calls, details, diff, stream events, and search", async () => {
@@ -122,6 +150,7 @@ describe("spy web service", () => {
     const health = await jsonAs(healthResponse, SpyServiceHealthSchema);
     expect(health.service.enabled).toBe(true);
     expect(health.service.storeRaw).toBe(false);
+    expect(health.service.tokenCountMode).toBe("provider");
     expect(health.store.providerCallCount).toBe(5);
     expect(health.store.droppedCaptureCount).toBe(0);
     expect(health.store.lastIngestAt).not.toBeNull();
@@ -219,6 +248,86 @@ describe("spy web service", () => {
 
     const missingResponse = await fetch(`${handle.url}/api/calls/missing-call`);
     expect(missingResponse.status).toBe(404);
+  });
+
+  test("counts tokens through provider calls, cached provider counts, and provider-reported usage", async () => {
+    const counter = new FakeTokenCounter(77);
+    const { handle, spoolDir } = createTestService({ tokenCounter: counter, tokenCountMode: "provider" });
+    writeSpoolEvents(spoolDir, fixtureEvents());
+    expect(handle.ingestOnce()).toMatchObject({ ingested: 10 });
+
+    const page = await jsonAs(await fetch(`${handle.url}/api/calls?limit=1`), SpyCallSummaryPageSchema);
+    const callId = page.items[0]?.call.id;
+    if (callId === undefined) {
+      throw new Error("missing call id");
+    }
+    const detail = await jsonAs(await fetch(`${handle.url}/api/calls/${encodeURIComponent(callId)}`), SpyCallDetailSchema);
+    const block = detail.blocks.find((candidate) => candidate.direction === "request" && candidate.text !== undefined);
+    if (block === undefined) {
+      throw new Error("missing text block");
+    }
+    expect(detail.tokenCounts.find((record) => record.subjectType === "block" && record.blockId === block.id))
+      .toMatchObject({ subjectType: "block", provenance: "provider_counted", tokens: 77 });
+    const afterDetailCount = counter.inputs.length;
+    expect(afterDetailCount).toBeGreaterThan(0);
+
+    const cachedBlock = await jsonAs(await fetch(`${handle.url}/api/token-count`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "provider", subjects: [{ type: "block", callId, blockId: block.id }] }),
+    }), SpyTokenCountResponseSchema);
+    expect(cachedBlock.records[0]).toMatchObject({ subjectType: "block", provenance: "provider_counted", tokens: 77 });
+    expect(counter.inputs).toHaveLength(afterDetailCount);
+
+    const selection = await jsonAs(await fetch(`${handle.url}/api/token-count`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "provider", subjects: [{ type: "selection", callId, text: "selected text" }] }),
+    }), SpyTokenCountResponseSchema);
+    expect(selection.records[0]).toMatchObject({ provenance: "provider_counted", tokens: 77 });
+    expect(counter.inputs).toHaveLength(afterDetailCount + 1);
+
+    const cachedSelection = await jsonAs(await fetch(`${handle.url}/api/token-count`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "provider", subjects: [{ type: "selection", callId, text: "selected text" }] }),
+    }), SpyTokenCountResponseSchema);
+    expect(cachedSelection.records[0]).toMatchObject({ provenance: "provider_counted", tokens: 77 });
+    expect(counter.inputs).toHaveLength(afterDetailCount + 1);
+
+    const reported = await jsonAs(await fetch(`${handle.url}/api/token-count`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "provider", subjects: [{ type: "call", callId, direction: "request" }] }),
+    }), SpyTokenCountResponseSchema);
+    expect(reported.records[0]).toMatchObject({ subjectType: "call", provenance: "provider_reported" });
+    expect(counter.inputs).toHaveLength(afterDetailCount + 1);
+  });
+
+  test("returns unavailable token records when provider counting fails", async () => {
+    const { handle, spoolDir } = createTestService({
+      tokenCounter: new FakeTokenCounter(0, new Error("provider offline")),
+      tokenCountMode: "provider",
+    });
+    writeSpoolEvents(spoolDir, fixtureEvents());
+    expect(handle.ingestOnce()).toMatchObject({ ingested: 10 });
+
+    const page = await jsonAs(await fetch(`${handle.url}/api/calls?limit=1`), SpyCallSummaryPageSchema);
+    const callId = page.items[0]?.call.id;
+    if (callId === undefined) {
+      throw new Error("missing call id");
+    }
+    const response = await jsonAs(await fetch(`${handle.url}/api/token-count`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "provider", subjects: [{ type: "selection", callId, text: "selected text" }] }),
+    }), SpyTokenCountResponseSchema);
+    expect(response.records[0]).toMatchObject({
+      subjectType: "selection",
+      provenance: "unavailable",
+      tokens: null,
+      error: "provider offline",
+    });
   });
 
   test("returns raw payloads only when raw storage is enabled", async () => {

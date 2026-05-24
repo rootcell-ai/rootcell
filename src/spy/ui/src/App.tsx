@@ -8,6 +8,7 @@ import {
   Clock,
   Database,
   Filter,
+  Hash,
   Loader2,
   RefreshCcw,
   Search,
@@ -48,6 +49,7 @@ import type {
   SpyRequestComposition,
   SpyCallSummary,
   SpyServiceHealth,
+  SpyTokenCountRecord,
   StreamEvent,
   TimePreset,
   UiFilters,
@@ -1107,7 +1109,7 @@ function InspectorContent(props: {
         <SummaryPanel detail={props.detail} />
       </InspectorAnchor>
       <InspectorAnchor id="composition">
-        <RequestCompositionPanel composition={props.detail.requestComposition} />
+        <RequestCompositionPanel composition={props.detail.requestComposition} tokenCounts={props.detail.tokenCounts} />
       </InspectorAnchor>
       <BlockToolbar filters={props.filters} onFilters={props.onFilters} />
       <Section
@@ -1116,7 +1118,7 @@ function InspectorContent(props: {
         meta={blockListMeta(requestBlocks)}
         defaultOpen={blockSectionsDefaultOpen}
       >
-        <BlockList blocks={requestBlocks} filterKind={props.filters.blockKind} diffByBlockId={diffByBlockId} />
+        <BlockList blocks={requestBlocks} filterKind={props.filters.blockKind} diffByBlockId={diffByBlockId} tokenCounts={props.detail.tokenCounts} />
       </Section>
       <Section
         id="response-blocks"
@@ -1124,7 +1126,7 @@ function InspectorContent(props: {
         meta={blockListMeta(responseBlocks)}
         defaultOpen={blockSectionsDefaultOpen}
       >
-        <BlockList blocks={responseBlocks} filterKind={props.filters.blockKind} diffByBlockId={diffByBlockId} />
+        <BlockList blocks={responseBlocks} filterKind={props.filters.blockKind} diffByBlockId={diffByBlockId} tokenCounts={props.detail.tokenCounts} />
       </Section>
       <Section id="diff" title="Diff Against Previous Request">
         <DiffPanel diff={props.diff} preset={props.preset} since={props.since} />
@@ -1270,8 +1272,10 @@ function PanelMetric(props: {
 
 function RequestCompositionPanel(props: {
   readonly composition: SpyRequestComposition;
+  readonly tokenCounts: readonly SpyTokenCountRecord[];
 }): React.ReactElement {
   const { composition } = props;
+  const requestTokens = tokenCountForCall(props.tokenCounts, "request");
   return (
     <div className="rounded-md border border-stone-300 bg-white p-4 shadow-sm" data-testid="request-composition">
       <div className="flex items-center justify-between gap-3">
@@ -1305,29 +1309,40 @@ function RequestCompositionPanel(props: {
           detail={formatCompositionUsageDetail(composition.usage)}
           detailTestId="composition-provider-usage-detail"
         />
+        <CompositionMetric
+          label="Request tokens"
+          value={formatTokenRecord(requestTokens)}
+          detail={tokenProvenanceLabel(requestTokens)}
+          detailTestId="composition-request-token-detail"
+        />
       </div>
 
       <div className="spy-scrollbar mt-3 overflow-x-auto rounded-md border border-stone-200 text-xs" data-testid="composition-section-table">
-        <div className="grid grid-cols-[minmax(116px,1fr)_54px_58px_52px_64px_64px] items-center gap-2 bg-stone-100 px-3 py-2 font-medium text-stone-600">
+        <div className="grid grid-cols-[minmax(92px,1fr)_42px_46px_42px_48px_52px_54px] items-center gap-1 bg-stone-100 px-3 py-2 font-medium text-stone-600">
           <span>Section</span>
           <span>State</span>
-          <span className="text-right">Messages</span>
+          <span className="text-right">Msgs</span>
           <span className="text-right">Blocks</span>
           <span className="text-right">Chars</span>
           <span className="text-right">Bytes</span>
+          <span className="text-right">Tokens</span>
         </div>
-        {composition.sections.map((section) => (
-          <div key={section.kind} className="grid grid-cols-[minmax(116px,1fr)_54px_58px_52px_64px_64px] items-center gap-2 border-t border-stone-200 px-3 py-2">
-            <span className="font-medium leading-4 text-stone-800">{blockKindLabel(section.kind)}</span>
-            <span className={section.present ? "text-emerald-700" : "text-stone-400"}>
-              {section.present ? "present" : "absent"}
-            </span>
-            <span className="text-right text-stone-600">{formatNumber(section.messageCount)}</span>
-            <span className="text-right text-stone-600">{formatNumber(section.blockCount)}</span>
-            <span className="text-right text-stone-600">{formatNumber(section.charSize)}</span>
-            <span className="text-right text-stone-600">{formatBytes(section.byteSize)}</span>
-          </div>
-        ))}
+        {composition.sections.map((section) => {
+          const tokenCount = tokenCountForSection(props.tokenCounts, "request", section.kind);
+          return (
+            <div key={section.kind} className="grid grid-cols-[minmax(92px,1fr)_42px_46px_42px_48px_52px_54px] items-center gap-1 border-t border-stone-200 px-3 py-2">
+              <span className="font-medium leading-4 text-stone-800">{blockKindLabel(section.kind)}</span>
+              <span className={section.present ? "text-emerald-700" : "text-stone-400"}>
+                {section.present ? "present" : "absent"}
+              </span>
+              <span className="text-right text-stone-600">{formatNumber(section.messageCount)}</span>
+              <span className="text-right text-stone-600">{formatNumber(section.blockCount)}</span>
+              <span className="text-right text-stone-600">{formatNumber(section.charSize)}</span>
+              <span className="text-right text-stone-600">{formatBytes(section.byteSize)}</span>
+              <span className="text-right text-stone-600" title={tokenProvenanceLabel(tokenCount)}>{formatTokenRecord(tokenCount)}</span>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -1356,6 +1371,83 @@ function formatCompositionUsageDetail(usage: SpyRequestComposition["usage"]): st
     `out ${formatNumber(usage.outputTokens)}`,
     `cache ${formatNumber(usage.cacheReadTokens)}/${formatNumber(usage.cacheWriteTokens)}`,
   ].join(" · ");
+}
+
+function tokenCountForCall(
+  records: readonly SpyTokenCountRecord[],
+  direction: NormalizedBlock["direction"],
+): SpyTokenCountRecord | undefined {
+  return bestTokenRecord(records.filter((record) => record.subjectType === "call" && record.direction === direction));
+}
+
+function tokenCountForSection(
+  records: readonly SpyTokenCountRecord[],
+  direction: NormalizedBlock["direction"],
+  kind: NormalizedBlock["kind"],
+): SpyTokenCountRecord | undefined {
+  return bestTokenRecord(records.filter((record) =>
+    record.subjectType === "section" && record.direction === direction && record.kind === kind
+  ));
+}
+
+function tokenCountForBlock(records: readonly SpyTokenCountRecord[], blockId: string): SpyTokenCountRecord | undefined {
+  return bestTokenRecord(records.filter((record) => record.subjectType === "block" && record.blockId === blockId));
+}
+
+function bestTokenRecord(records: readonly SpyTokenCountRecord[]): SpyTokenCountRecord | undefined {
+  return [...records].sort((left, right) => tokenRecordPriority(right) - tokenRecordPriority(left))[0];
+}
+
+function tokenRecordPriority(record: SpyTokenCountRecord): number {
+  if (record.provenance === "provider_reported") {
+    return 4;
+  }
+  if (record.provenance === "provider_counted") {
+    return 3;
+  }
+  return 1;
+}
+
+function formatTokenRecord(record: SpyTokenCountRecord | undefined): string {
+  return record?.tokens === undefined || record.tokens === null ? "-" : `${formatNumber(record.tokens)} tok`;
+}
+
+function tokenProvenanceLabel(record: SpyTokenCountRecord | undefined): string {
+  if (record === undefined) {
+    return "unavailable";
+  }
+  const label = record.provenance.replaceAll("_", " ");
+  return record.error === undefined ? label : `${label}: ${record.error}`;
+}
+
+function tokenTone(record: SpyTokenCountRecord | undefined): "neutral" | "green" | "amber" | "red" | "blue" | "teal" {
+  if (record?.provenance === "provider_reported") {
+    return "green";
+  }
+  if (record?.provenance === "provider_counted") {
+    return "blue";
+  }
+  return "red";
+}
+
+function unavailableUiTokenCount(
+  block: NormalizedBlock,
+  error: string,
+  label?: string,
+): SpyTokenCountRecord {
+  return {
+    subjectType: label === undefined ? "block" : "selection",
+    callId: block.call_id,
+    direction: block.direction,
+    kind: block.kind,
+    ...(label === undefined ? { blockId: block.id } : { label }),
+    sourceHash: block.content_hash,
+    modelId: "unknown",
+    tokens: null,
+    provenance: "unavailable",
+    countedAt: Date.now() / 1000,
+    error,
+  };
 }
 
 function BlockToolbar(props: {
@@ -1393,6 +1485,7 @@ function BlockList(props: {
   readonly blocks: readonly NormalizedBlock[];
   readonly filterKind: string;
   readonly diffByBlockId: ReadonlyMap<string, DiffClassification>;
+  readonly tokenCounts: readonly SpyTokenCountRecord[];
 }): React.ReactElement {
   const blocks = props.filterKind === ALL_FILTER
     ? props.blocks
@@ -1406,7 +1499,12 @@ function BlockList(props: {
   return (
     <div className="space-y-2">
       {blocks.map((block) => (
-        <BlockRow key={block.id} block={block} diff={props.diffByBlockId.get(block.id)} />
+        <BlockRow
+          key={block.id}
+          block={block}
+          diff={props.diffByBlockId.get(block.id)}
+          tokenCount={tokenCountForBlock(props.tokenCounts, block.id)}
+        />
       ))}
     </div>
   );
@@ -1421,17 +1519,71 @@ function blockFilterLabel(kind: string): string {
 function BlockRow(props: {
   readonly block: NormalizedBlock;
   readonly diff: DiffClassification | undefined;
+  readonly tokenCount: SpyTokenCountRecord | undefined;
 }): React.ReactElement {
   const text = blockText(props.block);
+  const [providerCount, setProviderCount] = React.useState<SpyTokenCountRecord | null>(null);
+  const [selectionCount, setSelectionCount] = React.useState<SpyTokenCountRecord | null>(null);
+  const [tokenState, setTokenState] = React.useState<LoadState>("idle");
+  const visibleTokenCount = providerCount ?? props.tokenCount;
+  const countBlockWithProvider = (): void => {
+    setTokenState("loading");
+    void api.tokenCount({
+      mode: "provider",
+      subjects: [{ type: "block", callId: props.block.call_id, blockId: props.block.id }],
+    }).then((response) => {
+      setProviderCount(response.records[0] ?? null);
+      setTokenState("idle");
+    }).catch((error: unknown) => {
+      setProviderCount(unavailableUiTokenCount(props.block, errorMessage(error)));
+      setTokenState("error");
+    });
+  };
+  const countSelection = (): void => {
+    const selectedText = window.getSelection()?.toString() ?? "";
+    if (selectedText.length === 0) {
+      setSelectionCount(unavailableUiTokenCount(props.block, "select text inside a block first"));
+      return;
+    }
+    setTokenState("loading");
+    void api.tokenCount({
+      mode: "provider",
+      subjects: [{ type: "selection", callId: props.block.call_id, text: selectedText, label: "selection" }],
+    }).then((response) => {
+      setSelectionCount(response.records[0] ?? null);
+      setTokenState("idle");
+    }).catch((error: unknown) => {
+      setSelectionCount(unavailableUiTokenCount(props.block, errorMessage(error), "selection"));
+      setTokenState("error");
+    });
+  };
   return (
-    <div className={cn("rounded-md border bg-white p-3", blockBorderClass(props.block.kind))}>
-      <div className="flex items-center gap-2">
+    <div className={cn("rounded-md border bg-white p-3", blockBorderClass(props.block.kind))} data-testid={`block-row-${props.block.id}`}>
+      <div className="flex flex-wrap items-center gap-2">
         <Badge tone={blockTone(props.block.kind)}>{blockKindLabel(props.block.kind)}</Badge>
         {props.block.role === undefined ? null : <Badge>{props.block.role}</Badge>}
         {props.block.cache_marker ? <Badge tone="blue">cache marker</Badge> : null}
         {props.diff === undefined ? null : <Badge tone={diffTone(props.diff)}>{props.diff}</Badge>}
-        <span className="ml-auto text-xs text-stone-500">{formatBytes(props.block.byte_size)}</span>
+        <Badge tone={tokenTone(visibleTokenCount)} title={tokenProvenanceLabel(visibleTokenCount)}>
+          {formatTokenRecord(visibleTokenCount)}
+        </Badge>
+        <div className="ml-auto flex items-center gap-1">
+          <Button type="button" variant="secondary" size="sm" onClick={countSelection} title="Count selected text" data-testid={`selection-count-${props.block.id}`}>
+            <Hash aria-hidden="true" size={14} />
+            Selection
+          </Button>
+          <Button type="button" variant="secondary" size="sm" onClick={countBlockWithProvider} title="Ask Bedrock CountTokens for this block" data-testid={`provider-count-${props.block.id}`}>
+            {tokenState === "loading" ? <Loader2 aria-hidden="true" className="animate-spin" size={14} /> : <Hash aria-hidden="true" size={14} />}
+            Provider
+          </Button>
+          <span className="text-xs text-stone-500">{formatBytes(props.block.byte_size)}</span>
+        </div>
       </div>
+      {selectionCount === null ? null : (
+        <div className="mt-2 text-xs text-stone-600" data-testid="selection-token-count">
+          Selection tokens: <span className="font-semibold">{formatTokenRecord(selectionCount)}</span> · {tokenProvenanceLabel(selectionCount)}
+        </div>
+      )}
       {text.length === 0 ? null : (
         <pre className="spy-scrollbar mt-3 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-stone-950 p-3 text-xs leading-5 text-stone-50">
           {clipped(text, 6_000)}
@@ -1729,6 +1881,7 @@ function HealthPanel(props: { readonly health: SpyServiceHealth | null }): React
       <HealthCell label="Store cap" value={formatBytes(service.maxBytes)} />
       <HealthCell label="Spool cap" value={formatBytes(service.spoolMaxBytes)} />
       <HealthCell label="Retention" value={`${formatNumber(service.retentionDays)} days`} />
+      <HealthCell label="Token mode" value={service.tokenCountMode} />
       <HealthCell label="Dropped captures" value={formatNumber(store.droppedCaptureCount)} />
       <HealthCell label="Last ingest" value={store.lastIngestAt === null ? "-" : formatDateTime(store.lastIngestAt)} />
       <HealthCell label="Calls" value={formatNumber(store.providerCallCount)} />
@@ -1986,4 +2139,8 @@ function timelineEmptyStateFor(search: string, filters: UiFilters): TimelineEmpt
 function sseErrorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return `SSE validation failed: ${message}`;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

@@ -6,6 +6,7 @@ import type {
   SpyCallSummary,
   SpyRequestComposition,
   SpyServiceHealth,
+  SpyTokenCountRecord,
   StreamEvent,
 } from "../src/types.ts";
 
@@ -809,6 +810,30 @@ test("bounds high-volume stream events and clears them on range changes", async 
   expect(await page.evaluate(() => document.querySelector("main")?.scrollTop ?? -1)).toBe(0);
 });
 
+test("shows token provenance and counts selected block text", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await installHeavyStreamRoutes(page);
+  await page.goto("/?since=0");
+  await page.getByTestId("timeline-row").click();
+
+  const block = page.getByTestId("block-row-block-request-user");
+  await expect(block.getByText("5 tok", { exact: true })).toBeVisible();
+
+  await block.getByTestId("provider-count-block-request-user").click();
+  await expect(block.getByText("77 tok", { exact: true })).toBeVisible();
+
+  await block.locator("pre").evaluate((element) => {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  });
+  await block.getByTestId("selection-count-block-request-user").click();
+  await expect(block.getByTestId("selection-token-count")).toContainText("5 tok");
+  await expect(block.getByTestId("selection-token-count")).toContainText("provider counted");
+});
+
 test("traps focus in the clear data dialog and closes with Escape", async ({ page }) => {
   await page.goto("/?since=0");
   await expect(page.getByTestId("timeline-row")).toHaveCount(5);
@@ -922,6 +947,28 @@ async function installHeavyStreamRoutes(page: Page): Promise<void> {
   });
   await page.route(/\/api\/calls\/call-heavy-stream$/, async (route) => {
     await fulfillJson(route, fixture.detail);
+  });
+  await page.route(/\/api\/token-count$/, async (route) => {
+    const body = await route.request().postDataJSON() as {
+      readonly subjects?: readonly { readonly type: string; readonly callId?: string; readonly blockId?: string; readonly text?: string }[];
+    };
+    const subject = body.subjects?.[0];
+    await fulfillJson(route, {
+      mode: "provider",
+      records: [{
+        subjectType: subject?.type ?? "block",
+        callId: subject?.callId ?? HEAVY_STREAM_CALL_ID,
+        ...(subject?.blockId === undefined ? {} : { blockId: subject.blockId }),
+        direction: "request",
+        kind: "current-user-input",
+        label: subject?.type === "selection" ? "selection" : undefined,
+        sourceHash: "provider-count-hash",
+        modelId: HEAVY_STREAM_MODEL_ID,
+        tokens: subject?.type === "selection" ? 5 : 77,
+        provenance: "provider_counted",
+        countedAt: HEAVY_STREAM_TS + 3,
+      }],
+    });
   });
   await page.route(/\/api\/calls(?:\?.*)?$/, async (route) => {
     await fulfillJson(route, { items: [fixture.summary] });
@@ -1094,6 +1141,7 @@ function diffScopeFixture(): {
   const detail: SpyCallDetail = {
     summary,
     requestComposition: requestComposition(usage),
+    tokenCounts: tokenCountsFor(summary, blocks),
     httpEvents: [],
     blocks,
     usageRecords: [],
@@ -1159,6 +1207,7 @@ function cacheTimelineFixture(): {
       totalBlockCount: 3,
       cacheMarkerCount: 2,
     },
+    tokenCounts: [],
     httpEvents: [],
     blocks: [
       {
@@ -1276,6 +1325,7 @@ function networkMetadataFixture(): {
   const detail: SpyCallDetail = {
     summary,
     requestComposition: requestComposition(usage),
+    tokenCounts: tokenCountsFor(summary, blocks),
     httpEvents: [
       {
         id: "http-request-network-metadata",
@@ -1406,6 +1456,7 @@ function blockFilterDetail(
   return {
     summary,
     requestComposition: requestComposition(usage),
+    tokenCounts: [],
     httpEvents: [],
     blocks,
     usageRecords: [],
@@ -1485,6 +1536,7 @@ function heavyStreamFixture(): {
   const detail: SpyCallDetail = {
     summary,
     requestComposition: requestComposition(usage),
+    tokenCounts: tokenCountsFor(summary, blocks),
     httpEvents: [
       {
         id: "http-request-heavy-stream",
@@ -1552,6 +1604,7 @@ function healthFixture(providerCallCount: number, lastIngestAt: number): SpyServ
       maxBytes: 6442450944,
       spoolMaxBytes: 1073741824,
       storeRaw: false,
+      tokenCountMode: "provider",
       staticAssets: true,
     },
     store: {
@@ -1594,6 +1647,33 @@ function requestComposition(usage: SpyCallSummary["usage"]): SpyRequestCompositi
     mediaSummaryByteSize: 0,
     usage,
   };
+}
+
+function tokenCountsFor(summary: SpyCallSummary, blocks: readonly NormalizedBlock[]): SpyTokenCountRecord[] {
+  return [
+    {
+      subjectType: "call",
+      callId: summary.call.id,
+      direction: "request",
+      sourceHash: summary.call.request_content_hash ?? `${summary.call.id}-request-token-hash`,
+      modelId: summary.call.model_id,
+      tokens: summary.usage.inputTokens,
+      provenance: summary.usage.inputTokens === null ? "unavailable" : "provider_reported",
+      countedAt: summary.call.started_at,
+    },
+    ...blocks.map((block): SpyTokenCountRecord => ({
+      subjectType: "block",
+      callId: summary.call.id,
+      blockId: block.id,
+      direction: block.direction,
+      kind: block.kind,
+      sourceHash: block.content_hash,
+      modelId: summary.call.model_id,
+      tokens: Math.max(1, Math.ceil(block.byte_size / 4)),
+      provenance: "provider_counted",
+      countedAt: summary.call.started_at,
+    })),
+  ];
 }
 
 function normalizedBlock(

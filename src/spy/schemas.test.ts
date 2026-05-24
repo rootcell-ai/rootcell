@@ -114,8 +114,8 @@ describe("spy sqlite migrations", () => {
     const db = new Database(":memory:");
     try {
       applySpyMigrations(db);
-      expect(currentSpySchemaVersion()).toBe(2);
-      expect(db.query("SELECT MAX(version) AS version FROM schema_migration").get()).toEqual({ version: 2 });
+      expect(currentSpySchemaVersion()).toBe(4);
+      expect(db.query("SELECT MAX(version) AS version FROM schema_migration").get()).toEqual({ version: 4 });
 
       db.query(`
 INSERT INTO provider_call (
