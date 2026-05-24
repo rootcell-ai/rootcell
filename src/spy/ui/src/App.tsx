@@ -871,16 +871,16 @@ function CallInspector(props: {
   readonly onToggleStreamPayload: (eventId: string) => void;
 }): React.ReactElement {
   const detailState = props.detailState;
-  const showSectionNav = isLoadedDetailState(detailState);
+  const showSectionNav = props.summary !== null && isLoadedDetailState(detailState);
   let content: React.ReactNode;
   if (props.summary === null) {
-    content = <EmptyInspector />;
+    content = <EmptyInspector health={props.health} />;
   } else if (detailState?.state === "loading") {
     content = <LoadingPanel label="Loading call detail" />;
   } else if (detailState?.state === "error") {
     content = <ErrorPanel message={detailState.error ?? "failed to load call detail"} />;
   } else if (!isLoadedDetailState(detailState)) {
-    content = <EmptyInspector />;
+    content = <EmptyInspector health={props.health} />;
   } else {
     content = (
       <InspectorContent
@@ -1569,11 +1569,20 @@ function Section(props: {
   );
 }
 
-function EmptyInspector(): React.ReactElement {
+function EmptyInspector(props: { readonly health: SpyServiceHealth | null }): React.ReactElement {
   return (
-    <div className="rounded-md border border-stone-300 bg-white p-6 text-sm text-stone-500">
-      Select a timeline row to inspect the provider call.
-    </div>
+    <>
+      <div className="rounded-md border border-stone-300 bg-white p-6 text-sm text-stone-500">
+        Select a timeline row to inspect the provider call.
+      </div>
+      <section className="rounded-md border border-stone-300 bg-white p-4 shadow-sm" data-testid="inspector-health-standalone">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h3 className="text-sm font-semibold text-stone-900">Service Health</h3>
+          <Badge tone="neutral">service</Badge>
+        </div>
+        <HealthPanel health={props.health} />
+      </section>
+    </>
   );
 }
 

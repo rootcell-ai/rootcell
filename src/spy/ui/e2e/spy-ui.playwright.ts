@@ -325,6 +325,28 @@ test("loads historical ranges and searches normalized text", async ({ page }) =>
   await expect(page.getByTestId("timeline-row").first()).toBeVisible();
 });
 
+test("keeps service health visible when filters leave no selected call", async ({ page }) => {
+  await page.goto("/?since=0");
+  await expect(page.getByTestId("timeline-row")).toHaveCount(5);
+
+  await page.getByLabel("Filter by status").selectOption("pending");
+
+  await expect(page.getByTestId("timeline-row")).toHaveCount(0);
+  await expect(page.getByText("No provider calls in this range.")).toBeVisible();
+  await expect(page.getByTestId("inspector-section-nav")).toHaveCount(0);
+
+  const inspector = page.locator("aside");
+  await expect(inspector.getByText("Select a timeline row to inspect the provider call.", { exact: true })).toBeVisible();
+  await expect(inspector.getByTestId("inspector-health-standalone")).toBeVisible();
+  await expect(inspector.getByText("Service Health", { exact: true })).toBeVisible();
+  await expect(inspector.getByText("Enabled", { exact: true }).first()).toBeVisible();
+  await expect(inspector.getByText("DB size", { exact: true })).toBeVisible();
+  await expect(inspector.getByText("Spool size", { exact: true })).toBeVisible();
+  await expect(inspector.getByText("Calls", { exact: true })).toBeVisible();
+  await expect(inspector.getByText("Pending", { exact: true })).toBeVisible();
+  await expect(inspector.getByText("Schema", { exact: true })).toBeVisible();
+});
+
 test("loads stream events on demand", async ({ page }) => {
   await page.goto("/?since=0");
   await expect(page.getByTestId("timeline-row")).toHaveCount(5);

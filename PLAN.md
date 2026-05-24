@@ -892,9 +892,13 @@ P3 is polish, minor copy, or secondary accessibility.
     refresh and SSE reloads, dynamic preset URLs no longer persist stale
     `since` timestamps, and Playwright coverage verifies the refreshed API query
     start advances.
-- [ ] [P1] SPY-QA-10: Keep service Health reachable independently of selected
+- [x] [P1] SPY-QA-10: Keep service Health reachable independently of selected
   calls. Empty search/filter results clear the inspector and remove access to
   health even though `/api/health` is still valid.
+  - Fixed on 2026-05-23: the no-call inspector state now renders service Health
+    independently of selected call detail and hides the call-section navigator
+    when no selected-call sections exist. Added Playwright coverage for an empty
+    Pending filter result.
 - [ ] [P1] SPY-QA-11: Improve empty-state copy for active filters/search. A
   Pending filter in Today with 23 completed calls says "No provider calls in this
   range" instead of explaining that filters excluded the calls.
@@ -1103,11 +1107,14 @@ Detailed issues and reproduction notes:
   staying green while all range pills are inactive. The button has no ARIA state,
   and applying the minute-precision custom input rounded the prior 05:10:21 PM
   since value down to 05:10:00 PM.
-- [ ] The Health panel is only reachable through a selected call inspector.
+- [x] The Health panel is only reachable through a selected call inspector.
   Filters or searches that return no calls clear the inspector and remove access
   to health/status even though service health is independent of call selection.
   The post-5:30 Today `Pending` filter left only the empty inspector text even
   though `/api/health` was still valid and reported Calls 23 / Pending 0.
+  Fixed on 2026-05-23 by rendering service Health in the no-call inspector state
+  and suppressing stale selected-call section navigation when no selected call is
+  available.
 - [ ] The inspector scroll container is taller than the actually visible
   viewport. With a long selected call, scrolling the inspector to its maximum
   still leaves lower accordions such as Diff, Usage Records, Network Metadata,
