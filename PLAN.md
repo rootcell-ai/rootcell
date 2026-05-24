@@ -1060,9 +1060,15 @@ P3 is polish, minor copy, or secondary accessibility.
     labels and used it in the timeline footer so one visible provider call now
     renders `1 call` instead of `1 calls`. Added unit coverage for count labels
     and Playwright coverage for a one-call filtered timeline.
-- [ ] [P3] SPY-QA-35: Loosen timeline row chips/badges. Long token labels,
+- [x] [P3] SPY-QA-35: Loosen timeline row chips/badges. Long token labels,
   token values, and timestamps can wrap or clip into awkward multi-line
   fragments.
+  - Fixed on 2026-05-24: timeline usage chips now render compact markers
+    (`down arrow` for read, `up arrow` for write, `R` for cache read, and `W`
+    for cache write) while preserving exact full meanings in chip titles,
+    chip `aria-label`s, and the row accessible name. The timestamp is protected
+    from wrapping, and Playwright coverage measures the cache-heavy row at
+    1100 px to ensure no usage chip clips.
 - [ ] [P3] SPY-QA-36: Prevent top inspector summary cards from truncating
   important values such as exact `Started` time.
 
@@ -1088,8 +1094,9 @@ separate tasks.
 - SPY-QA-32: The disconnected SSE badge now renders passive `SSE offline`
   status text instead of the action-like `Reconnect` label.
 - SPY-QA-34: The timeline count footer can display `1 calls`.
-- SPY-QA-35: Timeline row chips and timestamps are too tight; long token
-  labels, token values, and `PM` can wrap or clip into awkward fragments.
+- SPY-QA-35: Timeline row usage chips now use compact markers and preserve
+  full labels through `aria-label`/title text; timestamps are protected from
+  wrapping.
 - SPY-QA-36: Top inspector summary cards can truncate important values such as
   the exact `Started` timestamp.
 

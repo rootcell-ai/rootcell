@@ -522,20 +522,37 @@ test("labels diff baselines outside the current range", async ({ page }) => {
 });
 
 test("shows provider cache token classes in timeline rows", async ({ page }) => {
+  await page.setViewportSize({ width: 1100, height: 850 });
   await installCacheTimelineRoutes(page);
   await page.goto("/?since=0");
 
   const row = timelineRow(page, CACHE_TIMELINE_CALL_ID);
   await expect(row).toBeVisible();
   await expect(row).toHaveAccessibleName(/model claude-haiku-4-5-20251001-v1:0, status complete, started .+, operation converse-stream, read 10, write 98, cache read 5,200, cache write 81/);
-  await expect(row.getByText("read", { exact: true })).toBeVisible();
-  await expect(row.getByText("10", { exact: true })).toBeVisible();
-  await expect(row.getByText("write", { exact: true })).toBeVisible();
-  await expect(row.getByText("98", { exact: true })).toBeVisible();
-  await expect(row.getByText("cache read", { exact: true })).toBeVisible();
-  await expect(row.getByText("5,200", { exact: true })).toBeVisible();
-  await expect(row.getByText("cache write", { exact: true })).toBeVisible();
-  await expect(row.getByText("81", { exact: true })).toBeVisible();
+  const read = row.locator('[data-usage-metric="read"]');
+  const write = row.locator('[data-usage-metric="write"]');
+  const cacheRead = row.locator('[data-usage-metric="cache read"]');
+  const cacheWrite = row.locator('[data-usage-metric="cache write"]');
+  await expect(read).toHaveAttribute("aria-label", "read 10");
+  await expect(read).toContainText("10");
+  await expect(write).toHaveAttribute("aria-label", "write 98");
+  await expect(write).toContainText("98");
+  await expect(cacheRead).toHaveAttribute("aria-label", "cache read 5,200");
+  await expect(cacheRead).toHaveText("R5,200");
+  await expect(cacheWrite).toHaveAttribute("aria-label", "cache write 81");
+  await expect(cacheWrite).toHaveText("W81");
+  const metrics = await row.locator("[data-usage-metric]").evaluateAll((elements) =>
+    elements.map((element) => ({
+      label: element.getAttribute("data-usage-metric"),
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+      text: element.textContent,
+    })),
+  );
+  expect(metrics).toHaveLength(4);
+  for (const metric of metrics) {
+    expect(metric.scrollWidth, `${metric.label ?? "metric"} should not clip ${metric.text}`).toBeLessThanOrEqual(metric.clientWidth);
+  }
   await expect(row).not.toContainText("usage");
   await expect(row).not.toContainText("tok");
   await expect(row).not.toContainText("cache 2");

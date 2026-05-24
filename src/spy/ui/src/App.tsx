@@ -2,6 +2,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   Activity,
   AlertTriangle,
+  ArrowDown,
   ArrowUp,
   BadgeInfo,
   Clock,
@@ -886,13 +887,13 @@ function TimelineRow(props: {
         <div className="flex min-w-0 items-center gap-2">
           <span className="truncate text-sm font-semibold">{shortModelId(summary.call.model_id)}</span>
           <Badge tone={statusTone(summary.call.status)}>{summary.call.status}</Badge>
-          <span className="ml-auto text-xs text-stone-500">{formatTime(summary.call.started_at)}</span>
+          <span className="ml-auto shrink-0 whitespace-nowrap text-xs text-stone-500">{formatTime(summary.call.started_at)}</span>
         </div>
         <div className="mt-2 grid grid-cols-4 gap-2 text-xs text-stone-600">
-          <Metric label="read" value={formatNumber(summary.usage.inputTokens)} />
-          <Metric label="write" value={formatNumber(summary.usage.outputTokens)} />
-          <Metric label="cache read" value={formatNumber(summary.usage.cacheReadTokens)} />
-          <Metric label="cache write" value={formatNumber(summary.usage.cacheWriteTokens)} />
+          <Metric label="read" value={formatNumber(summary.usage.inputTokens)} marker={<ArrowDown aria-hidden="true" size={12} strokeWidth={2.5} />} />
+          <Metric label="write" value={formatNumber(summary.usage.outputTokens)} marker={<ArrowUp aria-hidden="true" size={12} strokeWidth={2.5} />} />
+          <Metric label="cache read" value={formatNumber(summary.usage.cacheReadTokens)} marker="R" />
+          <Metric label="cache write" value={formatNumber(summary.usage.cacheWriteTokens)} marker="W" />
         </div>
         <div className="mt-2 truncate text-xs text-stone-500">
           {summary.call.operation} · input {formatBytes(summary.requestByteSize)} · output {formatBytes(summary.responseByteSize)} · {formatDuration(summary.durationMs)} · {summary.requestBlockCount} request blocks · {summary.responseBlockCount} response blocks
@@ -921,11 +922,18 @@ function timelineRowAccessibleName(summary: SpyCallSummary): string {
   ].join(", ");
 }
 
-function Metric(props: { readonly label: string; readonly value: string }): React.ReactElement {
+function Metric(props: { readonly label: string; readonly marker: React.ReactNode; readonly value: string }): React.ReactElement {
   return (
-    <span className="flex min-w-0 items-center justify-between gap-1 rounded-md bg-stone-100 px-2 py-1">
-      <span className="truncate text-stone-500">{props.label}</span>
-      <span className="shrink-0 font-medium text-stone-900">{props.value}</span>
+    <span
+      className="flex min-w-0 items-center justify-between gap-1 rounded-md bg-stone-100 px-2 py-1"
+      aria-label={`${props.label} ${props.value}`}
+      title={`${props.label} ${props.value}`}
+      data-usage-metric={props.label}
+    >
+      <span className="flex h-4 min-w-4 shrink-0 items-center justify-center text-[11px] font-semibold leading-none text-stone-500" aria-hidden="true">
+        {props.marker}
+      </span>
+      <span className="shrink-0 whitespace-nowrap font-medium text-stone-900">{props.value}</span>
     </span>
   );
 }
