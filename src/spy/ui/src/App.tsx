@@ -1148,6 +1148,13 @@ function SummaryPanel(props: { readonly detail: SpyCallDetail }): React.ReactEle
   const { summary } = props.detail;
   return (
     <div className="rounded-md border border-stone-300 bg-white p-4 shadow-sm">
+      <div className="mb-3 rounded-md border border-stone-200 bg-stone-50 p-3" data-testid="summary-model-id">
+        <div className="flex items-center gap-2 text-xs text-stone-500">
+          <Server aria-hidden="true" size={16} />
+          Model ID
+        </div>
+        <div className="mt-1 break-all font-mono text-sm font-semibold text-stone-950">{summary.call.model_id}</div>
+      </div>
       <div className="grid grid-cols-4 gap-3">
         <PanelMetric icon={<Clock aria-hidden="true" size={16} />} label="Started" value={formatDateTime(summary.call.started_at)} />
         <PanelMetric icon={<Activity aria-hidden="true" size={16} />} label="Duration" value={formatDuration(summary.durationMs)} />

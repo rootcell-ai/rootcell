@@ -291,6 +291,23 @@ test("selects a call and opens inspector sections", async ({ page }) => {
   await expect(page.getByText("Last ingest", { exact: true })).toBeVisible();
 });
 
+test("shows full provider model id in the selected-call summary", async ({ page }) => {
+  const fullModelId = "us.anthropic.claude-sonnet-4-6";
+  const shortModelId = "claude-sonnet-4-6";
+
+  await page.goto("/?since=0");
+  await expect(page.getByTestId("timeline-row")).toHaveCount(5);
+
+  const firstRow = page.getByTestId("timeline-row").first();
+  await expect(firstRow.getByText(shortModelId, { exact: true })).toBeVisible();
+  await expect(firstRow).not.toContainText(fullModelId);
+  await firstRow.click();
+
+  const summary = page.getByTestId("inspector-section-summary");
+  await expect(summary.getByText("Model ID", { exact: true })).toBeVisible();
+  await expect(summary.getByTestId("summary-model-id")).toContainText(fullModelId);
+});
+
 test("shows pinned inspector state when a newer visible call is available", async ({ page }) => {
   await page.goto("/?since=0");
   await expect(page.getByTestId("timeline-row")).toHaveCount(5);

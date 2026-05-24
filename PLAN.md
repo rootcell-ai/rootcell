@@ -1016,8 +1016,13 @@ P3 is polish, minor copy, or secondary accessibility.
     the raw encoded target available, and wraps long header values. Added
     formatter unit coverage and Playwright coverage proving the decoded target
     is visible without hidden horizontal overflow at 1100 px.
-- [ ] [P2] SPY-QA-28: Show the full provider model id somewhere prominent. The
+- [x] [P2] SPY-QA-28: Show the full provider model id somewhere prominent. The
   normal row/header omit the `us.anthropic.` Bedrock namespace.
+  - Fixed on 2026-05-24: the inspector Summary panel now shows a prominent
+    wrapped `Model ID` field with the exact provider model id, while preserving
+    compact row/header labels. Added Playwright coverage proving the row remains
+    shortened but the selected-call summary exposes
+    `us.anthropic.claude-sonnet-4-6`.
 - [ ] [P2] SPY-QA-29: Fix sticky inspector header overlap. Scrolled detail content
   can slide underneath the fixed title/status area and appear clipped.
 - [ ] [P2] SPY-QA-30: Add ARIA state for selected timeline row and active range
@@ -1052,9 +1057,6 @@ separate tasks.
 - SPY-QA-25: The custom datetime input is cramped at the normal desktop browser
   width; the stored value is correct, but the AM/PM/time affordance is visually
   crowded.
-- SPY-QA-28: The normal timeline row and inspector header show the shortened
-  model id but not the full Bedrock namespace, so exact model verification
-  requires the API or Network Metadata.
 - SPY-QA-29: The sticky inspector call header can visually cover scrolled detail
   content, leaving rows partially clipped at the top of the detail pane.
 - SPY-QA-30: Selected timeline row and active time-range segment are only
