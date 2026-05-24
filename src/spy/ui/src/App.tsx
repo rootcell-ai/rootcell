@@ -889,11 +889,8 @@ function TimelineRow(props: {
           <Badge tone={statusTone(summary.call.status)}>{summary.call.status}</Badge>
           <span className="ml-auto shrink-0 whitespace-nowrap text-xs text-stone-500">{formatTime(summary.call.started_at)}</span>
         </div>
-        <div className="mt-2 grid grid-cols-4 gap-2 text-xs text-stone-600">
-          <Metric label="read" value={formatNumber(summary.usage.inputTokens)} marker={<ArrowDown aria-hidden="true" size={12} strokeWidth={2.5} />} />
-          <Metric label="write" value={formatNumber(summary.usage.outputTokens)} marker={<ArrowUp aria-hidden="true" size={12} strokeWidth={2.5} />} />
-          <Metric label="cache read" value={formatNumber(summary.usage.cacheReadTokens)} marker="R" />
-          <Metric label="cache write" value={formatNumber(summary.usage.cacheWriteTokens)} marker="W" />
+        <div className="mt-2 flex min-w-0">
+          <TimelineUsageMetrics usage={summary.usage} />
         </div>
         <div className="mt-2 truncate text-xs text-stone-500">
           {summary.call.operation} · input {formatBytes(summary.requestByteSize)} · output {formatBytes(summary.responseByteSize)} · {formatDuration(summary.durationMs)} · {summary.requestBlockCount} request blocks · {summary.responseBlockCount} response blocks
@@ -910,10 +907,7 @@ function timelineRowAccessibleName(summary: SpyCallSummary): string {
     `status ${summary.call.status}`,
     `started ${formatTime(summary.call.started_at)}`,
     `operation ${summary.call.operation}`,
-    `read ${formatNumber(summary.usage.inputTokens)}`,
-    `write ${formatNumber(summary.usage.outputTokens)}`,
-    `cache read ${formatNumber(summary.usage.cacheReadTokens)}`,
-    `cache write ${formatNumber(summary.usage.cacheWriteTokens)}`,
+    ...timelineUsageMetricData(summary.usage).map((metric) => `${metric.label} ${metric.value}`),
     `input ${formatBytes(summary.requestByteSize)}`,
     `output ${formatBytes(summary.responseByteSize)}`,
     `duration ${formatDuration(summary.durationMs)}`,
@@ -922,20 +916,75 @@ function timelineRowAccessibleName(summary: SpyCallSummary): string {
   ].join(", ");
 }
 
-function Metric(props: { readonly label: string; readonly marker: React.ReactNode; readonly value: string }): React.ReactElement {
+function TimelineUsageMetrics(props: { readonly usage: SpyCallSummary["usage"] }): React.ReactElement {
+  const metrics = timelineUsageMetricData(props.usage);
+
+  const label = metrics.map((metric) => `${metric.label} ${metric.value}`).join(", ");
+
   return (
     <span
-      className="flex min-w-0 items-center justify-between gap-1 rounded-md bg-stone-100 px-2 py-1"
+      className="inline-flex w-fit max-w-full flex-wrap items-center gap-x-2 gap-y-1 rounded-md bg-stone-100 px-2 py-1 text-xs text-stone-600"
+      aria-label={label}
+      title={label}
+      data-testid="timeline-usage-metrics"
+    >
+      {metrics.map((metric) => (
+        <UsageMetric key={metric.label} {...metric} />
+      ))}
+    </span>
+  );
+}
+
+interface UsageMetricProps {
+  readonly label: string;
+  readonly value: string;
+}
+
+function UsageMetric(props: UsageMetricProps): React.ReactElement {
+  return (
+    <span
+      className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap"
       aria-label={`${props.label} ${props.value}`}
       title={`${props.label} ${props.value}`}
       data-usage-metric={props.label}
     >
-      <span className="flex h-4 min-w-4 shrink-0 items-center justify-center text-[11px] font-semibold leading-none text-stone-500" aria-hidden="true">
-        {props.marker}
+      <span className="inline-flex min-w-3 shrink-0 items-center justify-center text-xs font-medium leading-4 text-stone-500" aria-hidden="true">
+        {usageMetricMarker(props.label)}
       </span>
-      <span className="shrink-0 whitespace-nowrap font-medium text-stone-900">{props.value}</span>
+      <span className="font-medium leading-4 text-stone-900">{props.value}</span>
     </span>
   );
+}
+
+function timelineUsageMetricData(usage: SpyCallSummary["usage"]): UsageMetricProps[] {
+  const metrics: UsageMetricProps[] = [
+    { label: "read", value: formatNumber(usage.inputTokens) },
+    { label: "write", value: formatNumber(usage.outputTokens) },
+  ];
+
+  if (usage.cacheReadTokens !== null || usage.cacheWriteTokens !== null) {
+    metrics.push(
+      { label: "cache read", value: formatNumber(usage.cacheReadTokens) },
+      { label: "cache write", value: formatNumber(usage.cacheWriteTokens) },
+    );
+  }
+
+  return metrics;
+}
+
+function usageMetricMarker(label: string): React.ReactNode {
+  switch (label) {
+    case "read":
+      return <ArrowDown aria-hidden="true" size={13} strokeWidth={2.4} />;
+    case "write":
+      return <ArrowUp aria-hidden="true" size={13} strokeWidth={2.4} />;
+    case "cache read":
+      return "R";
+    case "cache write":
+      return "W";
+    default:
+      return label;
+  }
 }
 
 function CallInspector(props: {

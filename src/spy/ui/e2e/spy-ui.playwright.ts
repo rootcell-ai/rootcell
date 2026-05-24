@@ -143,7 +143,10 @@ test("exposes ARIA state for selected timeline row and active range", async ({ p
 
   await expect(page.getByRole("button", { name: "Custom" })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("button", { name: "Live" })).toHaveAttribute("aria-pressed", "false");
-  await expect(selectedRow).toHaveAccessibleName(/model claude-sonnet-4-6, status complete, started .+, operation converse-stream, read 1,253, write 8, cache read -, cache write -/);
+  await expect(selectedRow).toHaveAccessibleName(/model claude-sonnet-4-6, status complete, started .+, operation converse-stream, read 1,253, write 8, input/);
+  await expect(selectedRow).not.toHaveAccessibleName(/cache read/);
+  await expect(selectedRow.getByTestId("timeline-usage-metrics")).toHaveAttribute("aria-label", "read 1,253, write 8");
+  await expect(selectedRow.locator("[data-usage-metric]")).toHaveCount(2);
   await selectedRow.click();
   await expect(selectedRow).toHaveAttribute("aria-current", "true");
   expect(await otherRow.getAttribute("aria-current")).toBeNull();
@@ -529,6 +532,9 @@ test("shows provider cache token classes in timeline rows", async ({ page }) => 
   const row = timelineRow(page, CACHE_TIMELINE_CALL_ID);
   await expect(row).toBeVisible();
   await expect(row).toHaveAccessibleName(/model claude-haiku-4-5-20251001-v1:0, status complete, started .+, operation converse-stream, read 10, write 98, cache read 5,200, cache write 81/);
+  const usageMetrics = row.getByTestId("timeline-usage-metrics");
+  await expect(usageMetrics).toHaveAttribute("aria-label", "read 10, write 98, cache read 5,200, cache write 81");
+  await expect(usageMetrics).toHaveText("1098R5,200W81");
   const read = row.locator('[data-usage-metric="read"]');
   const write = row.locator('[data-usage-metric="write"]');
   const cacheRead = row.locator('[data-usage-metric="cache read"]');
@@ -553,6 +559,19 @@ test("shows provider cache token classes in timeline rows", async ({ page }) => 
   for (const metric of metrics) {
     expect(metric.scrollWidth, `${metric.label ?? "metric"} should not clip ${metric.text}`).toBeLessThanOrEqual(metric.clientWidth);
   }
+  const usageLayout = await usageMetrics.evaluate((element) => {
+    const row = element.closest('[data-testid="timeline-row"]');
+    if (!(row instanceof HTMLElement)) {
+      throw new Error("missing row");
+    }
+    return {
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+      rowClientWidth: row.clientWidth,
+    };
+  });
+  expect(usageLayout.scrollWidth).toBeLessThanOrEqual(usageLayout.clientWidth);
+  expect(usageLayout.clientWidth).toBeLessThan(usageLayout.rowClientWidth / 2);
   await expect(row).not.toContainText("usage");
   await expect(row).not.toContainText("tok");
   await expect(row).not.toContainText("cache 2");

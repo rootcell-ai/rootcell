@@ -192,15 +192,21 @@ API contracts, persisted spy data, filtering, search, or timeline selection.
 
 ## Fix Implemented
 
-The implementation keeps the timeline's full usage semantics but makes the
-visible chips more compact:
+The implementation keeps the timeline's full usage semantics but renders them
+as one compact, fit-content metric pill:
 
 - `read` now renders a down-arrow marker.
 - `write` now renders an up-arrow marker.
 - `cache read` now renders `R`.
 - `cache write` now renders `W`.
-- Each chip keeps its exact full meaning through `aria-label` and `title`, for
-  example `cache read 5,200`.
+- Cache metrics are omitted from the pill when the provider does not report
+  cache read/write values, so non-cache models show only read/write.
+- The pill keeps exact full meanings through `aria-label` and `title`, for
+  example `read 10, write 98, cache read 5,200, cache write 81`.
+- Each individual metric also keeps a full `aria-label` and `title`, for example
+  `cache read 5,200`.
+- The visual markers use the same text size and line-height as the token values
+  so `R`, `W`, and the arrows align with the numbers.
 - The timestamp now uses `shrink-0 whitespace-nowrap`, so it does not wrap under
   row pressure.
 
@@ -212,9 +218,12 @@ Focused regression coverage was updated in
 `src/spy/ui/e2e/spy-ui.playwright.ts`:
 
 - the cache-heavy row is checked at `1100 x 850`
-- compact visible markers are asserted
+- compact visible markers are asserted inside one usage pill
 - full `aria-label` values are asserted
-- every usage chip is measured with `scrollWidth <= clientWidth`
+- every usage metric and the combined pill are measured with
+  `scrollWidth <= clientWidth`
+- the combined pill is measured to confirm it does not stretch to fill the row
+- a fixture row without cache usage is checked to expose only read/write
 
 ## Proof After Fix
 
@@ -222,8 +231,8 @@ Rerunning the same cache-heavy reproduction at `1100 x 850` produced this
 screenshot:
 
 
-The row now shows compact markers with exact values: down arrow `10`, up arrow
-`98`, `R 5,200`, and `W 81`.
+The row now shows one compact usage pill with exact values: down arrow `10`, up
+arrow `98`, `R 5,200`, and `W 81`.
 
 Measured DOM evidence after the fix:
 
@@ -232,6 +241,14 @@ Measured DOM evidence after the fix:
   "viewport": { "width": 1100, "height": 850 },
   "timelineWidth": 519,
   "rowCount": 1,
+  "pill": {
+    "ariaLabel": "read 10, write 98, cache read 5,200, cache write 81",
+    "text": "1098R5,200W81",
+    "clientWidth": 181,
+    "rowClientWidth": 485,
+    "clipped": false,
+    "stretchesToRow": false
+  },
   "metrics": [
     { "key": "read", "ariaLabel": "read 10", "text": "10", "clipped": false },
     { "key": "write", "ariaLabel": "write 98", "text": "98", "clipped": false },
@@ -239,7 +256,7 @@ Measured DOM evidence after the fix:
     { "key": "cache write", "ariaLabel": "cache write 81", "text": "W81", "clipped": false }
   ],
   "timestamp": {
-    "text": "09:16:44 AM",
+    "text": "09:22:36 AM",
     "whiteSpace": "nowrap"
   }
 }
@@ -249,7 +266,7 @@ The row-level accessible name still preserves the full semantic usage labels:
 
 ```text
 Open call call-spy-qa-35-cache-row, model claude-haiku-4-5-20251001-v1:0,
-status complete, started 09:16:44 AM, operation converse-stream, read 10,
+status complete, started 09:22:36 AM, operation converse-stream, read 10,
 write 98, cache read 5,200, cache write 81, input 18 KiB, output 1.2 KiB,
 duration 1.4 s, 26 request blocks, 3 response blocks
 ```
@@ -259,4 +276,4 @@ Verification commands:
 - `bun run typecheck`
 - `bun run lint`
 - `bun run build:spy-ui`
-- `./node_modules/.bin/playwright test -c src/spy/ui/playwright.config.ts -g "shows provider cache token classes"`
+- `./node_modules/.bin/playwright test -c src/spy/ui/playwright.config.ts -g "shows provider cache token classes|exposes ARIA state"`
