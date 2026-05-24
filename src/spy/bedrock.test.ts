@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
 import {
   normalizeBedrockCall,
+  normalizeBedrockRequest,
+  normalizeBedrockResponse,
   normalizeBedrockSpoolEvents,
   type NormalizedProviderCall,
 } from "./bedrock.ts";
@@ -40,6 +42,47 @@ function fixturePair(flowId: string): readonly [SpoolRequestEvent, SpoolResponse
     throw new Error(`missing fixture pair ${flowId}`);
   }
   return [request, response];
+}
+
+function syntheticRequest(flowId: string, body: Record<string, unknown>): SpoolRequestEvent {
+  return {
+    version: 1,
+    ts: 1779496900,
+    direction: "request",
+    flow_id: flowId,
+    provider: "bedrock",
+    operation: "converse-stream",
+    model_id: "us.anthropic.claude-sonnet-4-6",
+    host: "bedrock-runtime.us-east-1.amazonaws.com",
+    method: "POST",
+    path: "/model/us.anthropic.claude-sonnet-4-6/converse-stream",
+    headers: [["content-type", "application/json"]],
+    body_text: JSON.stringify(body),
+  };
+}
+
+function syntheticResponse(
+  flowId: string,
+  events: readonly (readonly [string, Record<string, unknown>])[],
+): SpoolResponseEvent {
+  return {
+    version: 1,
+    ts: 1779496901,
+    direction: "response",
+    flow_id: flowId,
+    provider: "bedrock",
+    operation: "converse-stream",
+    model_id: "us.anthropic.claude-sonnet-4-6",
+    host: "bedrock-runtime.us-east-1.amazonaws.com",
+    method: "POST",
+    path: "/model/us.anthropic.claude-sonnet-4-6/converse-stream",
+    headers: [["content-type", "application/vnd.amazon.eventstream"]],
+    status_code: 200,
+    reason: "OK",
+    request_headers: [["content-type", "application/json"]],
+    body_encoding: "aws-eventstream",
+    body_b64: encodeAwsEventStream(events).toString("base64"),
+  };
 }
 
 function callById(calls: readonly NormalizedProviderCall[], id: string): NormalizedProviderCall {
@@ -132,6 +175,136 @@ describe("Bedrock adapter", () => {
     expect(firstBlock(toolResult, "request", "tool-result").text).toContain("success");
   });
 
+  test("classifies prior request reasoning content as thinking", () => {
+    const normalized = normalizeBedrockRequest(syntheticRequest("fixture-flow-request-reasoning", {
+      messages: [
+        { role: "user", content: [{ text: "first visible prompt" }] },
+        {
+          role: "assistant",
+          content: [{
+            reasoningContent: {
+              reasoningText: {
+                text: "prior hidden reasoning",
+                signature: "sig-prior",
+              },
+            },
+          }],
+        },
+        { role: "user", content: [{ text: "current visible prompt" }] },
+      ],
+    }));
+
+    const thinkingBlocks = normalized.blocks.filter((block) => block.kind === "thinking");
+    expect(thinkingBlocks).toHaveLength(1);
+    expect(thinkingBlocks[0]).toMatchObject({
+      direction: "request",
+      role: "assistant",
+      kind: "thinking",
+      provider_path: "$.messages[1].content[0].reasoningContent",
+      text: "prior hidden reasoning",
+      json: {
+        reasoningText: {
+          text: "prior hidden reasoning",
+          signature: "sig-prior",
+        },
+      },
+    });
+    expect(normalized.blocks.filter((block) => (
+      block.kind === "unknown" && JSON.stringify(block.json).includes("reasoningContent")
+    ))).toHaveLength(0);
+  });
+
+  test("classifies nested and signature-only response reasoning as thinking", () => {
+    const normalized = normalizeBedrockResponse(syntheticResponse("fixture-flow-response-reasoning", [
+      ["messageStart", { role: "assistant" }],
+      ["contentBlockDelta", {
+        contentBlockIndex: 0,
+        delta: {
+          reasoningContent: {
+            reasoningText: {
+              text: "response hidden reasoning",
+            },
+          },
+        },
+      }],
+      ["contentBlockDelta", {
+        contentBlockIndex: 0,
+        delta: {
+          reasoningContent: {
+            reasoningText: {
+              signature: "sig-only-response",
+            },
+          },
+        },
+      }],
+      ["contentBlockStop", { contentBlockIndex: 0 }],
+      ["messageStop", { stopReason: "end_turn" }],
+      ["metadata", { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } }],
+    ]));
+
+    const thinkingBlocks = normalized.blocks.filter((block) => block.kind === "thinking");
+    expect(thinkingBlocks).toHaveLength(1);
+    expect(thinkingBlocks[0]).toMatchObject({
+      direction: "response",
+      role: "assistant",
+      kind: "thinking",
+      text: "response hidden reasoning",
+      json: [
+        {
+          reasoningContent: {
+            reasoningText: {
+              text: "response hidden reasoning",
+            },
+          },
+        },
+        {
+          reasoningContent: {
+            reasoningText: {
+              signature: "sig-only-response",
+            },
+          },
+        },
+      ],
+    });
+    expect(normalized.blocks.filter((block) => (
+      block.kind === "unknown" && JSON.stringify(block.json).includes("reasoningContent")
+    ))).toHaveLength(0);
+    const reasoningEvents = normalized.streamEvents.filter((event) => event.event_type === "contentBlockDelta");
+    expect(reasoningEvents[0]?.payload_text).toBe("response hidden reasoning");
+    expect(reasoningEvents[1]?.payload_text).toBeUndefined();
+  });
+
+  test("keeps signature-only response reasoning as thinking metadata", () => {
+    const normalized = normalizeBedrockResponse(syntheticResponse("fixture-flow-signature-only-reasoning", [
+      ["messageStart", { role: "assistant" }],
+      ["contentBlockDelta", {
+        contentBlockIndex: 0,
+        delta: {
+          reasoningContent: {
+            reasoningText: {
+              signature: "sig-only-response",
+            },
+          },
+        },
+      }],
+      ["contentBlockStop", { contentBlockIndex: 0 }],
+      ["messageStop", { stopReason: "end_turn" }],
+      ["metadata", { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } }],
+    ]));
+
+    const thinkingBlocks = normalized.blocks.filter((block) => block.kind === "thinking");
+    expect(thinkingBlocks).toHaveLength(1);
+    expect(thinkingBlocks[0]?.text).toBeUndefined();
+    expect(thinkingBlocks[0]?.json).toEqual([{
+      reasoningContent: {
+        reasoningText: {
+          signature: "sig-only-response",
+        },
+      },
+    }]);
+    expect(normalized.blocks.filter((block) => block.kind === "unknown")).toHaveLength(0);
+  });
+
   test("reconstructs response text, tool use, provider usage, and stream events", () => {
     const calls = normalizeBedrockSpoolEvents(fixtureEvents());
     const simple = callById(calls, "call-fixture-flow-simple");
@@ -191,3 +364,58 @@ describe("Bedrock adapter", () => {
     expect(raw.rawPayloads[1]?.body_encoding).toBe("aws-eventstream");
   });
 });
+
+function encodeAwsEventStream(events: readonly (readonly [string, Record<string, unknown>])[]): Buffer {
+  return Buffer.concat(events.map(([eventType, payload]) => encodeAwsEventStreamMessage(eventType, payload)));
+}
+
+function encodeAwsEventStreamMessage(eventType: string, payload: Record<string, unknown>): Buffer {
+  const headers = encodeEventStreamHeaders({ ":event-type": eventType });
+  const payloadBytes = Buffer.from(JSON.stringify(payload), "utf8");
+  const totalLength = 12 + headers.length + payloadBytes.length + 4;
+  const message = Buffer.alloc(totalLength);
+  message.writeUInt32BE(totalLength, 0);
+  message.writeUInt32BE(headers.length, 4);
+  message.writeUInt32BE(testCrc32(message.subarray(0, 8)), 8);
+  headers.copy(message, 12);
+  payloadBytes.copy(message, 12 + headers.length);
+  message.writeUInt32BE(testCrc32(message.subarray(0, totalLength - 4)), totalLength - 4);
+  return message;
+}
+
+function encodeEventStreamHeaders(headers: Record<string, string>): Buffer {
+  const chunks = Object.entries(headers).map(([name, value]) => {
+    const nameBytes = Buffer.from(name, "utf8");
+    const valueBytes = Buffer.from(value, "utf8");
+    const chunk = Buffer.alloc(1 + nameBytes.length + 1 + 2 + valueBytes.length);
+    let offset = 0;
+    chunk.writeUInt8(nameBytes.length, offset);
+    offset += 1;
+    nameBytes.copy(chunk, offset);
+    offset += nameBytes.length;
+    chunk.writeUInt8(7, offset);
+    offset += 1;
+    chunk.writeUInt16BE(valueBytes.length, offset);
+    offset += 2;
+    valueBytes.copy(chunk, offset);
+    return chunk;
+  });
+  return Buffer.concat(chunks);
+}
+
+const TEST_CRC32_TABLE = new Uint32Array(256);
+for (let index = 0; index < TEST_CRC32_TABLE.length; index += 1) {
+  let value = index;
+  for (let bit = 0; bit < 8; bit += 1) {
+    value = (value & 1) === 1 ? 0xEDB88320 ^ (value >>> 1) : value >>> 1;
+  }
+  TEST_CRC32_TABLE[index] = value >>> 0;
+}
+
+function testCrc32(data: Uint8Array): number {
+  let crc = 0xFFFFFFFF;
+  for (const byte of data) {
+    crc = (TEST_CRC32_TABLE[(crc ^ byte) & 0xFF] ?? 0) ^ (crc >>> 8);
+  }
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}

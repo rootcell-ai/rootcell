@@ -58,6 +58,7 @@ interface ResponseBlockBuilder {
   readonly providerPath: string;
   readonly textParts: string[];
   readonly thinkingParts: string[];
+  readonly thinkingValues: unknown[];
   readonly toolInputParts: string[];
   readonly unknownValues: unknown[];
   role?: string | undefined;
@@ -394,6 +395,20 @@ function normalizeMessageContentBlock(
     return;
   }
 
+  const reasoningContent = item.reasoningContent;
+  if (reasoningContent !== undefined) {
+    const reasoningText = reasoningContentText(reasoningContent);
+    context.addBlock({
+      kind: "thinking",
+      source: "bedrock-converse-message",
+      providerPath: `${context.providerPath}.reasoningContent`,
+      role: context.role,
+      json: reasoningContent,
+      ...(reasoningText === undefined ? {} : { text: reasoningText }),
+    });
+    return;
+  }
+
   const toolUse = item.toolUse;
   if (toolUse !== undefined) {
     context.addBlock({
@@ -503,6 +518,7 @@ function normalizeResponse(
       providerPath,
       textParts: [],
       thinkingParts: [],
+      thinkingValues: [],
       toolInputParts: [],
       unknownValues: [],
       ...(responseRole === undefined ? {} : { role: responseRole }),
@@ -532,13 +548,16 @@ function normalizeResponse(
       });
     }
 
-    if (builder.thinkingParts.length > 0) {
+    if (builder.thinkingParts.length > 0 || builder.thinkingValues.length > 0) {
+      const thinkingText = builder.thinkingParts.length > 0 ? builder.thinkingParts.join("") : undefined;
+      const thinkingJson = builder.thinkingValues.length > 0 ? builder.thinkingValues : undefined;
       addBlock({
         kind: "thinking",
         source: "bedrock-converse-response",
         providerPath: builder.providerPath,
         role,
-        text: builder.thinkingParts.join(""),
+        ...(thinkingText === undefined ? {} : { text: thinkingText }),
+        ...(thinkingJson === undefined ? {} : { json: thinkingJson }),
       });
     }
 
@@ -616,9 +635,14 @@ function normalizeResponse(
       if (toolUseInput !== undefined) {
         builder.toolInputParts.push(toolUseInput);
       }
-      const thinking = thinkingText(delta);
+      const thinking = thinkingDelta(delta);
       if (thinking !== undefined) {
-        builder.thinkingParts.push(thinking);
+        if (thinking.text !== undefined) {
+          builder.thinkingParts.push(thinking.text);
+        }
+        if (thinking.json !== undefined) {
+          builder.thinkingValues.push(thinking.json);
+        }
       }
       if (text === undefined && toolUseInput === undefined && thinking === undefined) {
         builder.unknownValues.push(delta);
@@ -851,13 +875,36 @@ function metadataText(payload: unknown): string {
   return latencyMs === undefined ? "metadata" : `latencyMs:${String(latencyMs)}`;
 }
 
-function thinkingText(delta: Record<string, unknown>): string | undefined {
+function thinkingDelta(delta: Record<string, unknown>): { readonly text?: string | undefined; readonly json?: unknown } | undefined {
   const direct = stringField(delta, "thinking") ?? stringField(delta, "reasoning");
+  if (direct !== undefined) {
+    return { text: direct };
+  }
+  const reasoningContent = recordField(delta, "reasoningContent");
+  if (reasoningContent !== undefined) {
+    const text = reasoningContentText(reasoningContent);
+    return {
+      json: { reasoningContent },
+      ...(text === undefined ? {} : { text }),
+    };
+  }
+  return undefined;
+}
+
+function thinkingText(delta: Record<string, unknown>): string | undefined {
+  return thinkingDelta(delta)?.text;
+}
+
+function reasoningContentText(value: unknown): string | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const direct = stringField(value, "text") ?? stringField(value, "reasoningText");
   if (direct !== undefined) {
     return direct;
   }
-  const reasoningContent = recordField(delta, "reasoningContent");
-  return stringField(reasoningContent, "text") ?? stringField(reasoningContent, "reasoningText");
+  const reasoningText = recordField(value, "reasoningText");
+  return stringField(reasoningText, "text");
 }
 
 function streamPayloadText(payload: unknown): string | undefined {

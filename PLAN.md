@@ -952,9 +952,14 @@ P3 is polish, minor copy, or secondary accessibility.
     ambiguous request cache-marker count badge, and move byte sizes/duration
     into the row metadata line. Added Playwright coverage for a cache-heavy
     call proving the row no longer shows total `tok` usage or `cache 2`.
-- [ ] [P1] SPY-QA-19: Fix Bedrock reasoning classification. Prior-history
+- [x] [P1] SPY-QA-19: Fix Bedrock reasoning classification. Prior-history
   `reasoningContent` and signature-only reasoning chunks show as `Unknown`
   instead of thinking/reasoning metadata.
+  - Fixed on 2026-05-24: the Bedrock adapter now classifies request
+    `reasoningContent` and response reasoning deltas as `thinking`, including
+    nested `reasoningText.text` and signature-only reasoning metadata. Added
+    adapter coverage for prior-history reasoning, nested response reasoning
+    text, and signature-only response reasoning chunks.
 - [ ] [P1] SPY-QA-20: Fix pending-row formatting. Pending rows can render
   `usage usage n/a`.
 - [ ] [P1] SPY-QA-21: Fix modal focus management for Clear spy data. Focus stays
@@ -1008,9 +1013,6 @@ ID-keyed evidence notes:
 These notes are retained only where they clarify an open bug ID. They are not
 separate tasks.
 
-- SPY-QA-19: Prior request history containing Bedrock `reasoningContent` is
-  classified as `unknown` in request blocks. Response signature-only reasoning
-  chunks also surface as `Unknown` when they contain metadata but no text.
 - SPY-QA-20: Pending timeline rows can render `usage usage n/a`.
 - SPY-QA-21: The clear-data confirmation dialog does not take keyboard focus
   when it opens, background focus is not effectively inert, and Escape did not
