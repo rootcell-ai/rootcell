@@ -24,7 +24,7 @@ test("keeps timeline range state synchronized with the URL", async ({ page }) =>
 
   const initialState = await readRangeState(page);
   expect(initialState.subtitle).toContain("Since ");
-  expect(initialState.activeButtons).toEqual([]);
+  expect(initialState.activeButtons).toEqual(["Custom"]);
 
   await page.getByRole("button", { name: "10 min" }).click();
   await expect(page.getByTestId("timeline-row")).toHaveCount(5);
@@ -50,6 +50,41 @@ test("keeps timeline range state synchronized with the URL", async ({ page }) =>
   const liveState = await readRangeState(page);
   expect(liveState.subtitle).toBe("Live from now");
   expect(liveState.activeButtons).toEqual(["Live"]);
+});
+
+test("keeps custom range state explicit and preserves precise since values", async ({ page }) => {
+  await page.goto("/?preset=custom&since=1779562507");
+  await expect(page.getByRole("heading", { name: "Rootcell Spy" })).toBeVisible();
+
+  const initialState = await readRangeState(page);
+  expect(initialState.subtitle).toMatch(/:07(?:\s|$)/);
+  expect(initialState.activeButtons).toEqual(["Custom"]);
+  await expect(page.getByRole("button", { name: "Custom" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: "Live" })).toHaveAttribute("aria-pressed", "false");
+  await expect(page.getByRole("button", { name: "Apply" })).not.toHaveClass(/bg-emerald-700/);
+  await expect(page.getByRole("button", { name: "Apply" })).not.toHaveAttribute("aria-pressed", "true");
+
+  const customInput = page.getByLabel("Custom start time");
+  const originalDraft = await customInput.inputValue();
+  expect(originalDraft).not.toContain(":07");
+
+  await page.getByRole("button", { name: "Apply" }).click();
+  expect(new URL(page.url()).searchParams.get("since")).toBe("1779562507");
+  expect((await readRangeState(page)).activeButtons).toEqual(["Custom"]);
+
+  const changedDraft = await page.evaluate((draft) => {
+    const parsed = new Date(draft);
+    parsed.setMinutes(parsed.getMinutes() + 1);
+    const offsetMs = parsed.getTimezoneOffset() * 60 * 1000;
+    return new Date(parsed.getTime() - offsetMs).toISOString().slice(0, 16);
+  }, originalDraft);
+  await customInput.fill(changedDraft);
+  await page.getByRole("button", { name: "Apply" }).click();
+
+  const expectedChangedSince = await page.evaluate((draft) => Math.floor(new Date(draft).getTime() / 1000), changedDraft);
+  const changedSince = Number(new URL(page.url()).searchParams.get("since"));
+  expect(changedSince).toBe(expectedChangedSince);
+  expect(changedSince % 60).toBe(0);
 });
 
 test("keeps relative time ranges rolling on refresh", async ({ page }) => {
@@ -585,7 +620,7 @@ async function readRangeState(page: Page): Promise<{
   readonly subtitle: string;
 }> {
   return page.evaluate(() => {
-    const labels = ["Live", "10 min", "1 hour", "Today"];
+    const labels = ["Live", "10 min", "1 hour", "Today", "Custom"];
     const subtitle = document.querySelector("header p");
     if (subtitle === null) {
       throw new Error("missing range subtitle");

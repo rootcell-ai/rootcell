@@ -381,11 +381,15 @@ export function App(): React.ReactElement {
   }, [calls, filters.model]);
 
   function setPresetSince(nextPreset: TimePreset): void {
+    if (nextPreset === "custom") {
+      applyCustomStart();
+      return;
+    }
     setTimelineRange(nextPreset, resolveTimelineSince(nextPreset, since));
   }
 
   function applyCustomStart(): void {
-    const next = secondsFromDatetimeLocal(customStart);
+    const next = secondsFromCustomStart(customStart, since);
     if (next !== null) {
       setTimelineRange("custom", next);
     }
@@ -657,7 +661,7 @@ function TimelineControls(props: {
   const { filters } = props;
   return (
     <div className="border-b border-stone-300 bg-white p-4">
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Timeline range">
         <SegmentButton active={props.preset === "live"} onClick={() => {
           props.onPreset("live");
         }}>Live</SegmentButton>
@@ -670,6 +674,9 @@ function TimelineControls(props: {
         <SegmentButton active={props.preset === "today"} onClick={() => {
           props.onPreset("today");
         }}>Today</SegmentButton>
+        <SegmentButton active={props.preset === "custom"} onClick={() => {
+          props.onPreset("custom");
+        }}>Custom</SegmentButton>
         <div className="ml-auto flex items-center gap-2">
           <Clock aria-hidden="true" className="text-stone-500" size={16} />
           <Input
@@ -681,7 +688,7 @@ function TimelineControls(props: {
               props.onCustomStart(event.target.value);
             }}
           />
-          <Button size="sm" variant={props.preset === "custom" ? "primary" : "secondary"} onClick={props.onApplyCustomStart}>
+          <Button size="sm" onClick={props.onApplyCustomStart}>
             Apply
           </Button>
         </div>
@@ -769,6 +776,7 @@ function SegmentButton(props: {
     <Button
       size="sm"
       variant={props.active ? "primary" : "secondary"}
+      aria-pressed={props.active}
       onClick={props.onClick}
     >
       {props.children}
@@ -1824,6 +1832,14 @@ function secondsFromDatetimeLocal(value: string): number | null {
   const parsed = new Date(value);
   const ms = parsed.getTime();
   return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
+}
+
+function secondsFromCustomStart(value: string, currentSince: number): number | null {
+  const next = secondsFromDatetimeLocal(value);
+  if (next === null) {
+    return null;
+  }
+  return datetimeLocalValue(currentSince) === value ? currentSince : next;
 }
 
 function filterQueryValue(value: string): string | undefined {

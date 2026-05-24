@@ -989,9 +989,14 @@ P3 is polish, minor copy, or secondary accessibility.
     request/response scope, and changed filtered-empty block lists to explain
     that the selected kind has no blocks in that section. Added Playwright
     coverage for the shared filter scope and call-selection persistence.
-- [ ] [P2] SPY-QA-24: Improve custom-range state. `Apply` stays green while all
+- [x] [P2] SPY-QA-24: Improve custom-range state. `Apply` stays green while all
   range pills are inactive, lacks ARIA state, and minute precision rounded a
   prior `since` down to `:00`.
+  - Fixed on 2026-05-24: Custom is now an explicit active range segment with
+    `aria-pressed` state, `Apply` is styled as a command instead of selected
+    state, and no-op applies preserve second-level `since` values. Added
+    Playwright coverage for active custom state, ARIA state, no-op precision
+    preservation, and intentional changed-minute commits.
 - [ ] [P2] SPY-QA-25: Expand or restyle the custom datetime input so the AM/PM
   and time controls are not cramped at the normal desktop width.
 - [x] [P2] SPY-QA-26: Reduce visual noise in stream-event JSON. Opaque Bedrock
@@ -1035,10 +1040,6 @@ separate tasks.
   the visible cache read/write suffix can truncate at normal desktop width. The
   section table is also wider than its visible card without a responsive
   treatment.
-- SPY-QA-24: Custom range active state is represented by the `Apply` button
-  staying green while all range pills are inactive. The button lacks ARIA state,
-  and applying the minute-precision input can round a previous second-level
-  `since` value down to `:00`.
 - SPY-QA-25: The custom datetime input is cramped at the normal desktop browser
   width; the stored value is correct, but the AM/PM/time affordance is visually
   crowded.
