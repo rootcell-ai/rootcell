@@ -1,5 +1,13 @@
 import type { NormalizedBlock, SpyCallSummary, SpyUsageSummary } from "./types.ts";
 
+export interface FormattedHttpTarget {
+  readonly raw: string;
+  readonly path: string;
+  readonly query: string | null;
+  readonly fragment: string | null;
+  readonly display: string;
+}
+
 const NUMBER_FORMAT = new Intl.NumberFormat("en-US");
 const TIME_FORMAT = new Intl.DateTimeFormat(undefined, {
   hour: "2-digit",
@@ -94,6 +102,20 @@ export function shortModelId(modelId: string): string {
   return parts.slice(-2).join(".");
 }
 
+export function formatHttpTarget(rawTarget: string): FormattedHttpTarget {
+  const parsed = parseHttpTarget(rawTarget);
+  const path = decodePath(parsed.path);
+  const query = parsed.query === null ? null : decodeQuery(parsed.query);
+  const fragment = parsed.fragment === null ? null : safeDecodeComponent(parsed.fragment);
+  return {
+    raw: rawTarget,
+    path,
+    query,
+    fragment,
+    display: `${path}${query === null ? "" : `?${query}`}${fragment === null ? "" : `#${fragment}`}`,
+  };
+}
+
 export function statusTone(status: SpyCallSummary["call"]["status"]): "green" | "amber" | "red" | "neutral" {
   switch (status) {
     case "complete":
@@ -125,6 +147,62 @@ export function blockText(block: NormalizedBlock): string {
 
 export function clipped(value: string, max = 280): string {
   return value.length <= max ? value : `${value.slice(0, max).trimEnd()}...`;
+}
+
+function parseHttpTarget(rawTarget: string): { readonly path: string; readonly query: string | null; readonly fragment: string | null } {
+  try {
+    const url = new URL(rawTarget, "http://rootcell.invalid");
+    return {
+      path: url.pathname,
+      query: url.search.length === 0 ? null : url.search.slice(1),
+      fragment: url.hash.length === 0 ? null : url.hash.slice(1),
+    };
+  } catch {
+    return parseHttpTargetFallback(rawTarget);
+  }
+}
+
+function parseHttpTargetFallback(rawTarget: string): { readonly path: string; readonly query: string | null; readonly fragment: string | null } {
+  const hashIndex = rawTarget.indexOf("#");
+  const withoutFragment = hashIndex === -1 ? rawTarget : rawTarget.slice(0, hashIndex);
+  const fragment = hashIndex === -1 ? null : rawTarget.slice(hashIndex + 1);
+  const queryIndex = withoutFragment.indexOf("?");
+  return {
+    path: queryIndex === -1 ? withoutFragment : withoutFragment.slice(0, queryIndex),
+    query: queryIndex === -1 ? null : withoutFragment.slice(queryIndex + 1),
+    fragment,
+  };
+}
+
+function decodePath(path: string): string {
+  return path.split("/").map(safeDecodeComponent).join("/");
+}
+
+function decodeQuery(query: string): string {
+  return query
+    .split("&")
+    .map((part) => {
+      const equalsIndex = part.indexOf("=");
+      if (equalsIndex === -1) {
+        return safeDecodeQueryComponent(part);
+      }
+      const name = safeDecodeQueryComponent(part.slice(0, equalsIndex));
+      const value = safeDecodeQueryComponent(part.slice(equalsIndex + 1));
+      return `${name}=${value}`;
+    })
+    .join("&");
+}
+
+function safeDecodeQueryComponent(value: string): string {
+  return safeDecodeComponent(value.replaceAll("+", " "));
+}
+
+function safeDecodeComponent(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
 }
 
 export function summarizeBlocks(blocks: readonly NormalizedBlock[]): readonly {

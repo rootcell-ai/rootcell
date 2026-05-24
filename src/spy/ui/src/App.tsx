@@ -28,6 +28,7 @@ import {
   formatBytes,
   formatDateTime,
   formatDuration,
+  formatHttpTarget,
   formatNumber,
   formatTime,
   formatUsageTotal,
@@ -1418,17 +1419,47 @@ function UsageCell(props: { readonly label: string; readonly value: number | und
 function NetworkPanel(props: { readonly events: readonly HttpEventRecord[] }): React.ReactElement {
   return (
     <div className="space-y-3">
-      {props.events.map((event) => (
-        <div key={event.id} className="rounded-md border border-stone-200 bg-stone-50 p-3">
-          <div className="flex items-center gap-2">
-            <Badge tone={event.direction === "request" ? "teal" : "green"}>{event.direction}</Badge>
-            <span className="truncate text-sm font-medium">{event.method} {event.path}</span>
-            <span className="ml-auto text-xs text-stone-500">{event.status_code ?? ""} {event.reason ?? ""}</span>
+      {props.events.map((event) => {
+        const target = formatHttpTarget(event.path);
+        const status = [event.status_code, event.reason].filter(Boolean).join(" ");
+        return (
+          <div key={event.id} className="rounded-md border border-stone-200 bg-stone-50 p-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge tone={event.direction === "request" ? "teal" : "green"}>{event.direction}</Badge>
+              <span className="rounded border border-stone-200 bg-white px-1.5 py-0.5 font-mono text-xs font-semibold text-stone-700">
+                {event.method}
+              </span>
+              {status.length > 0 ? <span className="ml-auto text-xs text-stone-500">{status}</span> : null}
+            </div>
+            <div className="mt-2 break-words text-xs text-stone-500">{event.host} · {formatDateTime(event.observed_at)}</div>
+            <div className="mt-3 rounded-md bg-white p-2 text-xs">
+              <div className="font-medium uppercase text-stone-500">Path</div>
+              <div
+                className="mt-1 break-all font-mono text-sm font-medium leading-relaxed text-stone-800"
+                data-testid="network-display-path"
+                title={target.display}
+              >
+                {target.path}
+              </div>
+              {target.query === null ? null : (
+                <>
+                  <div className="mt-3 font-medium uppercase text-stone-500">Query</div>
+                  <div className="mt-1 break-all font-mono leading-relaxed text-stone-700" data-testid="network-display-query">
+                    {target.query}
+                  </div>
+                </>
+              )}
+              <details className="mt-3">
+                <summary className="cursor-pointer text-xs font-medium text-stone-600">Raw target</summary>
+                <div className="mt-1 break-all font-mono text-xs leading-relaxed text-stone-500" data-testid="network-raw-target">
+                  {target.raw}
+                </div>
+              </details>
+            </div>
+            <HeaderList headers={event.headers} />
           </div>
-          <div className="mt-2 truncate text-xs text-stone-500">{event.host} · {formatDateTime(event.observed_at)}</div>
-          <HeaderList headers={event.headers} />
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -1438,8 +1469,8 @@ function HeaderList(props: { readonly headers: readonly (readonly [string, strin
     <div className="mt-3 grid grid-cols-[170px_minmax(0,1fr)] gap-x-3 gap-y-1 rounded-md bg-white p-2 text-xs">
       {props.headers.map(([name, value]) => (
         <React.Fragment key={`${name}:${value}`}>
-          <span className="truncate font-medium text-stone-600">{name}</span>
-          <span className="truncate text-stone-500">{value}</span>
+          <span className="break-all font-medium text-stone-600">{name}</span>
+          <span className="break-all text-stone-500">{value}</span>
         </React.Fragment>
       ))}
     </div>

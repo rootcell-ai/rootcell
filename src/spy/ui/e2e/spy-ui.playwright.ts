@@ -485,6 +485,36 @@ test("keeps request composition readable at normal browser width", async ({ page
   expect(metrics.sectionTableOverflowX).not.toBe("hidden");
 });
 
+test("keeps network metadata request targets readable", async ({ page }) => {
+  await page.setViewportSize({ width: 1100, height: 850 });
+  await installNetworkMetadataRoutes(page);
+  await page.goto("/?since=0");
+
+  const network = page.getByTestId("inspector-section-network");
+  await expect(network).toBeVisible();
+  await page.getByTestId("inspector-nav-network").click();
+
+  const displayPath = network.getByTestId("network-display-path").first();
+  await expect(displayPath).toContainText("us.anthropic.claude-haiku-4-5-20251001-v1:0");
+  await expect(displayPath).not.toContainText("%3A0");
+  await expect(network.getByTestId("network-display-query").first()).toContainText("X-Amz-Credential=[redacted]");
+
+  const metrics = await displayPath.evaluate((element) => ({
+    clientWidth: element.clientWidth,
+    scrollWidth: element.scrollWidth,
+    overflow: getComputedStyle(element).overflow,
+    textOverflow: getComputedStyle(element).textOverflow,
+    whiteSpace: getComputedStyle(element).whiteSpace,
+  }));
+  expect(metrics.scrollWidth).toBeLessThanOrEqual(metrics.clientWidth);
+  expect(metrics.overflow).not.toBe("hidden");
+  expect(metrics.textOverflow).not.toBe("ellipsis");
+  expect(metrics.whiteSpace).not.toBe("nowrap");
+
+  await network.getByText("Raw target", { exact: true }).first().click();
+  await expect(network.getByTestId("network-raw-target").first()).toContainText("v1%3A0");
+});
+
 test("keeps service health visible when filters leave no selected call", async ({ page }) => {
   await page.goto("/?since=0");
   await expect(page.getByTestId("timeline-row")).toHaveCount(5);
@@ -668,6 +698,10 @@ const DIFF_SCOPE_TS = 2100;
 const DIFF_SCOPE_PREVIOUS_TS = 1900;
 const CACHE_TIMELINE_CALL_ID = "call-cache-timeline";
 const CACHE_TIMELINE_TS = 1779562500;
+const NETWORK_METADATA_CALL_ID = "call-network-metadata";
+const NETWORK_METADATA_TS = 1779562600;
+const NETWORK_METADATA_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
+const NETWORK_METADATA_RAW_PATH = "/model/us.anthropic.claude-haiku-4-5-20251001-v1%3A0/converse-stream?X-Amz-Credential=%5Bredacted%5D&trace=abc";
 const BLOCK_FILTER_CALL_A_ID = "call-block-filter-a";
 const BLOCK_FILTER_CALL_B_ID = "call-block-filter-b";
 const BLOCK_FILTER_TS = 1779563000;
@@ -748,6 +782,25 @@ async function installCacheTimelineRoutes(page: Page): Promise<void> {
     await fulfillJson(route, fixture.diff);
   });
   await page.route(/\/api\/calls\/call-cache-timeline$/, async (route) => {
+    await fulfillJson(route, fixture.detail);
+  });
+  await page.route(/\/api\/calls(?:\?.*)?$/, async (route) => {
+    await fulfillJson(route, { items: [fixture.summary] });
+  });
+  await page.route(/\/api\/search(?:\?.*)?$/, async (route) => {
+    await fulfillJson(route, { items: [fixture.summary] });
+  });
+}
+
+async function installNetworkMetadataRoutes(page: Page): Promise<void> {
+  const fixture = networkMetadataFixture();
+  await page.route(/\/api\/health$/, async (route) => {
+    await fulfillJson(route, fixture.health);
+  });
+  await page.route(/\/api\/calls\/call-network-metadata\/diff$/, async (route) => {
+    await fulfillJson(route, fixture.diff);
+  });
+  await page.route(/\/api\/calls\/call-network-metadata$/, async (route) => {
     await fulfillJson(route, fixture.detail);
   });
   await page.route(/\/api\/calls(?:\?.*)?$/, async (route) => {
@@ -989,6 +1042,93 @@ function cacheTimelineFixture(): {
       blocks: detail.blocks.map((block) => ({ block, classification: "new" as const })),
     },
     health: healthFixture(1, CACHE_TIMELINE_TS),
+  };
+}
+
+function networkMetadataFixture(): {
+  readonly summary: SpyCallSummary;
+  readonly detail: SpyCallDetail;
+  readonly diff: SpyCallDiff;
+  readonly health: SpyServiceHealth;
+} {
+  const usage = {
+    inputTokens: 10,
+    outputTokens: 105,
+    cacheReadTokens: 5281,
+    cacheWriteTokens: 79,
+    totalTokens: 5475,
+  };
+  const call = {
+    id: NETWORK_METADATA_CALL_ID,
+    provider: "bedrock" as const,
+    operation: "converse-stream",
+    model_id: NETWORK_METADATA_MODEL_ID,
+    status: "complete" as const,
+    started_at: NETWORK_METADATA_TS,
+    completed_at: NETWORK_METADATA_TS + 1.4,
+    status_code: 200,
+    request_flow_id: "network-metadata-flow",
+    response_flow_id: "network-metadata-flow",
+    request_content_hash: "network-metadata-request-hash",
+    response_content_hash: "network-metadata-response-hash",
+  };
+  const summary: SpyCallSummary = {
+    call,
+    durationMs: 1400,
+    usage,
+    requestBlockCount: 1,
+    responseBlockCount: 1,
+    requestByteSize: 1024,
+    responseByteSize: 256,
+    cacheMarkerCount: 0,
+    streamEventCount: 0,
+    rawPayloadCount: 0,
+  };
+  const blocks = [
+    blockFilterBlock("network-metadata-request", NETWORK_METADATA_CALL_ID, "request", 0, "current-user-input", "show network metadata"),
+    blockFilterBlock("network-metadata-response", NETWORK_METADATA_CALL_ID, "response", 0, "assistant-output", "done"),
+  ];
+  const detail: SpyCallDetail = {
+    summary,
+    requestComposition: requestComposition(usage),
+    httpEvents: [
+      {
+        id: "http-request-network-metadata",
+        call_id: NETWORK_METADATA_CALL_ID,
+        direction: "request",
+        observed_at: NETWORK_METADATA_TS,
+        host: "bedrock-runtime.us-east-1.amazonaws.com",
+        method: "POST",
+        path: NETWORK_METADATA_RAW_PATH,
+        headers: [["content-type", "application/json"]],
+      },
+      {
+        id: "http-response-network-metadata",
+        call_id: NETWORK_METADATA_CALL_ID,
+        direction: "response",
+        observed_at: NETWORK_METADATA_TS + 1.4,
+        host: "bedrock-runtime.us-east-1.amazonaws.com",
+        method: "POST",
+        path: NETWORK_METADATA_RAW_PATH,
+        status_code: 200,
+        reason: "OK",
+        headers: [["content-type", "application/vnd.amazon.eventstream; charset=utf-8; x-rootcell-proof=abcdefghijklmnopqrstuvwxyz0123456789"]],
+        request_headers: [["authorization", "[redacted]"]],
+      },
+    ],
+    blocks,
+    usageRecords: [],
+    rawPayloads: [],
+  };
+  return {
+    summary,
+    detail,
+    diff: {
+      call: summary,
+      previousCall: null,
+      blocks: blocks.map((block) => ({ block, classification: "new" as const })),
+    },
+    health: healthFixture(1, NETWORK_METADATA_TS),
   };
 }
 

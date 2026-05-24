@@ -1007,9 +1007,15 @@ P3 is polish, minor copy, or secondary accessibility.
   - Closed on 2026-05-24 as a product enhancement, not a current bug. The field
     is real provider metadata; redaction/summarization should be tracked outside
     the bug backlog if desired.
-- [ ] [P2] SPY-QA-27: Improve Network Metadata readability. Paths truncate and
+- [x] [P2] SPY-QA-27: Improve Network Metadata readability. Paths truncate and
   URL-encoded model punctuation such as `%3A0` makes the request target harder
   to verify.
+  - Fixed on 2026-05-24: Network Metadata now formats HTTP targets for display
+    without changing the raw persisted path, decodes readable model punctuation
+    such as `%3A0` to `:0`, splits path/query into wrapping detail rows, keeps
+    the raw encoded target available, and wraps long header values. Added
+    formatter unit coverage and Playwright coverage proving the decoded target
+    is visible without hidden horizontal overflow at 1100 px.
 - [ ] [P2] SPY-QA-28: Show the full provider model id somewhere prominent. The
   normal row/header omit the `us.anthropic.` Bedrock namespace.
 - [ ] [P2] SPY-QA-29: Fix sticky inspector header overlap. Scrolled detail content
@@ -1046,8 +1052,6 @@ separate tasks.
 - SPY-QA-25: The custom datetime input is cramped at the normal desktop browser
   width; the stored value is correct, but the AM/PM/time affordance is visually
   crowded.
-- SPY-QA-27: Network metadata paths truncate and retain URL-encoded model
-  punctuation such as `%3A0`, making request targets harder to verify.
 - SPY-QA-28: The normal timeline row and inspector header show the shortened
   model id but not the full Bedrock namespace, so exact model verification
   requires the API or Network Metadata.
