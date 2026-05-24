@@ -944,9 +944,14 @@ P3 is polish, minor copy, or secondary accessibility.
     `outside current range` or `outside current Live window` badge when the
     baseline is older than the active timeline range. Added Playwright coverage
     for a visible ranged call whose diff baseline is outside that range.
-- [ ] [P1] SPY-QA-18: Surface cache read/write in the timeline summary and rename
+- [x] [P1] SPY-QA-18: Surface cache read/write in the timeline summary and rename
   or clarify the `cache 2` marker badge. Cache-read and cache-write calls look
   nearly identical from the row alone.
+  - Fixed on 2026-05-24: timeline rows now show provider `read`, `write`,
+    `cache read`, and `cache write` token values separately, remove the
+    ambiguous request cache-marker count badge, and move byte sizes/duration
+    into the row metadata line. Added Playwright coverage for a cache-heavy
+    call proving the row no longer shows total `tok` usage or `cache 2`.
 - [ ] [P1] SPY-QA-19: Fix Bedrock reasoning classification. Prior-history
   `reasoningContent` and signature-only reasoning chunks show as `Unknown`
   instead of thinking/reasoning metadata.
@@ -992,8 +997,9 @@ P3 is polish, minor copy, or secondary accessibility.
     bounded detail panes are intentional; any alternate detail-pane interaction
     should be tracked outside the bug backlog.
 - [ ] [P3] SPY-QA-34: Fix singular/plural call count grammar (`1 calls`).
-- [ ] [P3] SPY-QA-35: Loosen timeline row chips/badges. `cache 2`, `tok`, and
-  `PM` wrap or clip into awkward multi-line fragments.
+- [ ] [P3] SPY-QA-35: Loosen timeline row chips/badges. Long token labels,
+  token values, and timestamps can wrap or clip into awkward multi-line
+  fragments.
 - [ ] [P3] SPY-QA-36: Prevent top inspector summary cards from truncating
   important values such as exact `Started` time.
 
@@ -1002,10 +1008,6 @@ ID-keyed evidence notes:
 These notes are retained only where they clarify an open bug ID. They are not
 separate tasks.
 
-- SPY-QA-18: Cache read/write values are present in inspector usage details, but
-  timeline rows collapse cache-heavy calls into total token usage and expose
-  request cache markers as `cache 2`, which can be mistaken for provider cache
-  read/write.
 - SPY-QA-19: Prior request history containing Bedrock `reasoningContent` is
   classified as `unknown` in request blocks. Response signature-only reasoning
   chunks also surface as `Unknown` when they contain metadata but no text.
@@ -1043,8 +1045,8 @@ separate tasks.
 - SPY-QA-32: The disconnected SSE badge is labeled `Reconnect` but behaves as
   passive auto-recovering status, so the label reads like a clickable action.
 - SPY-QA-34: The timeline count footer can display `1 calls`.
-- SPY-QA-35: Timeline row chips and timestamps are too tight; `cache 2`, `tok`,
-  and `PM` can wrap or clip into awkward fragments.
+- SPY-QA-35: Timeline row chips and timestamps are too tight; long token
+  labels, token values, and `PM` can wrap or clip into awkward fragments.
 - SPY-QA-36: Top inspector summary cards can truncate important values such as
   the exact `Started` timestamp.
 

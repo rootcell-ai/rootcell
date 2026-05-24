@@ -351,6 +351,25 @@ test("labels diff baselines outside the current range", async ({ page }) => {
   await expect(diffSection.getByText("Diff baseline is global across stored comparable calls, not scoped to the visible timeline.", { exact: true })).toBeVisible();
 });
 
+test("shows provider cache token classes in timeline rows", async ({ page }) => {
+  await installCacheTimelineRoutes(page);
+  await page.goto("/?since=0");
+
+  const row = page.getByRole("button", { name: `Open call ${CACHE_TIMELINE_CALL_ID}`, exact: true });
+  await expect(row).toBeVisible();
+  await expect(row.getByText("read", { exact: true })).toBeVisible();
+  await expect(row.getByText("10", { exact: true })).toBeVisible();
+  await expect(row.getByText("write", { exact: true })).toBeVisible();
+  await expect(row.getByText("98", { exact: true })).toBeVisible();
+  await expect(row.getByText("cache read", { exact: true })).toBeVisible();
+  await expect(row.getByText("5,200", { exact: true })).toBeVisible();
+  await expect(row.getByText("cache write", { exact: true })).toBeVisible();
+  await expect(row.getByText("81", { exact: true })).toBeVisible();
+  await expect(row).not.toContainText("usage");
+  await expect(row).not.toContainText("tok");
+  await expect(row).not.toContainText("cache 2");
+});
+
 test("keeps service health visible when filters leave no selected call", async ({ page }) => {
   await page.goto("/?since=0");
   await expect(page.getByTestId("timeline-row")).toHaveCount(5);
@@ -505,6 +524,8 @@ const DIFF_SCOPE_CALL_ID = "call-diff-scope-current";
 const DIFF_SCOPE_PREVIOUS_CALL_ID = "call-diff-scope-previous";
 const DIFF_SCOPE_TS = 2100;
 const DIFF_SCOPE_PREVIOUS_TS = 1900;
+const CACHE_TIMELINE_CALL_ID = "call-cache-timeline";
+const CACHE_TIMELINE_TS = 1779562500;
 const BLOCK_KINDS: readonly NormalizedBlock["kind"][] = [
   "provider-envelope",
   "harness-system-context",
@@ -563,6 +584,25 @@ async function installDiffScopeRoutes(page: Page): Promise<void> {
     await fulfillJson(route, fixture.diff);
   });
   await page.route(/\/api\/calls\/call-diff-scope-current$/, async (route) => {
+    await fulfillJson(route, fixture.detail);
+  });
+  await page.route(/\/api\/calls(?:\?.*)?$/, async (route) => {
+    await fulfillJson(route, { items: [fixture.summary] });
+  });
+  await page.route(/\/api\/search(?:\?.*)?$/, async (route) => {
+    await fulfillJson(route, { items: [fixture.summary] });
+  });
+}
+
+async function installCacheTimelineRoutes(page: Page): Promise<void> {
+  const fixture = cacheTimelineFixture();
+  await page.route(/\/api\/health$/, async (route) => {
+    await fulfillJson(route, fixture.health);
+  });
+  await page.route(/\/api\/calls\/call-cache-timeline\/diff$/, async (route) => {
+    await fulfillJson(route, fixture.diff);
+  });
+  await page.route(/\/api\/calls\/call-cache-timeline$/, async (route) => {
     await fulfillJson(route, fixture.detail);
   });
   await page.route(/\/api\/calls(?:\?.*)?$/, async (route) => {
@@ -658,6 +698,123 @@ function diffScopeFixture(): {
         .map((block) => ({ block, classification: "repeated" as const, previousBlockId: `${block.id}-previous` })),
     },
     health: healthFixture(1, DIFF_SCOPE_TS),
+  };
+}
+
+function cacheTimelineFixture(): {
+  readonly summary: SpyCallSummary;
+  readonly detail: SpyCallDetail;
+  readonly diff: SpyCallDiff;
+  readonly health: SpyServiceHealth;
+} {
+  const usage = {
+    inputTokens: 10,
+    outputTokens: 98,
+    cacheReadTokens: 5200,
+    cacheWriteTokens: 81,
+    totalTokens: 5389,
+  };
+  const call = {
+    id: CACHE_TIMELINE_CALL_ID,
+    provider: "bedrock" as const,
+    operation: "converse-stream",
+    model_id: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    status: "complete" as const,
+    started_at: CACHE_TIMELINE_TS,
+    completed_at: CACHE_TIMELINE_TS + 1.4,
+    status_code: 200,
+    request_flow_id: "cache-timeline-flow",
+    response_flow_id: "cache-timeline-flow",
+    request_content_hash: "cache-timeline-request-hash",
+    response_content_hash: "cache-timeline-response-hash",
+  };
+  const summary: SpyCallSummary = {
+    call,
+    durationMs: 1400,
+    usage,
+    requestBlockCount: 26,
+    responseBlockCount: 3,
+    requestByteSize: 18_432,
+    responseByteSize: 1_229,
+    cacheMarkerCount: 2,
+    streamEventCount: 0,
+    rawPayloadCount: 0,
+  };
+  const detail: SpyCallDetail = {
+    summary,
+    requestComposition: {
+      ...requestComposition(usage),
+      totalBlockCount: 3,
+      cacheMarkerCount: 2,
+    },
+    httpEvents: [],
+    blocks: [
+      {
+        id: "cache-timeline-request",
+        call_id: CACHE_TIMELINE_CALL_ID,
+        direction: "request",
+        ordinal: 0,
+        kind: "current-user-input",
+        source: "synthetic-cache-timeline",
+        provider_path: "$.messages[0]",
+        text: "cache-heavy request",
+        char_size: 19,
+        byte_size: 19,
+        content_hash: "cache-timeline-request-block-hash",
+        cache_marker: false,
+      },
+      {
+        id: "cache-timeline-marker",
+        call_id: CACHE_TIMELINE_CALL_ID,
+        direction: "request",
+        ordinal: 1,
+        kind: "cache-marker",
+        source: "synthetic-cache-timeline",
+        provider_path: "$.messages[1].cachePoint",
+        char_size: 0,
+        byte_size: 0,
+        content_hash: "cache-timeline-marker-hash",
+        cache_marker: true,
+      },
+      {
+        id: "cache-timeline-response",
+        call_id: CACHE_TIMELINE_CALL_ID,
+        direction: "response",
+        ordinal: 0,
+        kind: "assistant-output",
+        source: "synthetic-cache-timeline",
+        provider_path: "$.output.message.content[0].text",
+        text: "done",
+        char_size: 4,
+        byte_size: 4,
+        content_hash: "cache-timeline-response-block-hash",
+        cache_marker: false,
+      },
+    ],
+    usageRecords: [
+      {
+        id: "usage-cache-timeline",
+        call_id: CACHE_TIMELINE_CALL_ID,
+        source: "provider-reported",
+        input_tokens: usage.inputTokens,
+        output_tokens: usage.outputTokens,
+        cache_read_tokens: usage.cacheReadTokens,
+        cache_write_tokens: usage.cacheWriteTokens,
+        total_tokens: usage.totalTokens,
+        raw: {},
+      },
+    ],
+    rawPayloads: [],
+  };
+  return {
+    summary,
+    detail,
+    diff: {
+      call: summary,
+      previousCall: null,
+      blocks: detail.blocks.map((block) => ({ block, classification: "new" as const })),
+    },
+    health: healthFixture(1, CACHE_TIMELINE_TS),
   };
 }
 

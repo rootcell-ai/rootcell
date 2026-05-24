@@ -838,17 +838,16 @@ function TimelineRow(props: {
         <div className="flex min-w-0 items-center gap-2">
           <span className="truncate text-sm font-semibold">{shortModelId(summary.call.model_id)}</span>
           <Badge tone={statusTone(summary.call.status)}>{summary.call.status}</Badge>
-          {summary.cacheMarkerCount > 0 ? <Badge tone="blue">cache {formatNumber(summary.cacheMarkerCount)}</Badge> : null}
           <span className="ml-auto text-xs text-stone-500">{formatTime(summary.call.started_at)}</span>
         </div>
         <div className="mt-2 grid grid-cols-4 gap-2 text-xs text-stone-600">
-          <Metric label="input" value={formatBytes(summary.requestByteSize)} />
-          <Metric label="output" value={formatBytes(summary.responseByteSize)} />
-          <Metric label="usage" value={formatUsageTotal(summary.usage)} />
-          <Metric label="duration" value={formatDuration(summary.durationMs)} />
+          <Metric label="read" value={formatNumber(summary.usage.inputTokens)} />
+          <Metric label="write" value={formatNumber(summary.usage.outputTokens)} />
+          <Metric label="cache read" value={formatNumber(summary.usage.cacheReadTokens)} />
+          <Metric label="cache write" value={formatNumber(summary.usage.cacheWriteTokens)} />
         </div>
         <div className="mt-2 truncate text-xs text-stone-500">
-          {summary.call.operation} · {summary.requestBlockCount} request blocks · {summary.responseBlockCount} response blocks
+          {summary.call.operation} · input {formatBytes(summary.requestByteSize)} · output {formatBytes(summary.responseByteSize)} · {formatDuration(summary.durationMs)} · {summary.requestBlockCount} request blocks · {summary.responseBlockCount} response blocks
         </div>
       </div>
     </button>
@@ -857,9 +856,9 @@ function TimelineRow(props: {
 
 function Metric(props: { readonly label: string; readonly value: string }): React.ReactElement {
   return (
-    <span className="min-w-0 rounded-md bg-stone-100 px-2 py-1">
-      <span className="text-stone-500">{props.label}</span>{" "}
-      <span className="font-medium text-stone-900">{props.value}</span>
+    <span className="flex min-w-0 items-center justify-between gap-1 rounded-md bg-stone-100 px-2 py-1">
+      <span className="truncate text-stone-500">{props.label}</span>
+      <span className="shrink-0 font-medium text-stone-900">{props.value}</span>
     </span>
   );
 }
