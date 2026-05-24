@@ -937,8 +937,13 @@ P3 is polish, minor copy, or secondary accessibility.
   prompt snippets. Tool-use cycles appear as adjacent unrelated Haiku rows.
   - Closed on 2026-05-24 as a product enhancement, not a current bug. Turn or
     session grouping belongs in a future UX scope if needed.
-- [ ] [P1] SPY-QA-17: Make diff baseline scope explicit. Live/ranged views can
+- [x] [P1] SPY-QA-17: Make diff baseline scope explicit. Live/ranged views can
   diff against a prior request outside the visible range without saying so.
+  - Fixed on 2026-05-24: the browser Diff section now labels the previous
+    request as a global baseline across stored comparable calls, and shows an
+    `outside current range` or `outside current Live window` badge when the
+    baseline is older than the active timeline range. Added Playwright coverage
+    for a visible ranged call whose diff baseline is outside that range.
 - [ ] [P1] SPY-QA-18: Surface cache read/write in the timeline summary and rename
   or clarify the `cache 2` marker badge. Cache-read and cache-write calls look
   nearly identical from the row alone.
@@ -997,9 +1002,6 @@ ID-keyed evidence notes:
 These notes are retained only where they clarify an open bug ID. They are not
 separate tasks.
 
-- SPY-QA-17: Diff baselines can come from outside the active time range. In QA,
-  the first visible post-5:30 Live call diffed against a 05:14:07 PM request
-  that was not visible in the Live timeline.
 - SPY-QA-18: Cache read/write values are present in inspector usage details, but
   timeline rows collapse cache-heavy calls into total token usage and expose
   request cache markers as `cache 2`, which can be mistaken for provider cache

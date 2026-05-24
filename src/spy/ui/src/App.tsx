@@ -572,6 +572,8 @@ export function App(): React.ReactElement {
           streamState={streamState}
           resetKey={inspectorResetKey}
           pinned={selectedCallIsPinned}
+          preset={preset}
+          since={since}
           filters={filters}
           health={health}
           onFilters={setFilters}
@@ -868,6 +870,8 @@ function CallInspector(props: {
   readonly streamState: StreamState | null;
   readonly resetKey: number;
   readonly pinned: boolean;
+  readonly preset: TimePreset;
+  readonly since: number;
   readonly filters: UiFilters;
   readonly health: SpyServiceHealth | null;
   readonly onFilters: (filters: UiFilters) => void;
@@ -894,6 +898,8 @@ function CallInspector(props: {
         key={props.resetKey}
         detail={detailState.detail}
         diff={detailState.diff}
+        preset={props.preset}
+        since={props.since}
         streamState={props.streamState}
         filters={props.filters}
         health={props.health}
@@ -952,6 +958,8 @@ function isLoadedDetailState(state: DetailState | null): state is LoadedDetailSt
 function InspectorContent(props: {
   readonly detail: SpyCallDetail;
   readonly diff: SpyCallDiff;
+  readonly preset: TimePreset;
+  readonly since: number;
   readonly streamState: StreamState | null;
   readonly filters: UiFilters;
   readonly health: SpyServiceHealth | null;
@@ -994,7 +1002,7 @@ function InspectorContent(props: {
         <BlockList blocks={responseBlocks} filterKind={props.filters.blockKind} diffByBlockId={diffByBlockId} />
       </Section>
       <Section id="diff" title="Diff Against Previous Request">
-        <DiffPanel diff={props.diff} />
+        <DiffPanel diff={props.diff} preset={props.preset} since={props.since} />
       </Section>
       <Section id="usage" title="Usage Records">
         <UsagePanel records={props.detail.usageRecords} />
@@ -1293,16 +1301,29 @@ function BlockRow(props: {
   );
 }
 
-function DiffPanel(props: { readonly diff: SpyCallDiff }): React.ReactElement {
+function DiffPanel(props: {
+  readonly diff: SpyCallDiff;
+  readonly preset: TimePreset;
+  readonly since: number;
+}): React.ReactElement {
   const previous = props.diff.previousCall;
+  const previousOutsideRange = previous !== null && previous.call.started_at < props.since;
   const counts = props.diff.blocks.reduce<Record<DiffClassification, number>>((current, entry) => {
     current[entry.classification] += 1;
     return current;
   }, { new: 0, repeated: 0, changed: 0, unknown: 0 });
   return (
     <div className="space-y-3">
-      <div className="text-sm text-stone-600">
-        Previous comparable request: {previous === null ? "none" : `${formatDateTime(previous.call.started_at)} · ${previous.call.id}`}
+      <div className="space-y-1 text-sm text-stone-600">
+        <div className="flex flex-wrap items-center gap-2">
+          <span>
+            Previous comparable request: {previous === null ? "none" : `${formatDateTime(previous.call.started_at)} · ${previous.call.id}`}
+          </span>
+          {previousOutsideRange ? <Badge tone="amber">{diffRangeBadge(props.preset)}</Badge> : null}
+        </div>
+        <div className="text-xs text-stone-500">
+          Diff baseline is global across stored comparable calls, not scoped to the visible timeline.
+        </div>
       </div>
       <div className="grid grid-cols-4 gap-2">
         {(["new", "changed", "repeated", "unknown"] as const).map((classification) => (
@@ -1314,6 +1335,10 @@ function DiffPanel(props: { readonly diff: SpyCallDiff }): React.ReactElement {
       </div>
     </div>
   );
+}
+
+function diffRangeBadge(preset: TimePreset): string {
+  return preset === "live" ? "outside current Live window" : "outside current range";
 }
 
 function UsagePanel(props: { readonly records: readonly UsageRecord[] }): React.ReactElement {

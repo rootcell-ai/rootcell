@@ -335,6 +335,22 @@ test("loads historical ranges and searches text plus visible identifiers", async
   await expect(page.getByTestId("timeline-row")).toHaveCount(5);
 });
 
+test("labels diff baselines outside the current range", async ({ page }) => {
+  await installDiffScopeRoutes(page);
+  await page.goto("/?preset=custom&since=2000");
+
+  await expect(page.getByTestId("timeline-row")).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "Open call call-diff-scope-current", exact: true })).toBeVisible();
+  await page.getByTestId("inspector-nav-diff").click();
+
+  const diffSection = page.getByTestId("inspector-section-diff");
+  await expect(diffSection).toBeVisible();
+  await expect(diffSection.getByText("Previous comparable request:", { exact: false })).toBeVisible();
+  await expect(diffSection.getByText("call-diff-scope-previous", { exact: false })).toBeVisible();
+  await expect(diffSection.getByText("outside current range", { exact: true })).toBeVisible();
+  await expect(diffSection.getByText("Diff baseline is global across stored comparable calls, not scoped to the visible timeline.", { exact: true })).toBeVisible();
+});
+
 test("keeps service health visible when filters leave no selected call", async ({ page }) => {
   await page.goto("/?since=0");
   await expect(page.getByTestId("timeline-row")).toHaveCount(5);
@@ -485,6 +501,10 @@ async function readRangeState(page: Page): Promise<{
 const HEAVY_STREAM_CALL_ID = "call-heavy-stream";
 const HEAVY_STREAM_TS = 1779562000;
 const HEAVY_STREAM_MODEL_ID = "us.anthropic.claude-sonnet-4-6";
+const DIFF_SCOPE_CALL_ID = "call-diff-scope-current";
+const DIFF_SCOPE_PREVIOUS_CALL_ID = "call-diff-scope-previous";
+const DIFF_SCOPE_TS = 2100;
+const DIFF_SCOPE_PREVIOUS_TS = 1900;
 const BLOCK_KINDS: readonly NormalizedBlock["kind"][] = [
   "provider-envelope",
   "harness-system-context",
@@ -534,12 +554,111 @@ async function installHeavyStreamRoutes(page: Page): Promise<void> {
   });
 }
 
+async function installDiffScopeRoutes(page: Page): Promise<void> {
+  const fixture = diffScopeFixture();
+  await page.route(/\/api\/health$/, async (route) => {
+    await fulfillJson(route, fixture.health);
+  });
+  await page.route(/\/api\/calls\/call-diff-scope-current\/diff$/, async (route) => {
+    await fulfillJson(route, fixture.diff);
+  });
+  await page.route(/\/api\/calls\/call-diff-scope-current$/, async (route) => {
+    await fulfillJson(route, fixture.detail);
+  });
+  await page.route(/\/api\/calls(?:\?.*)?$/, async (route) => {
+    await fulfillJson(route, { items: [fixture.summary] });
+  });
+  await page.route(/\/api\/search(?:\?.*)?$/, async (route) => {
+    await fulfillJson(route, { items: [fixture.summary] });
+  });
+}
+
 async function fulfillJson(route: Route, payload: unknown): Promise<void> {
   await route.fulfill({
     status: 200,
     contentType: "application/json",
     body: JSON.stringify(payload),
   });
+}
+
+function diffScopeFixture(): {
+  readonly summary: SpyCallSummary;
+  readonly detail: SpyCallDetail;
+  readonly diff: SpyCallDiff;
+  readonly health: SpyServiceHealth;
+} {
+  const usage = {
+    inputTokens: 10,
+    outputTokens: 20,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    totalTokens: 30,
+  };
+  const call = {
+    id: DIFF_SCOPE_CALL_ID,
+    provider: "bedrock" as const,
+    operation: "converse-stream",
+    model_id: HEAVY_STREAM_MODEL_ID,
+    status: "complete" as const,
+    started_at: DIFF_SCOPE_TS,
+    completed_at: DIFF_SCOPE_TS + 1,
+    status_code: 200,
+    request_flow_id: "diff-scope-current-flow",
+    response_flow_id: "diff-scope-current-flow",
+    request_content_hash: "diff-scope-current-request-hash",
+    response_content_hash: "diff-scope-current-response-hash",
+  };
+  const previousCall = {
+    ...call,
+    id: DIFF_SCOPE_PREVIOUS_CALL_ID,
+    started_at: DIFF_SCOPE_PREVIOUS_TS,
+    completed_at: DIFF_SCOPE_PREVIOUS_TS + 1,
+    request_flow_id: "diff-scope-previous-flow",
+    response_flow_id: "diff-scope-previous-flow",
+    request_content_hash: "diff-scope-previous-request-hash",
+    response_content_hash: "diff-scope-previous-response-hash",
+  };
+  const summary: SpyCallSummary = {
+    call,
+    durationMs: 1000,
+    usage,
+    requestBlockCount: 2,
+    responseBlockCount: 1,
+    requestByteSize: 256,
+    responseByteSize: 128,
+    cacheMarkerCount: 0,
+    streamEventCount: 0,
+    rawPayloadCount: 0,
+  };
+  const previousSummary: SpyCallSummary = {
+    ...summary,
+    call: previousCall,
+  };
+  const blocks = [
+    diffScopeBlock("diff-scope-request-envelope", "request", 0, "provider-envelope", "current envelope"),
+    diffScopeBlock("diff-scope-request-user", "request", 1, "current-user-input", "current visible request"),
+    diffScopeBlock("diff-scope-response", "response", 0, "assistant-output", "current response"),
+  ];
+  const detail: SpyCallDetail = {
+    summary,
+    requestComposition: requestComposition(usage),
+    httpEvents: [],
+    blocks,
+    usageRecords: [],
+    rawPayloads: [],
+  };
+  return {
+    summary,
+    detail,
+    diff: {
+      call: summary,
+      previousCall: previousSummary,
+      blocks: blocks
+        .filter((block) => block.direction === "request")
+        .map((block) => ({ block, classification: "repeated" as const, previousBlockId: `${block.id}-previous` })),
+    },
+    health: healthFixture(1, DIFF_SCOPE_TS),
+  };
 }
 
 function heavyStreamFixture(): {
@@ -640,31 +759,37 @@ function heavyStreamFixture(): {
       blocks: blocks.map((block) => ({ block, classification: "new" as const })),
     },
     health: {
-      ok: true,
-      service: {
-        enabled: true,
-        bind: "127.0.0.1",
-        port: 4674,
-        retentionDays: 7,
-        maxBytes: 6442450944,
-        spoolMaxBytes: 1073741824,
-        storeRaw: false,
-        staticAssets: true,
-      },
-      store: {
-        schemaVersion: 2,
-        dbSizeBytes: 123456,
-        dbUsedBytes: 123456,
-        spoolSizeBytes: 0,
-        providerCallCount: 1,
-        pendingCallCount: 0,
-        droppedCaptureCount: 0,
-        lastIngestAt: HEAVY_STREAM_TS,
-        counters: {},
-        metadata: {},
-      },
+      ...healthFixture(1, HEAVY_STREAM_TS),
     },
     streamEvents: Array.from({ length: 250 }, (_, index) => streamEvent(index)),
+  };
+}
+
+function healthFixture(providerCallCount: number, lastIngestAt: number): SpyServiceHealth {
+  return {
+    ok: true,
+    service: {
+      enabled: true,
+      bind: "127.0.0.1",
+      port: 4674,
+      retentionDays: 7,
+      maxBytes: 6442450944,
+      spoolMaxBytes: 1073741824,
+      storeRaw: false,
+      staticAssets: true,
+    },
+    store: {
+      schemaVersion: 2,
+      dbSizeBytes: 123456,
+      dbUsedBytes: 123456,
+      spoolSizeBytes: 0,
+      providerCallCount,
+      pendingCallCount: 0,
+      droppedCaptureCount: 0,
+      lastIngestAt,
+      counters: {},
+      metadata: {},
+    },
   };
 }
 
@@ -709,6 +834,29 @@ function normalizedBlock(
     ordinal,
     kind,
     source: "synthetic-stream-rca",
+    provider_path: "$.synthetic",
+    text,
+    char_size: text.length,
+    byte_size: new TextEncoder().encode(text).length,
+    content_hash: `${id}-hash`,
+    cache_marker: false,
+  };
+}
+
+function diffScopeBlock(
+  id: string,
+  direction: NormalizedBlock["direction"],
+  ordinal: number,
+  kind: NormalizedBlock["kind"],
+  text: string,
+): NormalizedBlock {
+  return {
+    id,
+    call_id: DIFF_SCOPE_CALL_ID,
+    direction,
+    ordinal,
+    kind,
+    source: "synthetic-diff-scope",
     provider_path: "$.synthetic",
     text,
     char_size: text.length,
