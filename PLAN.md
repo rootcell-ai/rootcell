@@ -834,13 +834,14 @@ P3 is polish, minor copy, or secondary accessibility.
   - Fixed on 2026-05-23: changed the spy UI shell to a fixed header plus
     shrinkable body grid, added `min-h-0` to the timeline and inspector scroll
     owners, and covered the clipping regression in Playwright.
-- [ ] [P0] SPY-QA-02: Fix hidden top-level scrolling. Focus/opening lower
+- [x] [P0] SPY-QA-02: Fix hidden top-level scrolling. Focus/opening lower
   inspector panels can set `main.scrollTop` despite `overflow-hidden`, pushing
   the global header and range controls offscreen with no visible page scrollbar.
-  - RCA attempt on 2026-05-23 could not reproduce this in the current tree:
-    lower inspector panel focus, stream-event loading, narrower/shorter desktop
-    viewports, and keyboard focus traversal all kept `main.scrollTop=0` and the
-    global header at y=0.
+  - Closed on 2026-05-24 as stale/no-repro in the current tree after a
+    dedicated RCA in `docs/bugfix/SPY-QA-02-RCA.md`: lower inspector navigation
+    and stream-event loading kept `main.scrollTop=0`, `main` had no hidden
+    scroll range, and the existing Playwright guard for buried inspector
+    navigation passed.
 - [x] [P0] SPY-QA-03: Fix timeline row and footer overlap. Rows in the short
   10-minute view overlap each other by about 12 px, hit-testing can return two
   row buttons at one point, and the call-count/Load More footer can cover row
@@ -1131,7 +1132,7 @@ Detailed issues and reproduction notes:
   section alone occupied about 7849 px and response blocks another 1285 px,
   burying Usage Records, Network Metadata, Stream Events, Raw Payloads, and
   Health before the operator has made a choice to inspect the full text.
-- [ ] The top-level `main` container can enter a hidden scroll state. After
+- [x] The top-level `main` container can enter a hidden scroll state. After
   selecting or focusing lower content, `main.scrollTop` became nonzero despite
   `overflow-hidden`, visually pushing the global header offscreen without an
   obvious page scrollbar or reset affordance. In the post-5:30 Today view,
@@ -1139,7 +1140,8 @@ Detailed issues and reproduction notes:
   pushed `main.scrollTop` to 1087 px; the header measured at `y = -1087`, and
   the visible top-left content jumped to older timeline rows instead of the
   header/range controls.
-  RCA attempt on 2026-05-23 could not reproduce this in the current tree.
+  Closed on 2026-05-24 as stale/no-repro in the current tree; see
+  `docs/bugfix/SPY-QA-02-RCA.md` for the measured proof and test evidence.
 - [ ] The selected timeline call is not exposed through ARIA state. The active
   row has only visual border/ring styling; `aria-selected`, `aria-pressed`, and
   `aria-current` are absent, so assistive technology and keyboard review do not
