@@ -21,6 +21,15 @@ let
   spyGeneratorPackage = pkgs.runCommand "rootcell-spy-generator-package" {} ''
     install -D -m 0755 ${spyGenerator} "$out/lib/systemd/system-generators/rootcell-spy-generator"
   '';
+  spyServiceArtifact = ./dist/spy-service.js;
+  spyUiArtifact = ./dist/spy-ui;
+  # In a Git-backed flake, ignored generated files are invisible to Nix even
+  # when they exist in the worktree. Rootcell builds and copies these artifacts
+  # before guest provisioning; clean CI flake evals should still validate the
+  # base firewall closure without requiring committed dist/ outputs.
+  haveSpyArtifacts =
+    builtins.pathExists spyServiceArtifact
+    && builtins.pathExists spyUiArtifact;
 in
 
 # Firewall VM: a tiny appliance VM that brokers all egress for the agent VM.
@@ -229,11 +238,13 @@ in
     source = ./proxy/agent_spy.py;
     mode = "0644";
   };
-  environment.etc."agent-vm/spy-service.js" = {
-    source = ./dist/spy-service.js;
+  environment.etc."agent-vm/spy-service.js" = lib.mkIf haveSpyArtifacts {
+    source = spyServiceArtifact;
     mode = "0644";
   };
-  environment.etc."agent-vm/spy-ui".source = ./dist/spy-ui;
+  environment.etc."agent-vm/spy-ui" = lib.mkIf haveSpyArtifacts {
+    source = spyUiArtifact;
+  };
 
   # mitmproxy unconditionally materializes a `confdir` on startup. It
   # also LOOKS in confdir for `mitmproxy-ca.pem`; if present it uses

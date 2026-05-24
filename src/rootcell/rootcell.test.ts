@@ -1075,8 +1075,12 @@ describe("VM and network providers", () => {
     expect(firewallModule).toContain("systemd.services.rootcell-spy");
     expect(firewallModule).toContain("EnvironmentFile = \"/etc/agent-vm/spy.env\";");
     expect(firewallModule).toContain("ROOTCELL_SPY_STATIC_DIR=/etc/agent-vm/spy-ui");
-    expect(firewallModule).toContain("source = ./dist/spy-service.js;");
-    expect(firewallModule).toContain("environment.etc.\"agent-vm/spy-ui\".source = ./dist/spy-ui;");
+    expect(firewallModule).toContain("spyServiceArtifact = ./dist/spy-service.js;");
+    expect(firewallModule).toContain("spyUiArtifact = ./dist/spy-ui;");
+    expect(firewallModule).toContain("environment.etc.\"agent-vm/spy-service.js\" = lib.mkIf haveSpyArtifacts");
+    expect(firewallModule).toContain("source = spyServiceArtifact;");
+    expect(firewallModule).toContain("environment.etc.\"agent-vm/spy-ui\" = lib.mkIf haveSpyArtifacts");
+    expect(firewallModule).toContain("source = spyUiArtifact;");
     expect(firewallModule).toContain("systemd.packages = [ spyGeneratorPackage ];");
     expect(firewallModule).toContain("lib/systemd/system-generators/rootcell-spy-generator");
     expect(firewallModule).toContain("d /var/lib/rootcell-spy 0750 rootcell-spy rootcell-spy -");
