@@ -975,9 +975,9 @@ function timelineUsageMetricData(usage: SpyCallSummary["usage"]): UsageMetricPro
 function usageMetricMarker(label: string): React.ReactNode {
   switch (label) {
     case "read":
-      return <ArrowDown aria-hidden="true" size={13} strokeWidth={2.4} />;
-    case "write":
       return <ArrowUp aria-hidden="true" size={13} strokeWidth={2.4} />;
+    case "write":
+      return <ArrowDown aria-hidden="true" size={13} strokeWidth={2.4} />;
     case "cache read":
       return "R";
     case "cache write":
