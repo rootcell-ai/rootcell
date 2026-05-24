@@ -53,6 +53,7 @@ test("keeps timeline range state synchronized with the URL", async ({ page }) =>
 });
 
 test("keeps custom range state explicit and preserves precise since values", async ({ page }) => {
+  await page.setViewportSize({ width: 1159, height: 862 });
   await page.goto("/?preset=custom&since=1779562507");
   await expect(page.getByRole("heading", { name: "Rootcell Spy" })).toBeVisible();
 
@@ -65,6 +66,28 @@ test("keeps custom range state explicit and preserves precise since values", asy
   await expect(page.getByRole("button", { name: "Apply" })).not.toHaveAttribute("aria-pressed", "true");
 
   const customInput = page.getByLabel("Custom start time");
+  const customInputMetrics = await customInput.evaluate((input) => {
+    if (!(input instanceof HTMLInputElement)) {
+      throw new Error("custom start time control is not an input");
+    }
+    const styles = getComputedStyle(input);
+    const canvas = document.createElement("canvas");
+    const context = canvas.getContext("2d");
+    if (context === null) {
+      throw new Error("missing canvas context");
+    }
+    context.font = styles.font;
+    const usableWidth = input.clientWidth - parseFloat(styles.paddingLeft) - parseFloat(styles.paddingRight);
+    const pmDisplayWidth = context.measureText("05/23/2026, 02:55 PM").width;
+    return {
+      usableWidth,
+      pmDisplayWidth,
+      slack: usableWidth - pmDisplayWidth,
+    };
+  });
+  expect(customInputMetrics.usableWidth).toBeGreaterThan(200);
+  expect(customInputMetrics.slack).toBeGreaterThanOrEqual(32);
+
   const originalDraft = await customInput.inputValue();
   expect(originalDraft).not.toContain(":07");
 

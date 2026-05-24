@@ -997,8 +997,11 @@ P3 is polish, minor copy, or secondary accessibility.
     state, and no-op applies preserve second-level `since` values. Added
     Playwright coverage for active custom state, ARIA state, no-op precision
     preservation, and intentional changed-minute commits.
-- [ ] [P2] SPY-QA-25: Expand or restyle the custom datetime input so the AM/PM
+- [x] [P2] SPY-QA-25: Expand or restyle the custom datetime input so the AM/PM
   and time controls are not cramped at the normal desktop width.
+  - Fixed on 2026-05-24: widened the custom datetime input and added
+    Playwright coverage at the original normal desktop QA viewport proving the
+    control has measurable slack for the PM display.
 - [x] [P2] SPY-QA-26: Reduce visual noise in stream-event JSON. Opaque Bedrock
   `p` fields dominate the event payload and look like rendering artifacts.
   - Closed on 2026-05-24 as a product enhancement, not a current bug. The field

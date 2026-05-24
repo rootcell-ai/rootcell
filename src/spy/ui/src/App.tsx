@@ -681,7 +681,7 @@ function TimelineControls(props: {
           <Clock aria-hidden="true" className="text-stone-500" size={16} />
           <Input
             aria-label="Custom start time"
-            className="w-[190px]"
+            className="w-[240px]"
             type="datetime-local"
             value={props.customStart}
             onChange={(event) => {
