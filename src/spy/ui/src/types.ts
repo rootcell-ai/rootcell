@@ -11,6 +11,8 @@ import type {
   SpyCallDetail,
   SpyCallDiff,
   SpyCallSummary,
+  SpyCompactionAssessment,
+  SpyCompactionReason,
   SpyHealthSnapshot,
   SpyPaginatedResult,
   SpyRequestComposition,
@@ -23,6 +25,7 @@ import type {
   SseCallsChangedPayload,
   SseEventName,
   SseHelloPayload,
+  SseTokenCountsChangedPayload,
 } from "../../api-contracts.ts";
 
 export type {
@@ -34,6 +37,8 @@ export type {
   SpyCallDetail,
   SpyCallDiff,
   SpyCallSummary,
+  SpyCompactionAssessment,
+  SpyCompactionReason,
   SpyHealthSnapshot,
   SpyPaginatedResult,
   SpyRequestComposition,
@@ -47,6 +52,7 @@ export type {
   SseCallsChangedPayload,
   SseEventName,
   SseHelloPayload,
+  SseTokenCountsChangedPayload,
   UsageRecord,
 };
 

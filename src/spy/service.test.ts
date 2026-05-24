@@ -13,6 +13,7 @@ import {
   StreamEventPageSchema,
   SseEventNameSchema,
   SseEventPayloadSchemas,
+  type SpyCallDetail,
 } from "./api-contracts.ts";
 import { SpoolEventSchema, type SpoolEvent } from "./schemas.ts";
 import { spyServiceConfigFromEnv, startSpyService, type SpyServiceHandle } from "./service.ts";
@@ -41,10 +42,15 @@ class FakeTokenCounter implements BedrockTokenCounter {
   constructor(
     private readonly result: number,
     private readonly failure?: Error | undefined,
+    private readonly delayMs = 0,
   ) {}
 
   async count(input: BedrockTokenCountInput): Promise<number> {
-    await Promise.resolve();
+    if (this.delayMs > 0) {
+      await sleep(this.delayMs);
+    } else {
+      await Promise.resolve();
+    }
     this.inputs.push(input);
     if (this.failure !== undefined) {
       throw this.failure;
@@ -179,6 +185,7 @@ describe("spy web service", () => {
     expect(detail.requestComposition.totalMessageCount).toBeGreaterThan(0);
     expect(detail.requestComposition.sections.some((section) => section.present)).toBe(true);
     expect(detail.requestComposition.usage).toEqual(detail.summary.usage);
+    expect(detail.compaction.status).toBe("none");
     expect(detail.httpEvents).toHaveLength(2);
     expect(detail.blocks.length).toBeGreaterThan(0);
     expect(detail.usageRecords.length).toBeGreaterThan(0);
@@ -250,7 +257,55 @@ describe("spy web service", () => {
     expect(missingResponse.status).toBe(404);
   });
 
-  test("counts tokens through provider calls, cached provider counts, and provider-reported usage", async () => {
+  test("returns call details immediately and streams provider token counts over SSE", async () => {
+    const counter = new FakeTokenCounter(77, undefined, 250);
+    const { handle, spoolDir } = createTestService({ tokenCounter: counter, tokenCountMode: "provider" });
+    writeSpoolEvents(spoolDir, fixtureEvents());
+    expect(handle.ingestOnce()).toMatchObject({ ingested: 10 });
+
+    const response = await fetch(`${handle.url}/api/events`);
+    expect(response.status).toBe(200);
+    if (response.body === null) {
+      throw new Error("missing SSE body");
+    }
+    const reader = response.body.getReader();
+    try {
+      await readSseUntil(reader, "event: hello");
+
+      const page = await jsonAs(await fetch(`${handle.url}/api/calls?limit=1`), SpyCallSummaryPageSchema);
+      const callId = page.items[0]?.call.id;
+      if (callId === undefined) {
+        throw new Error("missing call id");
+      }
+      const detail = await jsonAs(await fetch(`${handle.url}/api/calls/${encodeURIComponent(callId)}`), SpyCallDetailSchema);
+      const block = detail.blocks.find((candidate) => candidate.direction === "request" && candidate.text !== undefined);
+      if (block === undefined) {
+        throw new Error("missing text block");
+      }
+      const responseBlock = detail.blocks.find((candidate) => candidate.direction === "response" && candidate.text !== undefined);
+      if (responseBlock === undefined) {
+        throw new Error("missing response text block");
+      }
+
+      expect(detail.tokenCounts.find((record) => record.subjectType === "block" && record.blockId === block.id))
+        .toBeUndefined();
+      expect(counter.inputs).toHaveLength(0);
+
+      const tokenEvents = await readSseUntil(reader, "event: token-counts-changed");
+      expect(tokenEvents).toContain(`"callId":"${callId}"`);
+      expect(tokenEvents).toContain("\"provenance\":\"provider_counted\"");
+      expectValidSsePayloads(tokenEvents);
+      await waitUntil(() => counter.inputs.length >= expectedBackgroundProviderCount(detail));
+
+      const refreshed = await jsonAs(await fetch(`${handle.url}/api/calls/${encodeURIComponent(callId)}`), SpyCallDetailSchema);
+      expect(refreshed.tokenCounts.find((record) => record.subjectType === "block" && record.blockId === responseBlock.id))
+        .toMatchObject({ subjectType: "block", direction: "response", provenance: "provider_counted", tokens: 77 });
+    } finally {
+      await reader.cancel();
+    }
+  });
+
+  test("counts tokens through explicit provider calls and cached provider counts", async () => {
     const counter = new FakeTokenCounter(77);
     const { handle, spoolDir } = createTestService({ tokenCounter: counter, tokenCountMode: "provider" });
     writeSpoolEvents(spoolDir, fixtureEvents());
@@ -261,15 +316,22 @@ describe("spy web service", () => {
     if (callId === undefined) {
       throw new Error("missing call id");
     }
-    const detail = await jsonAs(await fetch(`${handle.url}/api/calls/${encodeURIComponent(callId)}`), SpyCallDetailSchema);
+    const detail = handle.store.getCallDetail(callId);
+    if (detail === null) {
+      throw new Error("missing call detail");
+    }
     const block = detail.blocks.find((candidate) => candidate.direction === "request" && candidate.text !== undefined);
     if (block === undefined) {
       throw new Error("missing text block");
     }
-    expect(detail.tokenCounts.find((record) => record.subjectType === "block" && record.blockId === block.id))
-      .toMatchObject({ subjectType: "block", provenance: "provider_counted", tokens: 77 });
-    const afterDetailCount = counter.inputs.length;
-    expect(afterDetailCount).toBeGreaterThan(0);
+
+    const countedBlock = await jsonAs(await fetch(`${handle.url}/api/token-count`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "provider", subjects: [{ type: "block", callId, blockId: block.id }] }),
+    }), SpyTokenCountResponseSchema);
+    expect(countedBlock.records[0]).toMatchObject({ subjectType: "block", provenance: "provider_counted", tokens: 77 });
+    expect(counter.inputs).toHaveLength(1);
 
     const cachedBlock = await jsonAs(await fetch(`${handle.url}/api/token-count`, {
       method: "POST",
@@ -277,7 +339,7 @@ describe("spy web service", () => {
       body: JSON.stringify({ mode: "provider", subjects: [{ type: "block", callId, blockId: block.id }] }),
     }), SpyTokenCountResponseSchema);
     expect(cachedBlock.records[0]).toMatchObject({ subjectType: "block", provenance: "provider_counted", tokens: 77 });
-    expect(counter.inputs).toHaveLength(afterDetailCount);
+    expect(counter.inputs).toHaveLength(1);
 
     const selection = await jsonAs(await fetch(`${handle.url}/api/token-count`, {
       method: "POST",
@@ -285,7 +347,7 @@ describe("spy web service", () => {
       body: JSON.stringify({ mode: "provider", subjects: [{ type: "selection", callId, text: "selected text" }] }),
     }), SpyTokenCountResponseSchema);
     expect(selection.records[0]).toMatchObject({ provenance: "provider_counted", tokens: 77 });
-    expect(counter.inputs).toHaveLength(afterDetailCount + 1);
+    expect(counter.inputs).toHaveLength(2);
 
     const cachedSelection = await jsonAs(await fetch(`${handle.url}/api/token-count`, {
       method: "POST",
@@ -293,15 +355,15 @@ describe("spy web service", () => {
       body: JSON.stringify({ mode: "provider", subjects: [{ type: "selection", callId, text: "selected text" }] }),
     }), SpyTokenCountResponseSchema);
     expect(cachedSelection.records[0]).toMatchObject({ provenance: "provider_counted", tokens: 77 });
-    expect(counter.inputs).toHaveLength(afterDetailCount + 1);
+    expect(counter.inputs).toHaveLength(2);
 
     const reported = await jsonAs(await fetch(`${handle.url}/api/token-count`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ mode: "provider", subjects: [{ type: "call", callId, direction: "request" }] }),
     }), SpyTokenCountResponseSchema);
-    expect(reported.records[0]).toMatchObject({ subjectType: "call", provenance: "provider_reported" });
-    expect(counter.inputs).toHaveLength(afterDetailCount + 1);
+    expect(reported.records[0]).toMatchObject({ subjectType: "call", provenance: "provider_counted", tokens: 77 });
+    expect(counter.inputs).toHaveLength(3);
   });
 
   test("returns unavailable token records when provider counting fails", async () => {
@@ -455,6 +517,49 @@ async function readSseUntil(
 
 async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitUntil(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) {
+      throw new Error("timed out waiting for condition");
+    }
+    await sleep(10);
+  }
+}
+
+function expectedBackgroundProviderCount(detail: SpyCallDetail): number {
+  const present = new Set(detail.tokenCounts
+    .filter((record) => record.provenance !== "unavailable")
+    .map((record) => {
+      if (record.subjectType === "call") {
+        return ["call", record.callId ?? "", record.direction ?? "", "", "", ""].join(":");
+      }
+      if (record.subjectType === "section") {
+        return ["section", record.callId ?? "", record.direction ?? "", "", record.kind ?? "", ""].join(":");
+      }
+      if (record.subjectType === "block") {
+        return ["block", record.callId ?? "", "", record.blockId ?? "", ""].join(":");
+      }
+      return ["selection", record.callId ?? "", "", "", "", record.label ?? record.sourceHash].join(":");
+    }));
+  const missing = new Set<string>();
+  const callKey = ["call", detail.summary.call.id, "request", "", "", ""].join(":");
+  if (!present.has(callKey)) {
+    missing.add(callKey);
+  }
+  for (const block of detail.blocks) {
+    const sectionKey = ["section", detail.summary.call.id, block.direction, "", block.kind, ""].join(":");
+    if (!present.has(sectionKey)) {
+      missing.add(sectionKey);
+    }
+    const blockKey = ["block", detail.summary.call.id, "", block.id, "", ""].join(":");
+    if (!present.has(blockKey)) {
+      missing.add(blockKey);
+    }
+  }
+  return missing.size;
 }
 
 function expectValidSsePayloads(text: string): void {

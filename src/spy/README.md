@@ -148,8 +148,14 @@ The API and browser expose token counts for whole requests, request sections,
 blocks, and selected text. Each count is labeled with provenance:
 `provider_reported`, `provider_counted`, or `unavailable`.
 
-Default behavior uses provider-reported usage already present in captured
-responses and Bedrock CountTokens for block, section, and selected-text counts.
+Default behavior uses Bedrock CountTokens for whole-request, section, block,
+and selected-text counts. Whole-request counts use the captured provider request
+body when available so they preserve the real request context: messages, system
+prompt, tool config, cache hints, and provider overhead. Standalone block,
+section, and selection counts are wrapped as a minimal user message regardless
+of the original block role or kind. That keeps per-fragment attribution
+consistent and avoids provider validation rules for incomplete assistant turns.
+
 The browser never calls Bedrock directly. Bedrock CountTokens is called with the
 base Anthropic model ID because Bedrock inference-profile IDs such as
 `us.anthropic.*` can be valid for inference but rejected for token counting.

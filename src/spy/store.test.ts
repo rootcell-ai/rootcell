@@ -141,6 +141,23 @@ function requestVariant(
   return SpoolRequestEventSchema.parse({ ...event, ...overrides });
 }
 
+function syntheticBedrockRequest(flowId: string, ts: number, body: Record<string, unknown>): SpoolRequestEvent {
+  return SpoolRequestEventSchema.parse({
+    version: 1,
+    ts,
+    direction: "request",
+    flow_id: flowId,
+    provider: "bedrock",
+    operation: "converse-stream",
+    model_id: "us.anthropic.claude-sonnet-4-6",
+    host: "bedrock-runtime.us-east-1.amazonaws.com",
+    method: "POST",
+    path: "/model/us.anthropic.claude-sonnet-4-6/converse-stream",
+    headers: [["content-type", "application/json"]],
+    body_text: JSON.stringify(body),
+  });
+}
+
 function responseVariant(
   event: SpoolResponseEvent,
   overrides: Partial<Pick<SpoolResponseEvent, "flow_id" | "ts" | "model_id" | "operation" | "status_code">>,
@@ -357,6 +374,7 @@ describe("spy SQLite store", () => {
 
       const simple = requiredDetail(store, "call-fixture-flow-simple");
       expect(simple.requestComposition.totalBlockCount).toBe(simple.summary.requestBlockCount);
+      expect(simple.compaction.status).toBe("none");
       expect(simple.requestComposition.totalByteSize).toBe(simple.summary.requestByteSize);
       expect(simple.requestComposition.totalMessageCount).toBe(1);
       expect(simple.requestComposition.usage).toEqual(simple.summary.usage);
@@ -389,6 +407,43 @@ describe("spy SQLite store", () => {
     }
   });
 
+  test("computes Pi compaction assessments from request context transitions", () => {
+    const { store } = createTestStore();
+    try {
+      store.persistRequest(syntheticBedrockRequest("fixture-flow-pre-compaction", 1, {
+        messages: [
+          { role: "user", content: [{ text: "First historical user turn. ".repeat(180) }] },
+          { role: "assistant", content: [{ text: "First historical assistant turn. ".repeat(180) }] },
+          { role: "user", content: [{ text: "Second historical user turn. ".repeat(180) }] },
+          { role: "assistant", content: [{ text: "Second historical assistant turn. ".repeat(180) }] },
+          { role: "user", content: [{ text: "continue before compaction" }] },
+        ],
+        system: [{ text: "You are an expert coding assistant operating inside pi, a coding agent harness." }],
+        inferenceConfig: { maxTokens: 32_000 },
+      }));
+      store.persistRequest(syntheticBedrockRequest("fixture-flow-post-compaction", 2, {
+        messages: [
+          { role: "user", content: [{ text: "Summary of the conversation so far: the user asked for a multi-file refactor and the agent edited the store layer." }] },
+          { role: "user", content: [{ text: "continue after compaction" }] },
+        ],
+        system: [{ text: "You are an expert coding assistant operating inside pi, a coding agent harness." }],
+        inferenceConfig: { maxTokens: 32_000 },
+      }));
+
+      const detail = requiredDetail(store, bedrockCallIdForFlow("fixture-flow-post-compaction"));
+      expect(detail.compaction).toMatchObject({
+        status: "candidate",
+        source: "pi_pattern",
+        label: "Pi compaction candidate",
+      });
+      expect(detail.compaction.reasons).toContain("summary_like_history_block");
+      expect(detail.compaction.reasons).toContain("prior_history_byte_drop");
+      expect(detail.compaction.evidence.previousCallId).toBe(bedrockCallIdForFlow("fixture-flow-pre-compaction"));
+    } finally {
+      store.close();
+    }
+  });
+
   test("prepares, caches, and cascades token count records", () => {
     let now = 1_000;
     const { dbPath, spoolDir, store } = createTestStore({ now: () => now });
@@ -398,13 +453,10 @@ describe("spy SQLite store", () => {
 
       const callId = bedrockCallIdForFlow("fixture-flow-simple");
       let detail = requiredDetail(store, callId);
-      const providerReported = detail.tokenCounts.find((record) =>
+      const requestTokenCount = detail.tokenCounts.find((record) =>
         record.subjectType === "call" && record.direction === "request"
       );
-      expect(providerReported).toMatchObject({
-        provenance: "provider_reported",
-        tokens: detail.summary.usage.inputTokens,
-      });
+      expect(requestTokenCount).toBeUndefined();
 
       const block = detail.blocks.find((candidate) => candidate.direction === "request" && candidate.text !== undefined);
       if (block === undefined) {

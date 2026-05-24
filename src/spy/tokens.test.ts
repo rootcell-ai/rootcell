@@ -69,21 +69,14 @@ describe("spy token accounting helpers", () => {
         messages: [{ role: "user", content: [{ text: "selected text" }] }],
       },
     });
-    expect(bedrockCountInputForText("system text", {
-      id: "block-system",
-      call_id: "call-system",
-      direction: "request",
-      ordinal: 0,
-      kind: "harness-system-context",
-      source: "test",
-      text: "system text",
-      char_size: 11,
-      byte_size: 11,
-      content_hash: "hash-system",
-      cache_marker: false,
-    })).toEqual({
+    expect(bedrockCountInputForText("system text")).toEqual({
       converse: {
         messages: [{ role: "user", content: [{ text: "system text" }] }],
+      },
+    });
+    expect(bedrockCountInputForText("assistant response")).toEqual({
+      converse: {
+        messages: [{ role: "user", content: [{ text: "assistant response" }] }],
       },
     });
   });

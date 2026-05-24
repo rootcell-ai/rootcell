@@ -3,7 +3,6 @@ import {
   CountTokensCommand,
   type CountTokensCommandInput,
 } from "@aws-sdk/client-bedrock-runtime";
-import type { NormalizedBlock } from "./schemas.ts";
 
 export interface BedrockTokenCounter {
   count(input: BedrockTokenCountInput): Promise<number>;
@@ -57,13 +56,12 @@ export function bedrockCountInputFromRequestBody(bodyText: string): CountTokensC
   return Object.keys(converse).length === 0 ? null : { converse };
 }
 
-export function bedrockCountInputForText(text: string, block?: NormalizedBlock): CountTokensCommandInput["input"] {
-  const role = block?.role === "assistant" ? "assistant" : "user";
+export function bedrockCountInputForText(text: string): CountTokensCommandInput["input"] {
   return {
     converse: {
       messages: [
         {
-          role,
+          role: "user",
           content: [{ text }],
         },
       ],

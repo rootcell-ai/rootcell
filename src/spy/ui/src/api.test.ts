@@ -160,6 +160,12 @@ describe("spy UI API helpers", () => {
     expect(SpyCallDetailSchema.safeParse(missingComposition).success).toBe(false);
   });
 
+  test("requires compaction assessment in call details", () => {
+    const missingCompaction: Record<string, unknown> = { ...sampleDetail };
+    delete missingCompaction.compaction;
+    expect(SpyCallDetailSchema.safeParse(missingCompaction).success).toBe(false);
+  });
+
   test("validates token count responses", () => {
     expect(SpyTokenCountResponseSchema.safeParse(sampleTokenCountResponse).success).toBe(true);
     expect(SpyTokenCountResponseSchema.safeParse({ mode: "provider", records: [{ tokens: 1 }] }).success).toBe(false);
@@ -193,6 +199,8 @@ describe("spy UI API helpers", () => {
     expect(parseSseEventData("health", JSON.stringify(sampleHealth))).toEqual(sampleHealth);
     expect(parseSseEventData("calls-changed", JSON.stringify({ result: sampleIngestResult }))).toEqual({ result: sampleIngestResult });
     expect(parseSseEventData("calls-changed", JSON.stringify({ retention: sampleRetentionResult }))).toEqual({ retention: sampleRetentionResult });
+    expect(parseSseEventData("token-counts-changed", JSON.stringify({ callId: "call-one", records: sampleTokenCountResponse.records })))
+      .toEqual({ callId: "call-one", records: [...sampleTokenCountResponse.records] });
     expect(parseSseEventData("cleared", JSON.stringify(sampleClearResult))).toEqual(sampleClearResult);
   });
 
@@ -200,6 +208,7 @@ describe("spy UI API helpers", () => {
     expect(() => parseSseEventData("health", "{")).toThrow("invalid SSE health JSON");
     expect(() => parseSseEventData("health", JSON.stringify({ ok: true }))).toThrow("invalid response from SSE health payload");
     expect(() => parseSseEventData("calls-changed", JSON.stringify({ unknown: true }))).toThrow("invalid response from SSE calls-changed payload");
+    expect(() => parseSseEventData("token-counts-changed", JSON.stringify({ callId: "call-one", records: [] }))).toThrow("invalid response from SSE token-counts-changed payload");
   });
 });
 
@@ -330,6 +339,32 @@ const sampleBlock = {
 const sampleDetail = {
   summary: sampleSummary,
   requestComposition: sampleRequestComposition,
+  compaction: {
+    status: "none",
+    source: "none",
+    confidence: "none",
+    label: "No compaction candidate",
+    reasons: ["no_previous_comparable_call"],
+    evidence: {
+      currentCallId: "call-one",
+      previousCallId: null,
+      currentRequestByteSize: 25,
+      previousRequestByteSize: null,
+      currentInputTokens: 10,
+      previousInputTokens: null,
+      currentContextTokens: 13,
+      previousContextTokens: null,
+      currentPriorHistoryByteSize: 0,
+      previousPriorHistoryByteSize: null,
+      currentPriorHistoryBlockCount: 0,
+      previousPriorHistoryBlockCount: null,
+      summaryLikeBlockIds: [],
+      newHistoryBlockIds: [],
+      changedHistoryBlockIds: [],
+      repeatedContextBlockCount: 0,
+      changedContextBlockCount: 0,
+    },
+  },
   tokenCounts: [{
     subjectType: "block",
     callId: "call-one",

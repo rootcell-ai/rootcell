@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } fr
 import { dirname, join } from "node:path";
 import { Database } from "bun:sqlite";
 import type {
+  SpyCompactionAssessment,
   SpyTokenCountRecord,
   SpyTokenCountSubject,
 } from "./api-contracts.ts";
@@ -10,6 +11,7 @@ import {
   normalizeBedrockRequest,
   normalizeBedrockResponse,
 } from "./bedrock.ts";
+import { detectCompaction } from "./compaction.ts";
 import { applySpyMigrations, currentSpySchemaVersion } from "./migrations.ts";
 import {
   HttpEventRecordSchema,
@@ -188,6 +190,7 @@ export interface SpyStreamEventsOptions {
 export interface SpyCallDetail {
   readonly summary: SpyCallSummary;
   readonly requestComposition: SpyRequestComposition;
+  readonly compaction: SpyCompactionAssessment;
   readonly tokenCounts: readonly SpyTokenCountRecord[];
   readonly httpEvents: readonly HttpEventRecord[];
   readonly blocks: readonly NormalizedBlock[];
@@ -200,9 +203,7 @@ export interface SpyPreparedTokenCountSubject {
   readonly base: TokenRecordBase;
   readonly text: string;
   readonly requestBodyText?: string | undefined;
-  readonly block?: NormalizedBlock | undefined;
   readonly cacheKey?: string | undefined;
-  readonly providerReported?: SpyTokenCountRecord | undefined;
 }
 
 export interface SpyBlockDiff {
@@ -497,10 +498,20 @@ ORDER BY observed_at ASC, direction ASC
 
     const blocks = this.blocksForCall(callId);
     const requestBlocks = blocks.filter((block) => block.direction === "request");
+    const requestComposition = requestCompositionForBlocks(requestBlocks, summary.usage);
+    const previousRow = this.previousComparableCallRow(row);
+    const previousSummary = previousRow === null ? null : this.callSummaryForRow(previousRow);
+    const previousRequestBlocks = previousRow === null ? [] : this.blocksForCall(previousRow.id, "request");
     return {
       summary,
-      requestComposition: requestCompositionForBlocks(requestBlocks, summary.usage),
-      tokenCounts: this.tokenCountsForCall(summary, blocks),
+      requestComposition,
+      compaction: detectCompaction({
+        summary,
+        requestBlocks,
+        previousSummary,
+        previousRequestBlocks,
+      }),
+      tokenCounts: this.tokenCountsForCall(summary),
       httpEvents: httpEvents.map(httpEventFromRow),
       blocks,
       usageRecords: this.usageRecordsForCall(callId),
@@ -514,19 +525,7 @@ ORDER BY observed_at ASC, direction ASC
       return null;
     }
 
-    const previousRow = this.db.query(`
-SELECT id, provider, operation, model_id, status, started_at, completed_at,
-       status_code, request_flow_id, response_flow_id, request_content_hash,
-       response_content_hash
-FROM provider_call
-WHERE provider = ?
-  AND model_id = ?
-  AND operation = ?
-  AND (started_at < ? OR (started_at = ? AND id < ?))
-ORDER BY started_at DESC, id DESC
-LIMIT 1
-`).get(row.provider, row.model_id, row.operation, row.started_at, row.started_at, row.id) as ProviderCallRow | null;
-
+    const previousRow = this.previousComparableCallRow(row);
     const currentBlocks = this.blocksForCall(callId, "request");
     const previousBlocks = previousRow === null ? [] : this.blocksForCall(previousRow.id, "request");
     const previousByHash = new Map<string, NormalizedBlock>();
@@ -644,7 +643,6 @@ LIMIT ?
     if (row === null) {
       return null;
     }
-    const summary = this.callSummaryForRow(row);
     const countedAt = this.now();
 
     if (subject.type === "call") {
@@ -659,18 +657,12 @@ LIMIT ?
         modelId: row.model_id,
         countedAt,
       };
-      const providerReported = summary.usage.inputTokens === null ? undefined : {
-        ...base,
-        tokens: summary.usage.inputTokens,
-        provenance: "provider_reported" as const,
-      };
       return {
         subject,
         base,
         text,
         requestBodyText: this.requestBodyTextForCall(subject.callId),
         cacheKey: tokenCacheKey(base),
-        providerReported,
       };
     }
 
@@ -716,7 +708,6 @@ LIMIT ?
         subject,
         base,
         text,
-        block,
         cacheKey: tokenCacheKey(base),
       };
     }
@@ -1227,6 +1218,21 @@ ORDER BY direction ASC, ordinal ASC, id ASC
     return rows.map(normalizedBlockFromRow);
   }
 
+  private previousComparableCallRow(row: ProviderCallRow): ProviderCallRow | null {
+    return this.db.query(`
+SELECT id, provider, operation, model_id, status, started_at, completed_at,
+       status_code, request_flow_id, response_flow_id, request_content_hash,
+       response_content_hash
+FROM provider_call
+WHERE provider = ?
+  AND model_id = ?
+  AND operation = ?
+  AND (started_at < ? OR (started_at = ? AND id < ?))
+ORDER BY started_at DESC, id DESC
+LIMIT 1
+`).get(row.provider, row.model_id, row.operation, row.started_at, row.started_at, row.id) as ProviderCallRow | null;
+  }
+
   private blockForCall(callId: string, blockId: string): NormalizedBlock | null {
     const row = this.db.query(`
 SELECT id, call_id, direction, ordinal, role, kind, source, provider_path,
@@ -1248,24 +1254,8 @@ LIMIT 1
     return row?.body_text ?? undefined;
   }
 
-  private tokenCountsForCall(summary: SpyCallSummary, blocks: readonly NormalizedBlock[]): SpyTokenCountRecord[] {
+  private tokenCountsForCall(summary: SpyCallSummary): SpyTokenCountRecord[] {
     const records = new Map<string, SpyTokenCountRecord>();
-    const now = this.now();
-    const requestBlocks = blocks.filter((block) => block.direction === "request");
-    const requestText = textForBlocks(requestBlocks);
-    const requestBase: TokenRecordBase = {
-      subjectType: "call",
-      callId: summary.call.id,
-      direction: "request",
-      sourceHash: summary.call.request_content_hash ?? tokenSourceHash(requestText),
-      modelId: summary.call.model_id,
-      countedAt: now,
-    };
-    const inputTokens = summary.usage.inputTokens;
-    if (inputTokens !== null) {
-      addBestTokenRecord(records, { ...requestBase, tokens: inputTokens, provenance: "provider_reported" });
-    }
-
     const cachedRows = this.db.query(`
 SELECT id, call_id, subject_type, direction, block_id, kind, label, source_hash,
        cache_key, model_id, tokens, provenance, counted_at, error
@@ -1581,10 +1571,10 @@ function tokenRecordKey(record: SpyTokenCountRecord): string {
 }
 
 function tokenRecordPriority(record: SpyTokenCountRecord): number {
-  if (record.provenance === "provider_reported") {
+  if (record.provenance === "provider_counted") {
     return 4;
   }
-  if (record.provenance === "provider_counted") {
+  if (record.provenance === "provider_reported") {
     return 3;
   }
   return 1;

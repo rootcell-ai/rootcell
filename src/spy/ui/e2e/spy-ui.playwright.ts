@@ -4,6 +4,7 @@ import type {
   SpyCallDetail,
   SpyCallDiff,
   SpyCallSummary,
+  SpyCompactionAssessment,
   SpyRequestComposition,
   SpyServiceHealth,
   SpyTokenCountRecord,
@@ -196,10 +197,60 @@ test("keeps relative time ranges rolling on refresh", async ({ page }) => {
   expect(url.searchParams.has("since")).toBe(false);
 });
 
+test("preserves inspector scroll during rolling range refreshes", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto("/?since=0");
+  await expect(page.getByTestId("timeline-row")).toHaveCount(5);
+
+  await page.getByRole("button", { name: "10 min" }).click();
+  await expect(page.getByTestId("timeline-row")).toHaveCount(5);
+  await page.getByTestId("timeline-row").first().click();
+  await expect(page.getByTestId("request-composition")).toBeVisible();
+
+  const beforeRefresh = await page.evaluate(async () => {
+    const body = document.querySelector('[data-testid="inspector-scroll-body"]');
+    if (body === null) {
+      throw new Error("missing inspector body");
+    }
+    body.scrollTop = body.scrollHeight;
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => {
+        resolve();
+      });
+    });
+    return body.scrollTop;
+  });
+  expect(beforeRefresh).toBeGreaterThan(0);
+
+  const initialSubtitle = (await readRangeState(page)).subtitle;
+  await page.waitForTimeout(2100);
+  const refreshResponse = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/calls");
+  await page.getByLabel("Refresh calls").click();
+  await refreshResponse;
+
+  const afterRefresh = await page.evaluate(async () => {
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          resolve();
+        });
+      });
+    });
+    return document.querySelector('[data-testid="inspector-scroll-body"]')?.scrollTop ?? -1;
+  });
+  expect(afterRefresh).toBeGreaterThan(0);
+  expect((await readRangeState(page)).subtitle).not.toBe(initialSubtitle);
+
+  const url = new URL(page.url());
+  expect(url.searchParams.get("preset")).toBe("10m");
+  expect(url.searchParams.has("since")).toBe(false);
+});
+
 test("keeps timeline and inspector scroll containers inside the viewport", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto("/?since=0");
   await expect(page.getByTestId("timeline-row")).toHaveCount(5);
+  await expect(page.getByTestId("request-composition")).toBeVisible();
 
   const initialMetrics = await page.evaluate(() => {
     const rectOf = (selector: string): DOMRect => {
@@ -402,6 +453,18 @@ test("shows full provider model id in the selected-call summary", async ({ page 
   const summary = page.getByTestId("inspector-section-summary");
   await expect(summary.getByText("Model ID", { exact: true })).toBeVisible();
   await expect(summary.getByTestId("summary-model-id")).toContainText(fullModelId);
+});
+
+test("shows compaction candidate labels in the selected-call summary", async ({ page }) => {
+  await installCompactionRoutes(page);
+  await page.goto("/?since=0");
+  await timelineRow(page, DIFF_SCOPE_CALL_ID).click();
+
+  const candidate = page.getByTestId("compaction-candidate");
+  await expect(candidate).toBeVisible();
+  await expect(candidate).toContainText("Pi compaction candidate");
+  await expect(candidate).toContainText("high confidence");
+  await expect(candidate).toContainText("summary-like history");
 });
 
 test("keeps inspector summary metric values readable", async ({ page }) => {
@@ -810,7 +873,7 @@ test("bounds high-volume stream events and clears them on range changes", async 
   expect(await page.evaluate(() => document.querySelector("main")?.scrollTop ?? -1)).toBe(0);
 });
 
-test("shows token provenance and counts selected block text", async ({ page }) => {
+test("shows backend token provenance and counts selected block text", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
   await installHeavyStreamRoutes(page);
   await page.goto("/?since=0");
@@ -818,9 +881,7 @@ test("shows token provenance and counts selected block text", async ({ page }) =
 
   const block = page.getByTestId("block-row-block-request-user");
   await expect(block.getByText("5 tok", { exact: true })).toBeVisible();
-
-  await block.getByTestId("provider-count-block-request-user").click();
-  await expect(block.getByText("77 tok", { exact: true })).toBeVisible();
+  await expect(block.getByTestId("provider-count-block-request-user")).toHaveCount(0);
 
   await block.locator("pre").evaluate((element) => {
     const range = document.createRange();
@@ -997,6 +1058,29 @@ async function installDiffScopeRoutes(page: Page): Promise<void> {
   });
 }
 
+async function installCompactionRoutes(page: Page): Promise<void> {
+  const fixture = diffScopeFixture();
+  const detail: SpyCallDetail = {
+    ...fixture.detail,
+    compaction: compactionCandidate(fixture.summary),
+  };
+  await page.route(/\/api\/health$/, async (route) => {
+    await fulfillJson(route, fixture.health);
+  });
+  await page.route(/\/api\/calls\/call-diff-scope-current\/diff$/, async (route) => {
+    await fulfillJson(route, fixture.diff);
+  });
+  await page.route(/\/api\/calls\/call-diff-scope-current$/, async (route) => {
+    await fulfillJson(route, detail);
+  });
+  await page.route(/\/api\/calls(?:\?.*)?$/, async (route) => {
+    await fulfillJson(route, { items: [fixture.summary] });
+  });
+  await page.route(/\/api\/search(?:\?.*)?$/, async (route) => {
+    await fulfillJson(route, { items: [fixture.summary] });
+  });
+}
+
 async function installCacheTimelineRoutes(page: Page): Promise<void> {
   const fixture = cacheTimelineFixture();
   await page.route(/\/api\/health$/, async (route) => {
@@ -1141,6 +1225,7 @@ function diffScopeFixture(): {
   const detail: SpyCallDetail = {
     summary,
     requestComposition: requestComposition(usage),
+    compaction: noCompaction(summary),
     tokenCounts: tokenCountsFor(summary, blocks),
     httpEvents: [],
     blocks,
@@ -1207,6 +1292,7 @@ function cacheTimelineFixture(): {
       totalBlockCount: 3,
       cacheMarkerCount: 2,
     },
+    compaction: noCompaction(summary),
     tokenCounts: [],
     httpEvents: [],
     blocks: [
@@ -1325,6 +1411,7 @@ function networkMetadataFixture(): {
   const detail: SpyCallDetail = {
     summary,
     requestComposition: requestComposition(usage),
+    compaction: noCompaction(summary),
     tokenCounts: tokenCountsFor(summary, blocks),
     httpEvents: [
       {
@@ -1456,6 +1543,7 @@ function blockFilterDetail(
   return {
     summary,
     requestComposition: requestComposition(usage),
+    compaction: noCompaction(summary),
     tokenCounts: [],
     httpEvents: [],
     blocks,
@@ -1536,6 +1624,7 @@ function heavyStreamFixture(): {
   const detail: SpyCallDetail = {
     summary,
     requestComposition: requestComposition(usage),
+    compaction: noCompaction(summary),
     tokenCounts: tokenCountsFor(summary, blocks),
     httpEvents: [
       {
@@ -1649,7 +1738,79 @@ function requestComposition(usage: SpyCallSummary["usage"]): SpyRequestCompositi
   };
 }
 
+function noCompaction(summary: SpyCallSummary): SpyCompactionAssessment {
+  return {
+    status: "none",
+    source: "none",
+    confidence: "none",
+    label: "No compaction candidate",
+    reasons: ["no_previous_comparable_call"],
+    evidence: {
+      currentCallId: summary.call.id,
+      previousCallId: null,
+      currentRequestByteSize: summary.requestByteSize,
+      previousRequestByteSize: null,
+      currentInputTokens: summary.usage.inputTokens,
+      previousInputTokens: null,
+      currentContextTokens: contextTokens(summary.usage),
+      previousContextTokens: null,
+      currentPriorHistoryByteSize: 0,
+      previousPriorHistoryByteSize: null,
+      currentPriorHistoryBlockCount: 0,
+      previousPriorHistoryBlockCount: null,
+      summaryLikeBlockIds: [],
+      newHistoryBlockIds: [],
+      changedHistoryBlockIds: [],
+      repeatedContextBlockCount: 0,
+      changedContextBlockCount: 0,
+    },
+  };
+}
+
+function compactionCandidate(summary: SpyCallSummary): SpyCompactionAssessment {
+  const currentContextTokens = contextTokens(summary.usage);
+  return {
+    status: "candidate",
+    source: "pi_pattern",
+    confidence: "high",
+    label: "Pi compaction candidate",
+    reasons: [
+      "pi_request_context_profile",
+      "stable_request_context",
+      "summary_like_history_block",
+      "prior_history_byte_drop",
+      "request_byte_drop",
+    ],
+    evidence: {
+      currentCallId: summary.call.id,
+      previousCallId: DIFF_SCOPE_PREVIOUS_CALL_ID,
+      currentRequestByteSize: summary.requestByteSize,
+      previousRequestByteSize: summary.requestByteSize * 4,
+      currentInputTokens: summary.usage.inputTokens,
+      previousInputTokens: summary.usage.inputTokens === null ? null : summary.usage.inputTokens * 4,
+      currentContextTokens,
+      previousContextTokens: currentContextTokens === null ? null : currentContextTokens * 4,
+      currentPriorHistoryByteSize: 512,
+      previousPriorHistoryByteSize: 8_192,
+      currentPriorHistoryBlockCount: 1,
+      previousPriorHistoryBlockCount: 6,
+      summaryLikeBlockIds: ["compaction-summary-block"],
+      newHistoryBlockIds: ["compaction-summary-block"],
+      changedHistoryBlockIds: [],
+      repeatedContextBlockCount: 2,
+      changedContextBlockCount: 0,
+    },
+  };
+}
+
+function contextTokens(usage: SpyCallSummary["usage"]): number | null {
+  const parts = [usage.inputTokens, usage.cacheReadTokens, usage.cacheWriteTokens]
+    .filter((value): value is number => value !== null);
+  return parts.length === 0 ? null : parts.reduce((total, value) => total + value, 0);
+}
+
 function tokenCountsFor(summary: SpyCallSummary, blocks: readonly NormalizedBlock[]): SpyTokenCountRecord[] {
+  const requestTokens = contextTokens(summary.usage);
   return [
     {
       subjectType: "call",
@@ -1657,8 +1818,8 @@ function tokenCountsFor(summary: SpyCallSummary, blocks: readonly NormalizedBloc
       direction: "request",
       sourceHash: summary.call.request_content_hash ?? `${summary.call.id}-request-token-hash`,
       modelId: summary.call.model_id,
-      tokens: summary.usage.inputTokens,
-      provenance: summary.usage.inputTokens === null ? "unavailable" : "provider_reported",
+      tokens: requestTokens,
+      provenance: requestTokens === null ? "unavailable" : "provider_counted",
       countedAt: summary.call.started_at,
     },
     ...blocks.map((block): SpyTokenCountRecord => ({

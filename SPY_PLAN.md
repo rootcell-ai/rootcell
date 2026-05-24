@@ -158,13 +158,23 @@ The first screen should be a live conversation-analysis surface:
 Performance requirements:
 
 - Virtualize the live timeline.
+- Virtualize every large or repeated content surface by viewport, not just the
+  timeline. The inspector, block lists, raw payloads, stream payloads, diffs,
+  and any future conversation/context views must remain responsive when a single
+  provider request contains a one million token context window.
+- Do not silently truncate normalized request/response bodies as a performance
+  strategy. If a body is too large to mount eagerly, render a virtualized or
+  lazily mounted full-content view with explicit preview/expand affordances.
+  Token counts, byte counts, hashes, diffs, and search must always be based on
+  the full captured content, not the preview.
 - Fetch summaries first and details on demand.
 - Paginate historical queries.
 - Keep stream events and raw payload details collapsed and loaded only on
   request.
 - Use semantic highlighting instead of editor-style highlighting as the primary
   visual language.
-- Avoid rendering giant JSON/code blocks into the DOM.
+- Avoid rendering giant JSON/code blocks into the DOM outside a viewport-bounded
+  virtualized/lazy surface.
 
 Semantic highlighting should distinguish:
 
@@ -707,6 +717,32 @@ V1 excludes:
     `bun run test:spy-ui:unit`, `bun run test:spy-ui:e2e`,
     `bun run build:spy`, and `git diff --check`; service tests that bind local
     ports were run with localhost permissions when required.
+- Completed V1.5 automated compaction candidate detection:
+  - Added shared compaction assessment API contracts with candidate source,
+    confidence, reasons, and request-transition evidence.
+  - Added a pure request-context compaction detector with Pi-specific request
+    profile signals and generic structural fallback heuristics.
+  - Wired call detail responses to compare each request against the previous
+    comparable request and return computed compaction assessment data without a
+    new persistence migration.
+  - Added a browser inspector summary label for candidate calls, distinguishing
+    Pi-pattern candidates from lower-confidence heuristic candidates.
+  - Added fixture-backed and synthetic coverage for Pi candidates, generic
+    candidates, and false positives where existing Pi/Bedrock fixtures should
+    not be flagged.
+  - Validated against the default Lima agent/firewall/spy setup with
+    `ROOTCELL_SPY_ENABLED=true`: provisioned the updated service/UI, launched
+    `./rootcell spy --no-open`, ran a real Pi/Bedrock session, triggered manual
+    `/compact`, sent a post-compaction prompt, and inspected the live spy API
+    and browser UI.
+  - Confirmed raw storage was not required for inspection. The live
+    post-compaction call was labeled `Pi compaction candidate` with low
+    confidence because Pi emitted a summary-like history block while still
+    carrying the earlier large history in the assembled request.
+  - Verified `bun run typecheck`, `bun run lint`, `bun run test:spy`,
+    `bun run test:spy-ui:unit`, `bun run build:spy`,
+    `bun run test:spy-ui:e2e`, and `git diff --check`; localhost-bound tests
+    and live VM work were run outside the sandbox where required.
 
 ### V1
 
@@ -795,6 +831,19 @@ notes, and follow-up verification baseline were moved to
 
 Add analysis depth:
 
+- [ ] P0 viewport virtualization for all large content surfaces.
+  - The UI must handle a provider request with a one million token context
+    window without freezing, scroll jumps, runaway DOM size, or silent body
+    truncation.
+  - Timeline virtualization is not sufficient. Inspector block lists, block
+    bodies, raw payload bodies, stream payload previews, diff views, and future
+    conversation/context views must render only the visible viewport or
+    intentionally expanded local content.
+  - Full captured content remains the source of truth for token counts, byte
+    counts, hashes, search, and diffing. Preview text is only a presentation
+    optimization and must be labeled or expandable when it is not the full body.
+  - Replace `clipped(...)` body rendering with explicit viewport/lazy rendering
+    behavior and add regression coverage using very large synthetic blocks.
 - [x] Shared token-count contracts for `call`, `section`, `block`, and
   `selection` subjects.
 - [x] Provider-only token-count mode. Local estimates and `estimated`
@@ -812,7 +861,7 @@ Add analysis depth:
   `unavailable`.
 - [x] Request composition token columns and block-row token/provenance chips.
 - [x] Explicit provider-count and highlighted-selection count UI actions.
-- [ ] Automated compaction candidate detection:
+- [x] Automated compaction candidate detection:
   - Pi-specific request patterns from fixtures.
   - Generic fallback heuristics.
   - Labels that distinguish Pi-specific candidates from heuristic candidates.

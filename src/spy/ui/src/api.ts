@@ -23,6 +23,7 @@ import type {
   SseCallsChangedPayload,
   SseEventName,
   SseHelloPayload,
+  SseTokenCountsChangedPayload,
   TimePreset,
 } from "./types.ts";
 
@@ -215,8 +216,9 @@ export class SpyApiClient {
 export function parseSseEventData(eventName: "hello", data: string): SseHelloPayload;
 export function parseSseEventData(eventName: "health", data: string): SpyServiceHealth;
 export function parseSseEventData(eventName: "calls-changed", data: string): SseCallsChangedPayload;
+export function parseSseEventData(eventName: "token-counts-changed", data: string): SseTokenCountsChangedPayload;
 export function parseSseEventData(eventName: "cleared", data: string): ClearDataResult;
-export function parseSseEventData(eventName: SseEventName, data: string): SseHelloPayload | SpyServiceHealth | SseCallsChangedPayload | ClearDataResult {
+export function parseSseEventData(eventName: SseEventName, data: string): SseHelloPayload | SpyServiceHealth | SseCallsChangedPayload | SseTokenCountsChangedPayload | ClearDataResult {
   let payload: unknown;
   try {
     payload = JSON.parse(data) as unknown;
@@ -231,6 +233,9 @@ export function parseSseEventData(eventName: SseEventName, data: string): SseHel
   }
   if (eventName === "calls-changed") {
     return parseWithSchema("SSE calls-changed payload", SseEventPayloadSchemas["calls-changed"], payload);
+  }
+  if (eventName === "token-counts-changed") {
+    return parseWithSchema("SSE token-counts-changed payload", SseEventPayloadSchemas["token-counts-changed"], payload);
   }
   return parseWithSchema("SSE cleared payload", SseEventPayloadSchemas.cleared, payload);
 }

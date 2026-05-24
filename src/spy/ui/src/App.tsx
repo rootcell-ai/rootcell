@@ -48,6 +48,8 @@ import type {
   SpyCallDiff,
   SpyRequestComposition,
   SpyCallSummary,
+  SpyCompactionAssessment,
+  SpyCompactionReason,
   SpyServiceHealth,
   SpyTokenCountRecord,
   StreamEvent,
@@ -143,6 +145,7 @@ export function App(): React.ReactElement {
   const initialRange = React.useMemo(() => initialTimelineRangeFromLocation(window.location), []);
   const [preset, setPreset] = React.useState<TimePreset>(initialRange.preset);
   const [since, setSince] = React.useState(initialRange.since);
+  const [displaySince, setDisplaySince] = React.useState(initialRange.since);
   const [customStart, setCustomStart] = React.useState(() => datetimeLocalValue(initialRange.since));
   const [searchDraft, setSearchDraft] = React.useState("");
   const [search, setSearch] = React.useState("");
@@ -285,6 +288,30 @@ export function App(): React.ReactElement {
         setSseError(sseErrorMessage(error));
       }
     };
+    const onTokenCountsChanged = (event: MessageEvent<string>): void => {
+      try {
+        const payload = parseSseEventData("token-counts-changed", event.data);
+        setSseError(undefined);
+        setDetailState((current) => {
+          if (current?.detail == null) {
+            return current;
+          }
+          if (current.detail.summary.call.id !== payload.callId) {
+            return current;
+          }
+          return {
+            ...current,
+            detail: {
+              ...current.detail,
+              tokenCounts: mergeTokenCountRecords(current.detail.tokenCounts, payload.records),
+            },
+          };
+        });
+      } catch (error) {
+        setSseConnected(false);
+        setSseError(sseErrorMessage(error));
+      }
+    };
     const onCleared = (event: MessageEvent<string>): void => {
       try {
         parseSseEventData("cleared", event.data);
@@ -307,6 +334,7 @@ export function App(): React.ReactElement {
     source.addEventListener("hello", onHello as EventListener);
     source.addEventListener("health", onHealth as EventListener);
     source.addEventListener("calls-changed", onCallsChanged as EventListener);
+    source.addEventListener("token-counts-changed", onTokenCountsChanged as EventListener);
     source.addEventListener("cleared", onCleared as EventListener);
 
     return () => {
@@ -315,6 +343,7 @@ export function App(): React.ReactElement {
       source.removeEventListener("hello", onHello as EventListener);
       source.removeEventListener("health", onHealth as EventListener);
       source.removeEventListener("calls-changed", onCallsChanged as EventListener);
+      source.removeEventListener("token-counts-changed", onTokenCountsChanged as EventListener);
       source.removeEventListener("cleared", onCleared as EventListener);
       source.close();
     };
@@ -403,20 +432,17 @@ export function App(): React.ReactElement {
   function setTimelineRange(nextPreset: TimePreset, nextSince: number): void {
     setPreset(nextPreset);
     setSince(nextSince);
+    setDisplaySince(nextSince);
     setCustomStart(datetimeLocalValue(nextSince));
     replaceTimelineRangeUrl(nextPreset, nextSince);
   }
 
   function sinceForCallLoad(append: boolean): number {
-    if (append || !isRollingPreset(preset)) {
+    if (append || preset === "live" || !isRollingPreset(preset)) {
       return since;
     }
     const nextSince = resolveTimelineSince(preset, since);
-    if (nextSince !== since) {
-      setSince(nextSince);
-      setCustomStart(datetimeLocalValue(nextSince));
-      replaceTimelineRangeUrl(preset, nextSince);
-    }
+    setDisplaySince((current) => current === nextSince ? current : nextSince);
     return nextSince;
   }
 
@@ -537,7 +563,7 @@ export function App(): React.ReactElement {
             <div className="min-w-0">
               <h1 className="truncate text-base font-semibold">Rootcell Spy</h1>
               <p className="truncate text-xs text-stone-500">
-                {preset === "live" ? "Live from now" : `Since ${formatDateTime(since)}`}
+                {preset === "live" ? "Live from now" : `Since ${formatDateTime(displaySince)}`}
               </p>
             </div>
           </div>
@@ -620,7 +646,7 @@ export function App(): React.ReactElement {
             resetKey={inspectorResetKey}
             pinned={selectedCallIsPinned}
             preset={preset}
-            since={since}
+            since={displaySince}
             filters={filters}
             health={health}
             onFilters={setFilters}
@@ -1248,8 +1274,57 @@ function SummaryPanel(props: { readonly detail: SpyCallDetail }): React.ReactEle
         <PanelMetric icon={<Database aria-hidden="true" size={16} />} label="Request" value={formatBytes(summary.requestByteSize)} />
         <PanelMetric icon={<BadgeInfo aria-hidden="true" size={16} />} label="Total Usage" value={formatUsageTotal(summary.usage)} />
       </div>
+      <CompactionSummary assessment={props.detail.compaction} />
     </div>
   );
+}
+
+function CompactionSummary(props: { readonly assessment: SpyCompactionAssessment }): React.ReactElement | null {
+  const { assessment } = props;
+  if (assessment.status !== "candidate") {
+    return null;
+  }
+  return (
+    <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3" data-testid="compaction-candidate">
+      <div className="flex flex-wrap items-center gap-2">
+        <AlertTriangle aria-hidden="true" size={16} className="text-amber-700" />
+        <span className="text-sm font-semibold text-stone-950">{assessment.label}</span>
+        <Badge tone="amber">{assessment.confidence} confidence</Badge>
+      </div>
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        {assessment.reasons.map((reason) => (
+          <Badge key={reason} tone="neutral">{compactionReasonLabel(reason)}</Badge>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function compactionReasonLabel(reason: SpyCompactionReason): string {
+  switch (reason) {
+    case "no_previous_comparable_call":
+      return "no previous request";
+    case "pi_request_context_profile":
+      return "Pi request profile";
+    case "summarization_system_prompt":
+      return "summary system prompt";
+    case "conversation_wrapper_input":
+      return "conversation wrapper";
+    case "large_current_user_input":
+      return "large current input";
+    case "stable_request_context":
+      return "stable context";
+    case "summary_like_history_block":
+      return "summary-like history";
+    case "prior_history_byte_drop":
+      return "history bytes dropped";
+    case "prior_history_block_drop":
+      return "history blocks dropped";
+    case "request_byte_drop":
+      return "request bytes dropped";
+    case "input_token_drop":
+      return "input tokens dropped";
+  }
 }
 
 function PanelMetric(props: {
@@ -1399,35 +1474,66 @@ function bestTokenRecord(records: readonly SpyTokenCountRecord[]): SpyTokenCount
 }
 
 function tokenRecordPriority(record: SpyTokenCountRecord): number {
-  if (record.provenance === "provider_reported") {
+  if (record.provenance === "provider_counted") {
     return 4;
   }
-  if (record.provenance === "provider_counted") {
+  if (record.provenance === "provider_reported") {
     return 3;
   }
   return 1;
 }
 
+function mergeTokenCountRecords(
+  existing: readonly SpyTokenCountRecord[],
+  incoming: readonly SpyTokenCountRecord[],
+): SpyTokenCountRecord[] {
+  const records = new Map(existing.map((record) => [tokenRecordKey(record), record]));
+  for (const record of incoming) {
+    const key = tokenRecordKey(record);
+    const current = records.get(key);
+    if (current === undefined || tokenRecordPriority(record) >= tokenRecordPriority(current)) {
+      records.set(key, record);
+    }
+  }
+  return [...records.values()];
+}
+
+function tokenRecordKey(record: SpyTokenCountRecord): string {
+  if (record.subjectType === "call") {
+    return ["call", record.callId ?? "", record.direction ?? "", "", "", ""].join(":");
+  }
+  if (record.subjectType === "section") {
+    return ["section", record.callId ?? "", record.direction ?? "", "", record.kind ?? "", ""].join(":");
+  }
+  if (record.subjectType === "block") {
+    return ["block", record.callId ?? "", "", record.blockId ?? "", ""].join(":");
+  }
+  return ["selection", record.callId ?? "", "", "", "", record.label ?? record.sourceHash].join(":");
+}
+
 function formatTokenRecord(record: SpyTokenCountRecord | undefined): string {
-  return record?.tokens === undefined || record.tokens === null ? "-" : `${formatNumber(record.tokens)} tok`;
+  if (record === undefined) {
+    return "pending";
+  }
+  return record.tokens === null ? "-" : `${formatNumber(record.tokens)} tok`;
 }
 
 function tokenProvenanceLabel(record: SpyTokenCountRecord | undefined): string {
   if (record === undefined) {
-    return "unavailable";
+    return "count pending";
   }
   const label = record.provenance.replaceAll("_", " ");
   return record.error === undefined ? label : `${label}: ${record.error}`;
 }
 
 function tokenTone(record: SpyTokenCountRecord | undefined): "neutral" | "green" | "amber" | "red" | "blue" | "teal" {
-  if (record?.provenance === "provider_reported") {
-    return "green";
-  }
   if (record?.provenance === "provider_counted") {
     return "blue";
   }
-  return "red";
+  if (record?.provenance === "provider_reported") {
+    return "green";
+  }
+  return record === undefined ? "neutral" : "red";
 }
 
 function unavailableUiTokenCount(
@@ -1522,39 +1628,20 @@ function BlockRow(props: {
   readonly tokenCount: SpyTokenCountRecord | undefined;
 }): React.ReactElement {
   const text = blockText(props.block);
-  const [providerCount, setProviderCount] = React.useState<SpyTokenCountRecord | null>(null);
   const [selectionCount, setSelectionCount] = React.useState<SpyTokenCountRecord | null>(null);
-  const [tokenState, setTokenState] = React.useState<LoadState>("idle");
-  const visibleTokenCount = providerCount ?? props.tokenCount;
-  const countBlockWithProvider = (): void => {
-    setTokenState("loading");
-    void api.tokenCount({
-      mode: "provider",
-      subjects: [{ type: "block", callId: props.block.call_id, blockId: props.block.id }],
-    }).then((response) => {
-      setProviderCount(response.records[0] ?? null);
-      setTokenState("idle");
-    }).catch((error: unknown) => {
-      setProviderCount(unavailableUiTokenCount(props.block, errorMessage(error)));
-      setTokenState("error");
-    });
-  };
   const countSelection = (): void => {
     const selectedText = window.getSelection()?.toString() ?? "";
     if (selectedText.length === 0) {
       setSelectionCount(unavailableUiTokenCount(props.block, "select text inside a block first"));
       return;
     }
-    setTokenState("loading");
     void api.tokenCount({
       mode: "provider",
       subjects: [{ type: "selection", callId: props.block.call_id, text: selectedText, label: "selection" }],
     }).then((response) => {
       setSelectionCount(response.records[0] ?? null);
-      setTokenState("idle");
     }).catch((error: unknown) => {
       setSelectionCount(unavailableUiTokenCount(props.block, errorMessage(error), "selection"));
-      setTokenState("error");
     });
   };
   return (
@@ -1564,17 +1651,13 @@ function BlockRow(props: {
         {props.block.role === undefined ? null : <Badge>{props.block.role}</Badge>}
         {props.block.cache_marker ? <Badge tone="blue">cache marker</Badge> : null}
         {props.diff === undefined ? null : <Badge tone={diffTone(props.diff)}>{props.diff}</Badge>}
-        <Badge tone={tokenTone(visibleTokenCount)} title={tokenProvenanceLabel(visibleTokenCount)}>
-          {formatTokenRecord(visibleTokenCount)}
+        <Badge tone={tokenTone(props.tokenCount)} title={tokenProvenanceLabel(props.tokenCount)}>
+          {formatTokenRecord(props.tokenCount)}
         </Badge>
         <div className="ml-auto flex items-center gap-1">
           <Button type="button" variant="secondary" size="sm" onClick={countSelection} title="Count selected text" data-testid={`selection-count-${props.block.id}`}>
             <Hash aria-hidden="true" size={14} />
             Selection
-          </Button>
-          <Button type="button" variant="secondary" size="sm" onClick={countBlockWithProvider} title="Ask Bedrock CountTokens for this block" data-testid={`provider-count-${props.block.id}`}>
-            {tokenState === "loading" ? <Loader2 aria-hidden="true" className="animate-spin" size={14} /> : <Hash aria-hidden="true" size={14} />}
-            Provider
           </Button>
           <span className="text-xs text-stone-500">{formatBytes(props.block.byte_size)}</span>
         </div>

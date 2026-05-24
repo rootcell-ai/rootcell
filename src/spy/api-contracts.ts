@@ -129,6 +129,51 @@ export const SpyTokenCountResponseSchema = z.object({
   records: z.array(SpyTokenCountRecordSchema),
 }).strict();
 
+export const SpyCompactionDetectionSourceSchema = z.enum(["none", "pi_pattern", "heuristic", "summarization_request"]);
+export const SpyCompactionConfidenceSchema = z.enum(["none", "low", "medium", "high"]);
+export const SpyCompactionReasonSchema = z.enum([
+  "no_previous_comparable_call",
+  "pi_request_context_profile",
+  "summarization_system_prompt",
+  "conversation_wrapper_input",
+  "large_current_user_input",
+  "stable_request_context",
+  "summary_like_history_block",
+  "prior_history_byte_drop",
+  "prior_history_block_drop",
+  "request_byte_drop",
+  "input_token_drop",
+]);
+
+export const SpyCompactionEvidenceSchema = z.object({
+  currentCallId: z.string().min(1),
+  previousCallId: z.string().min(1).nullable(),
+  currentRequestByteSize: NonNegativeIntegerSchema,
+  previousRequestByteSize: NonNegativeIntegerSchema.nullable(),
+  currentInputTokens: NonNegativeIntegerSchema.nullable(),
+  previousInputTokens: NonNegativeIntegerSchema.nullable(),
+  currentContextTokens: NonNegativeIntegerSchema.nullable(),
+  previousContextTokens: NonNegativeIntegerSchema.nullable(),
+  currentPriorHistoryByteSize: NonNegativeIntegerSchema,
+  previousPriorHistoryByteSize: NonNegativeIntegerSchema.nullable(),
+  currentPriorHistoryBlockCount: NonNegativeIntegerSchema,
+  previousPriorHistoryBlockCount: NonNegativeIntegerSchema.nullable(),
+  summaryLikeBlockIds: z.array(z.string().min(1)),
+  newHistoryBlockIds: z.array(z.string().min(1)),
+  changedHistoryBlockIds: z.array(z.string().min(1)),
+  repeatedContextBlockCount: NonNegativeIntegerSchema,
+  changedContextBlockCount: NonNegativeIntegerSchema,
+}).strict();
+
+export const SpyCompactionAssessmentSchema = z.object({
+  status: z.enum(["none", "candidate"]),
+  source: SpyCompactionDetectionSourceSchema,
+  confidence: SpyCompactionConfidenceSchema,
+  label: z.string().min(1),
+  reasons: z.array(SpyCompactionReasonSchema),
+  evidence: SpyCompactionEvidenceSchema,
+}).strict();
+
 export const SpyCallSummarySchema = z.object({
   call: ProviderCallSchema,
   durationMs: NonNegativeIntegerSchema.nullable(),
@@ -185,6 +230,7 @@ export const StreamEventPageSchema = spyPaginatedResultSchema(StreamEventSchema)
 export const SpyCallDetailSchema = z.object({
   summary: SpyCallSummarySchema,
   requestComposition: SpyRequestCompositionSchema,
+  compaction: SpyCompactionAssessmentSchema,
   tokenCounts: z.array(SpyTokenCountRecordSchema),
   httpEvents: z.array(HttpEventRecordSchema),
   blocks: z.array(NormalizedBlockSchema),
@@ -204,7 +250,7 @@ export const SpyCallDiffSchema = z.object({
   blocks: z.array(SpyBlockDiffSchema),
 }).strict();
 
-export const SseEventNameSchema = z.enum(["hello", "health", "calls-changed", "cleared"]);
+export const SseEventNameSchema = z.enum(["hello", "health", "calls-changed", "token-counts-changed", "cleared"]);
 
 export const SseHelloPayloadSchema = z.object({
   id: NonNegativeIntegerSchema,
@@ -215,10 +261,16 @@ export const SseCallsChangedPayloadSchema = z.union([
   z.object({ retention: RetentionResultSchema }).strict(),
 ]);
 
+export const SseTokenCountsChangedPayloadSchema = z.object({
+  callId: z.string().min(1),
+  records: z.array(SpyTokenCountRecordSchema).min(1),
+}).strict();
+
 export const SseEventPayloadSchemas = {
   hello: SseHelloPayloadSchema,
   health: SpyServiceHealthSchema,
   "calls-changed": SseCallsChangedPayloadSchema,
+  "token-counts-changed": SseTokenCountsChangedPayloadSchema,
   cleared: ClearDataResultSchema,
 } as const;
 
@@ -233,6 +285,11 @@ export type SpyTokenCountSubject = Readonly<z.infer<typeof SpyTokenCountSubjectS
 export type SpyTokenCountRequest = Readonly<z.infer<typeof SpyTokenCountRequestSchema>>;
 export type SpyTokenCountRecord = Readonly<z.infer<typeof SpyTokenCountRecordSchema>>;
 export type SpyTokenCountResponse = Readonly<z.infer<typeof SpyTokenCountResponseSchema>>;
+export type SpyCompactionDetectionSource = z.infer<typeof SpyCompactionDetectionSourceSchema>;
+export type SpyCompactionConfidence = z.infer<typeof SpyCompactionConfidenceSchema>;
+export type SpyCompactionReason = z.infer<typeof SpyCompactionReasonSchema>;
+export type SpyCompactionEvidence = Readonly<z.infer<typeof SpyCompactionEvidenceSchema>>;
+export type SpyCompactionAssessment = Readonly<z.infer<typeof SpyCompactionAssessmentSchema>>;
 export type SpyUsageSummary = Readonly<z.infer<typeof SpyUsageSummarySchema>>;
 export type SpyCallSummary = Readonly<z.infer<typeof SpyCallSummarySchema>>;
 export type SpyRequestCompositionSection = Readonly<z.infer<typeof SpyRequestCompositionSectionSchema>>;
@@ -247,3 +304,4 @@ export type SpyPaginatedResult<T> = Readonly<{
 export type SseEventName = z.infer<typeof SseEventNameSchema>;
 export type SseHelloPayload = Readonly<z.infer<typeof SseHelloPayloadSchema>>;
 export type SseCallsChangedPayload = Readonly<z.infer<typeof SseCallsChangedPayloadSchema>>;
+export type SseTokenCountsChangedPayload = Readonly<z.infer<typeof SseTokenCountsChangedPayloadSchema>>;

@@ -113,6 +113,7 @@ class HttpError extends Error {
 class SpyHttpService {
   private readonly encoder = new TextEncoder();
   private readonly clients = new Map<number, SseClient>();
+  private readonly backgroundTokenCountKeys = new Set<string>();
   private ingestTimer: ReturnType<typeof setInterval> | undefined;
   private retentionTimer: ReturnType<typeof setInterval> | undefined;
   private nextClientId = 1;
@@ -235,10 +236,11 @@ class SpyHttpService {
     const detailMatch = /^\/api\/calls\/([^/]+)$/.exec(path);
     if (request.method === "GET" && detailMatch !== null) {
       const callId = decodeURIComponent(detailMatch[1] ?? "");
-      const detail = await this.getCallDetailWithTokenCounts(callId);
+      const detail = this.store.getCallDetail(callId);
       if (detail === null) {
         throw new HttpError(404, "call not found");
       }
+      this.startBackgroundTokenCounts(detail);
       return jsonResponse(detail);
     }
 
@@ -315,9 +317,6 @@ class SpyHttpService {
         countedAt: Date.now() / 1000,
       }, "call or subject not found");
     }
-    if (prepared.providerReported !== undefined) {
-      return prepared.providerReported;
-    }
     if (prepared.cacheKey !== undefined) {
       const cached = this.store.getCachedProviderTokenCount(prepared.cacheKey);
       if (cached !== null) {
@@ -329,8 +328,8 @@ class SpyHttpService {
     }
     try {
       const input = prepared.requestBodyText === undefined
-        ? bedrockCountInputForText(prepared.text, prepared.block)
-        : bedrockCountInputFromRequestBody(prepared.requestBodyText) ?? bedrockCountInputForText(prepared.text, prepared.block);
+        ? bedrockCountInputForText(prepared.text)
+        : bedrockCountInputFromRequestBody(prepared.requestBodyText) ?? bedrockCountInputForText(prepared.text);
       const tokens = await this.tokenCounter.count({ modelId: prepared.base.modelId, input });
       const record: SpyTokenCountRecord = {
         ...prepared.base,
@@ -344,21 +343,36 @@ class SpyHttpService {
     }
   }
 
-  private async getCallDetailWithTokenCounts(callId: string): Promise<SpyCallDetail | null> {
-    const detail = this.store.getCallDetail(callId);
-    if (detail === null) {
-      return null;
-    }
+  private startBackgroundTokenCounts(detail: SpyCallDetail): void {
     const subjects = missingTokenCountSubjects(detail);
     if (subjects.length === 0) {
-      return detail;
+      return;
     }
-    const counted = await this.countTokens(subjects, "provider");
-    const refreshed = this.store.getCallDetail(callId) ?? detail;
-    return {
-      ...refreshed,
-      tokenCounts: mergeTokenCounts(refreshed.tokenCounts, counted.records),
-    };
+    const pending = subjects.filter((subject) => {
+      const key = subjectKey(subject);
+      if (this.backgroundTokenCountKeys.has(key)) {
+        return false;
+      }
+      this.backgroundTokenCountKeys.add(key);
+      return true;
+    });
+    if (pending.length === 0) {
+      return;
+    }
+    const callId = detail.summary.call.id;
+    void mapWithConcurrency(pending, TOKEN_COUNT_CONCURRENCY, async (subject) => {
+      const key = subjectKey(subject);
+      try {
+        const record = await this.countTokenSubject(subject);
+        this.broadcast("token-counts-changed", { callId, records: [record] });
+      } finally {
+        this.backgroundTokenCountKeys.delete(key);
+      }
+    }).catch(() => {
+      for (const subject of pending) {
+        this.backgroundTokenCountKeys.delete(subjectKey(subject));
+      }
+    });
   }
 
   private serveStatic(path: string, requestHeaders: Headers): Response {
@@ -734,21 +748,6 @@ function missingTokenCountSubjects(detail: SpyCallDetail): SpyTokenCountSubject[
   return subjects;
 }
 
-function mergeTokenCounts(
-  existing: readonly SpyTokenCountRecord[],
-  counted: readonly SpyTokenCountRecord[],
-): readonly SpyTokenCountRecord[] {
-  const records = new Map(existing.map((record) => [recordSubjectKey(record), record]));
-  for (const record of counted) {
-    const key = recordSubjectKey(record);
-    const current = records.get(key);
-    if (current === undefined || current.provenance === "unavailable") {
-      records.set(key, record);
-    }
-  }
-  return [...records.values()];
-}
-
 function subjectKey(subject: SpyTokenCountSubject): string {
   if (subject.type === "call") {
     return ["call", subject.callId, subject.direction, "", "", ""].join(":");
@@ -763,14 +762,16 @@ function subjectKey(subject: SpyTokenCountSubject): string {
 }
 
 function recordSubjectKey(record: SpyTokenCountRecord): string {
-  return [
-    record.subjectType,
-    record.callId ?? "",
-    record.direction ?? "",
-    record.blockId ?? "",
-    record.kind ?? "",
-    record.label ?? record.sourceHash,
-  ].join(":");
+  if (record.subjectType === "call") {
+    return ["call", record.callId ?? "", record.direction ?? "", "", "", ""].join(":");
+  }
+  if (record.subjectType === "section") {
+    return ["section", record.callId ?? "", record.direction ?? "", "", record.kind ?? "", ""].join(":");
+  }
+  if (record.subjectType === "block") {
+    return ["block", record.callId ?? "", "", record.blockId ?? "", "", ""].join(":");
+  }
+  return ["selection", record.callId ?? "", "", "", "", record.label ?? record.sourceHash].join(":");
 }
 
 async function mapWithConcurrency<T, U>(
