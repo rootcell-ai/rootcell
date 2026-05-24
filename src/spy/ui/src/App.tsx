@@ -70,6 +70,7 @@ const OPERATION_OPTIONS = [
 ] as const;
 
 type LoadState = "idle" | "loading" | "error";
+type TimelineEmptyState = "range" | "query";
 type InspectorSectionId =
   | "summary"
   | "composition"
@@ -145,6 +146,7 @@ export function App(): React.ReactElement {
   const [sseError, setSseError] = React.useState<string | undefined>();
   const [clearOpen, setClearOpen] = React.useState(false);
   const [clearing, setClearing] = React.useState(false);
+  const timelineEmptyState = timelineEmptyStateFor(search, filters);
   const timelineContextKey = React.useMemo(() => [
     since,
     search,
@@ -556,6 +558,7 @@ export function App(): React.ReactElement {
             selectedCallId={selectedCallId}
             loading={callState === "loading"}
             hasMore={nextCursor !== undefined}
+            emptyState={timelineEmptyState}
             onSelect={selectTimelineCall}
             onLoadMore={() => {
               void loadMore();
@@ -744,6 +747,7 @@ function Timeline(props: {
   readonly selectedCallId: string | undefined;
   readonly loading: boolean;
   readonly hasMore: boolean;
+  readonly emptyState: TimelineEmptyState;
   readonly onSelect: (callId: string) => void;
   readonly onLoadMore: () => void;
 }): React.ReactElement {
@@ -757,9 +761,12 @@ function Timeline(props: {
   const virtualItems = virtualizer.getVirtualItems();
 
   if (props.calls.length === 0 && !props.loading) {
+    const message = props.emptyState === "query"
+      ? "No provider calls match the current search or filters."
+      : "No provider calls in this range.";
     return (
-      <div className="flex flex-1 items-center justify-center p-8 text-center text-sm text-stone-500">
-        No provider calls in this range.
+      <div className="flex flex-1 items-center justify-center p-8 text-center text-sm text-stone-500" data-testid="timeline-empty">
+        {message}
       </div>
     );
   }
@@ -1691,6 +1698,18 @@ function secondsFromDatetimeLocal(value: string): number | null {
 
 function filterQueryValue(value: string): string | undefined {
   return value === ALL_FILTER ? undefined : value;
+}
+
+function timelineEmptyStateFor(search: string, filters: UiFilters): TimelineEmptyState {
+  if (search.trim().length > 0) {
+    return "query";
+  }
+  return filters.provider === ALL_FILTER
+    && filters.model === ALL_FILTER
+    && filters.operation === ALL_FILTER
+    && filters.status === ALL_FILTER
+    ? "range"
+    : "query";
 }
 
 function sseErrorMessage(error: unknown): string {

@@ -900,9 +900,15 @@ P3 is polish, minor copy, or secondary accessibility.
     independently of selected call detail and hides the call-section navigator
     when no selected-call sections exist. Added Playwright coverage for an empty
     Pending filter result.
-- [ ] [P1] SPY-QA-11: Improve empty-state copy for active filters/search. A
+- [x] [P1] SPY-QA-11: Improve empty-state copy for active filters/search. A
   Pending filter in Today with 23 completed calls says "No provider calls in this
   range" instead of explaining that filters excluded the calls.
+  - Fixed on 2026-05-24: timeline empty states now distinguish unconstrained
+    range emptiness from active search/provider/model/operation/status query
+    constraints. Filtered or searched empty results say no calls match the
+    current search or filters, while true range-empty states such as clear-data
+    keep the range-only copy. Added Playwright coverage for filtered empty
+    states and preserved clear-data coverage for the range-empty copy.
 - [x] [P1] SPY-QA-12: Add a single clear/reset control for search and filters.
   Recovering the full list currently requires clearing text, resetting multiple
   selects, and submitting again.
@@ -986,9 +992,6 @@ ID-keyed evidence notes:
 These notes are retained only where they clarify an open bug ID. They are not
 separate tasks.
 
-- SPY-QA-11: Empty timeline copy says "No provider calls in this range" even
-  when the selected range has calls and active search/status/model/operation
-  filters exclude them.
 - SPY-QA-14: Search currently scopes to normalized block text. Visible call-id
   fragments such as `41739b60` return no results, while the placeholder only
   says `Search text`.

@@ -317,10 +317,12 @@ test("loads historical ranges and searches normalized text", async ({ page }) =>
   await expect(page.getByTestId("timeline-row").first()).toBeVisible();
   await page.getByLabel("Filter by provider").selectOption("bedrock");
   await page.getByLabel("Filter by operation").selectOption("invoke");
-  await expect(page.getByText("No provider calls in this range.")).toBeVisible();
+  await expect(page.getByText("No provider calls match the current search or filters.")).toBeVisible();
+  await expect(page.getByText("No provider calls in this range.")).toHaveCount(0);
   await page.getByLabel("Search normalized text").fill("Fixture capture");
   await page.getByRole("button", { name: "Search" }).click();
-  await expect(page.getByText("No provider calls in this range.")).toBeVisible();
+  await expect(page.getByText("No provider calls match the current search or filters.")).toBeVisible();
+  await expect(page.getByText("No provider calls in this range.")).toHaveCount(0);
   await page.getByLabel("Filter by operation").selectOption("converse-stream");
   await expect(page.getByTestId("timeline-row").first()).toBeVisible();
 });
@@ -332,7 +334,8 @@ test("keeps service health visible when filters leave no selected call", async (
   await page.getByLabel("Filter by status").selectOption("pending");
 
   await expect(page.getByTestId("timeline-row")).toHaveCount(0);
-  await expect(page.getByText("No provider calls in this range.")).toBeVisible();
+  await expect(page.getByText("No provider calls match the current search or filters.")).toBeVisible();
+  await expect(page.getByText("No provider calls in this range.")).toHaveCount(0);
   await expect(page.getByTestId("inspector-section-nav")).toHaveCount(0);
 
   const inspector = page.locator("aside");
