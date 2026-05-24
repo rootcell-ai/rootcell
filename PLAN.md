@@ -1035,9 +1035,14 @@ P3 is polish, minor copy, or secondary accessibility.
     `aria-pressed`, added `aria-current` to the selected timeline row button,
     and added Playwright coverage proving row selection state moves between
     selected calls while active range state remains exposed.
-- [ ] [P2] SPY-QA-31: Improve timeline row accessible names. `aria-label` only
+- [x] [P2] SPY-QA-31: Improve timeline row accessible names. `aria-label` only
   exposes `Open call <id>` and hides visible model/status/time/usage context from
   assistive technology.
+  - Fixed on 2026-05-24: timeline row accessible names now include the call id,
+    model, status, start time, operation, provider usage classes, byte sizes,
+    duration, and request/response block counts. Added Playwright coverage that
+    locates rows by the richer accessible name and verifies model/cache-usage
+    context is exposed.
 - [ ] [P2] SPY-QA-32: Make the disconnected SSE `Reconnect` badge either a real
   control or passive status text. It currently reads like a clickable action.
 - [x] [P2] SPY-QA-33: Reduce nested scroll traps in large JSON/detail panels.
@@ -1070,8 +1075,8 @@ separate tasks.
 - SPY-QA-30: Selected timeline row lacked ARIA state while active time-range
   segments already exposed `aria-pressed`; fixed by exposing `aria-current` on
   the selected timeline row.
-- SPY-QA-31: Timeline row accessible names expose only `Open call <id>`, hiding
-  visible model/status/time/usage context from assistive technology.
+- SPY-QA-31: Timeline row accessible names now expose visible model, status,
+  time, operation, usage, size, duration, and block-count context.
 - SPY-QA-32: The disconnected SSE badge is labeled `Reconnect` but behaves as
   passive auto-recovering status, so the label reads like a clickable action.
 - SPY-QA-34: The timeline count footer can display `1 calls`.

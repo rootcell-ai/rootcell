@@ -1,4 +1,4 @@
-import { expect, type Page, type Route, test } from "@playwright/test";
+import { expect, type Locator, type Page, type Route, test } from "@playwright/test";
 import type {
   NormalizedBlock,
   SpyCallDetail,
@@ -114,11 +114,12 @@ test("exposes ARIA state for selected timeline row and active range", async ({ p
   await page.goto("/?since=0");
   await expect(page.getByTestId("timeline-row")).toHaveCount(5);
 
-  const selectedRow = page.getByRole("button", { name: "Open call call-fixture-flow-tool-result", exact: true });
-  const otherRow = page.getByRole("button", { name: "Open call call-fixture-flow-tool-use", exact: true });
+  const selectedRow = timelineRow(page, "call-fixture-flow-tool-result");
+  const otherRow = timelineRow(page, "call-fixture-flow-tool-use");
 
   await expect(page.getByRole("button", { name: "Custom" })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("button", { name: "Live" })).toHaveAttribute("aria-pressed", "false");
+  await expect(selectedRow).toHaveAccessibleName(/model claude-sonnet-4-6, status complete, started .+, operation converse-stream, read 1,253, write 8, cache read -, cache write -/);
   await selectedRow.click();
   await expect(selectedRow).toHaveAttribute("aria-current", "true");
   expect(await otherRow.getAttribute("aria-current")).toBeNull();
@@ -380,7 +381,7 @@ test("shows pinned inspector state when a newer visible call is available", asyn
   await expect(page.getByTestId("timeline-row")).toHaveCount(5);
   await expect(page.getByTestId("inspector-pinned-state")).toHaveCount(0);
 
-  await page.getByRole("button", { name: "Open call call-fixture-flow-tool-use", exact: true }).click();
+  await timelineRow(page, "call-fixture-flow-tool-use").click();
   await expect(page.locator("aside").getByText("call-fixture-flow-tool-use", { exact: true })).toBeVisible();
   await expect(page.getByTestId("inspector-pinned-state")).toHaveText("Pinned");
   await expect(page.getByRole("button", { name: "Follow Latest", exact: true })).toBeVisible();
@@ -474,7 +475,7 @@ test("loads historical ranges and searches text plus visible identifiers", async
   await page.getByLabel("Search text, call ID, or model").fill("call-fixture-flow-tool-result");
   await page.getByRole("button", { name: "Search" }).click();
   await expect(page.getByTestId("timeline-row")).toHaveCount(1);
-  await expect(page.getByRole("button", { name: "Open call call-fixture-flow-tool-result", exact: true })).toBeVisible();
+  await expect(timelineRow(page, "call-fixture-flow-tool-result")).toBeVisible();
   await page.getByLabel("Search text, call ID, or model").fill("sonnet");
   await page.getByRole("button", { name: "Search" }).click();
   await expect(page.getByTestId("timeline-row")).toHaveCount(5);
@@ -485,7 +486,7 @@ test("labels diff baselines outside the current range", async ({ page }) => {
   await page.goto("/?preset=custom&since=2000");
 
   await expect(page.getByTestId("timeline-row")).toHaveCount(1);
-  await expect(page.getByRole("button", { name: "Open call call-diff-scope-current", exact: true })).toBeVisible();
+  await expect(timelineRow(page, "call-diff-scope-current")).toBeVisible();
   await page.getByTestId("inspector-nav-diff").click();
 
   const diffSection = page.getByTestId("inspector-section-diff");
@@ -500,8 +501,9 @@ test("shows provider cache token classes in timeline rows", async ({ page }) => 
   await installCacheTimelineRoutes(page);
   await page.goto("/?since=0");
 
-  const row = page.getByRole("button", { name: `Open call ${CACHE_TIMELINE_CALL_ID}`, exact: true });
+  const row = timelineRow(page, CACHE_TIMELINE_CALL_ID);
   await expect(row).toBeVisible();
+  await expect(row).toHaveAccessibleName(/model claude-haiku-4-5-20251001-v1:0, status complete, started .+, operation converse-stream, read 10, write 98, cache read 5,200, cache write 81/);
   await expect(row.getByText("read", { exact: true })).toBeVisible();
   await expect(row.getByText("10", { exact: true })).toBeVisible();
   await expect(row.getByText("write", { exact: true })).toBeVisible();
@@ -535,7 +537,7 @@ test("scopes block-kind filtering across request and response blocks", async ({ 
   await expect(responseSection.getByText("No Current User Input blocks in this section.", { exact: true })).toBeVisible();
   await expect(responseSection.getByText("Only appears in response A", { exact: true })).toHaveCount(0);
 
-  await page.getByRole("button", { name: `Open call ${BLOCK_FILTER_CALL_B_ID}`, exact: true }).click();
+  await timelineRow(page, BLOCK_FILTER_CALL_B_ID).click();
   await expect(page.locator("aside").getByText(BLOCK_FILTER_CALL_B_ID, { exact: true })).toBeVisible();
   await expect(filter).toHaveValue("current-user-input");
   await expect(requestSection.getByText("Only appears in request B", { exact: true })).toBeVisible();
@@ -925,6 +927,14 @@ function callIdFromRoute(route: Route): string {
     throw new Error(`missing call id in route ${route.request().url()}`);
   }
   return callId;
+}
+
+function timelineRow(page: Page, callId: string): Locator {
+  return page.getByRole("button", { name: new RegExp(`^Open call ${escapeRegExp(callId)},`) });
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 async function fulfillJson(route: Route, payload: unknown): Promise<void> {

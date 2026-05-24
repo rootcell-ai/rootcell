@@ -869,7 +869,7 @@ function TimelineRow(props: {
         props.selected ? "border-emerald-600 ring-2 ring-emerald-600/20" : "border-stone-250 hover:border-stone-400 hover:bg-stone-50",
       )}
       onClick={props.onSelect}
-      aria-label={`Open call ${summary.call.id}`}
+      aria-label={timelineRowAccessibleName(summary)}
       aria-current={props.selected ? "true" : undefined}
       data-testid="timeline-row"
     >
@@ -894,6 +894,25 @@ function TimelineRow(props: {
       </div>
     </button>
   );
+}
+
+function timelineRowAccessibleName(summary: SpyCallSummary): string {
+  return [
+    `Open call ${summary.call.id}`,
+    `model ${shortModelId(summary.call.model_id)}`,
+    `status ${summary.call.status}`,
+    `started ${formatTime(summary.call.started_at)}`,
+    `operation ${summary.call.operation}`,
+    `read ${formatNumber(summary.usage.inputTokens)}`,
+    `write ${formatNumber(summary.usage.outputTokens)}`,
+    `cache read ${formatNumber(summary.usage.cacheReadTokens)}`,
+    `cache write ${formatNumber(summary.usage.cacheWriteTokens)}`,
+    `input ${formatBytes(summary.requestByteSize)}`,
+    `output ${formatBytes(summary.responseByteSize)}`,
+    `duration ${formatDuration(summary.durationMs)}`,
+    `${formatNumber(summary.requestBlockCount)} request blocks`,
+    `${formatNumber(summary.responseBlockCount)} response blocks`,
+  ].join(", ");
 }
 
 function Metric(props: { readonly label: string; readonly value: string }): React.ReactElement {
