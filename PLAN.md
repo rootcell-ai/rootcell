@@ -960,11 +960,19 @@ P3 is polish, minor copy, or secondary accessibility.
     nested `reasoningText.text` and signature-only reasoning metadata. Added
     adapter coverage for prior-history reasoning, nested response reasoning
     text, and signature-only response reasoning chunks.
-- [ ] [P1] SPY-QA-20: Fix pending-row formatting. Pending rows can render
+- [x] [P1] SPY-QA-20: Fix pending-row formatting. Pending rows can render
   `usage usage n/a`.
-- [ ] [P1] SPY-QA-21: Fix modal focus management for Clear spy data. Focus stays
+  - Closed on 2026-05-24 as stale/no-repro in the current tree. The RCA in
+    `docs/bugfix/SPY-QA-21-RCA.md` proves a mocked pending row with null usage
+    renders explicit `read`, `write`, `cache read`, and `cache write` metrics
+    with `-` values and no `usage` text.
+- [x] [P1] SPY-QA-21: Fix modal focus management for Clear spy data. Focus stays
   on the background icon button, the background is not effectively inert, and
   Escape did not close the dialog during QA.
+  - Fixed on 2026-05-24: the Clear Spy Data dialog now renders outside the
+    inert app shell, focuses Cancel on open, traps Tab/Shift+Tab inside the
+    dialog, closes on Escape, and restores focus to the header trigger. Added
+    Playwright coverage for the modal focus loop and Escape close path.
 - [ ] [P2] SPY-QA-22: Make request composition responsive. Provider usage and
   cache read/write suffixes truncate, and the section table clips horizontally
   at the normal in-app browser width.
@@ -1013,10 +1021,6 @@ ID-keyed evidence notes:
 These notes are retained only where they clarify an open bug ID. They are not
 separate tasks.
 
-- SPY-QA-20: Pending timeline rows can render `usage usage n/a`.
-- SPY-QA-21: The clear-data confirmation dialog does not take keyboard focus
-  when it opens, background focus is not effectively inert, and Escape did not
-  close the dialog during QA.
 - SPY-QA-22: Request composition has correct provider usage text in the DOM, but
   the visible cache read/write suffix can truncate at normal desktop width. The
   section table is also wider than its visible card without a responsive

@@ -146,6 +146,7 @@ export function App(): React.ReactElement {
   const [sseError, setSseError] = React.useState<string | undefined>();
   const [clearOpen, setClearOpen] = React.useState(false);
   const [clearing, setClearing] = React.useState(false);
+  const clearTriggerRef = React.useRef<HTMLButtonElement>(null);
   const timelineEmptyState = timelineEmptyStateFor(search, filters);
   const timelineContextKey = React.useMemo(() => [
     since,
@@ -481,130 +482,146 @@ export function App(): React.ReactElement {
     resetInspectorScroll();
   }
 
+  function closeClearDialog(): void {
+    setClearOpen(false);
+    window.requestAnimationFrame(() => {
+      clearTriggerRef.current?.focus();
+    });
+  }
+
   async function clearData(): Promise<void> {
     setClearing(true);
     try {
       await api.clearData();
-      setClearOpen(false);
+      closeClearDialog();
     } finally {
       setClearing(false);
     }
   }
 
   return (
-    <main className="grid h-screen min-h-0 grid-rows-[4rem_minmax(0,1fr)] overflow-hidden bg-[#f7f5f2] text-stone-950">
-      <header className="flex h-16 items-center justify-between border-b border-stone-300 bg-white px-5">
-        <div className="flex min-w-0 items-center gap-3">
-          <div className="flex h-9 w-9 items-center justify-center rounded-md bg-emerald-700 text-white">
-            <Activity aria-hidden="true" size={19} />
+    <>
+      <main
+        className="grid h-screen min-h-0 grid-rows-[4rem_minmax(0,1fr)] overflow-hidden bg-[#f7f5f2] text-stone-950"
+        inert={clearOpen}
+      >
+        <header className="flex h-16 items-center justify-between border-b border-stone-300 bg-white px-5">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="flex h-9 w-9 items-center justify-center rounded-md bg-emerald-700 text-white">
+              <Activity aria-hidden="true" size={19} />
+            </div>
+            <div className="min-w-0">
+              <h1 className="truncate text-base font-semibold">Rootcell Spy</h1>
+              <p className="truncate text-xs text-stone-500">
+                {preset === "live" ? "Live from now" : `Since ${formatDateTime(since)}`}
+              </p>
+            </div>
           </div>
-          <div className="min-w-0">
-            <h1 className="truncate text-base font-semibold">Rootcell Spy</h1>
-            <p className="truncate text-xs text-stone-500">
-              {preset === "live" ? "Live from now" : `Since ${formatDateTime(since)}`}
-            </p>
+
+          <div className="flex items-center gap-2">
+            <Badge tone={sseConnected ? "teal" : "amber"} className="gap-1">
+              {sseConnected ? <Wifi aria-hidden="true" size={13} /> : <WifiOff aria-hidden="true" size={13} />}
+              {sseConnected ? "SSE" : "Reconnect"}
+            </Badge>
+            <Badge tone={health?.service.storeRaw === true ? "amber" : "neutral"}>raw {health?.service.storeRaw === true ? "on" : "off"}</Badge>
+            <Button aria-label="Refresh calls" size="icon" onClick={() => {
+              void loadCalls();
+            }}>
+              <RefreshCcw aria-hidden="true" size={16} />
+            </Button>
+            <Button
+              ref={clearTriggerRef}
+              aria-label="Clear spy data"
+              size="icon"
+              variant="danger"
+              onClick={() => {
+                setClearOpen(true);
+              }}
+            >
+              <Trash2 aria-hidden="true" size={16} />
+            </Button>
           </div>
-        </div>
+        </header>
 
-        <div className="flex items-center gap-2">
-          <Badge tone={sseConnected ? "teal" : "amber"} className="gap-1">
-            {sseConnected ? <Wifi aria-hidden="true" size={13} /> : <WifiOff aria-hidden="true" size={13} />}
-            {sseConnected ? "SSE" : "Reconnect"}
-          </Badge>
-          <Badge tone={health?.service.storeRaw === true ? "amber" : "neutral"}>raw {health?.service.storeRaw === true ? "on" : "off"}</Badge>
-          <Button aria-label="Refresh calls" size="icon" onClick={() => {
-            void loadCalls();
-          }}>
-            <RefreshCcw aria-hidden="true" size={16} />
-          </Button>
-          <Button aria-label="Clear spy data" size="icon" variant="danger" onClick={() => {
-            setClearOpen(true);
-          }}>
-            <Trash2 aria-hidden="true" size={16} />
-          </Button>
-        </div>
-      </header>
+        <section className="grid min-h-0 overflow-hidden grid-cols-[minmax(520px,44vw)_minmax(0,1fr)]">
+          <div className="flex min-h-0 min-w-0 flex-col border-r border-stone-300 bg-[#fbfaf8]">
+            <TimelineControls
+              preset={preset}
+              customStart={customStart}
+              searchDraft={searchDraft}
+              filters={filters}
+              modelOptions={modelOptions}
+              callState={callState}
+              onPreset={setPresetSince}
+              onCustomStart={setCustomStart}
+              onApplyCustomStart={applyCustomStart}
+              onSearchDraft={setSearchDraft}
+              onSubmitSearch={submitSearch}
+              onFilters={setFilters}
+            />
+            {callError === undefined ? null : (
+              <div className="mx-4 mt-3 flex items-center gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+                <AlertTriangle aria-hidden="true" size={16} />
+                {callError}
+              </div>
+            )}
+            {sseError === undefined ? null : (
+              <div className="mx-4 mt-3 flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                <AlertTriangle aria-hidden="true" size={16} />
+                {sseError}
+              </div>
+            )}
+            <Timeline
+              calls={calls}
+              selectedCallId={selectedCallId}
+              loading={callState === "loading"}
+              hasMore={nextCursor !== undefined}
+              emptyState={timelineEmptyState}
+              onSelect={selectTimelineCall}
+              onLoadMore={() => {
+                void loadMore();
+              }}
+            />
+          </div>
 
-      <section className="grid min-h-0 overflow-hidden grid-cols-[minmax(520px,44vw)_minmax(0,1fr)]">
-        <div className="flex min-h-0 min-w-0 flex-col border-r border-stone-300 bg-[#fbfaf8]">
-          <TimelineControls
+          <CallInspector
+            summary={selectedSummary}
+            detailState={detailState}
+            streamState={streamState}
+            resetKey={inspectorResetKey}
+            pinned={selectedCallIsPinned}
             preset={preset}
-            customStart={customStart}
-            searchDraft={searchDraft}
+            since={since}
             filters={filters}
-            modelOptions={modelOptions}
-            callState={callState}
-            onPreset={setPresetSince}
-            onCustomStart={setCustomStart}
-            onApplyCustomStart={applyCustomStart}
-            onSearchDraft={setSearchDraft}
-            onSubmitSearch={submitSearch}
+            health={health}
             onFilters={setFilters}
-          />
-          {callError === undefined ? null : (
-            <div className="mx-4 mt-3 flex items-center gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
-              <AlertTriangle aria-hidden="true" size={16} />
-              {callError}
-            </div>
-          )}
-          {sseError === undefined ? null : (
-            <div className="mx-4 mt-3 flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-              <AlertTriangle aria-hidden="true" size={16} />
-              {sseError}
-            </div>
-          )}
-          <Timeline
-            calls={calls}
-            selectedCallId={selectedCallId}
-            loading={callState === "loading"}
-            hasMore={nextCursor !== undefined}
-            emptyState={timelineEmptyState}
-            onSelect={selectTimelineCall}
-            onLoadMore={() => {
-              void loadMore();
+            onFollowLatest={() => {
+              if (latestVisibleSummary !== null) {
+                setSelectedCallId(latestVisibleSummary.call.id);
+              }
             }}
+            onLoadStream={() => {
+              void loadStreamEvents(false);
+            }}
+            onLoadMoreStream={() => {
+              void loadStreamEvents(true);
+            }}
+            onStreamWindowStart={setStreamWindowStart}
+            onToggleStreamPayload={toggleStreamPayload}
           />
-        </div>
-
-        <CallInspector
-          summary={selectedSummary}
-          detailState={detailState}
-          streamState={streamState}
-          resetKey={inspectorResetKey}
-          pinned={selectedCallIsPinned}
-          preset={preset}
-          since={since}
-          filters={filters}
-          health={health}
-          onFilters={setFilters}
-          onFollowLatest={() => {
-            if (latestVisibleSummary !== null) {
-              setSelectedCallId(latestVisibleSummary.call.id);
-            }
-          }}
-          onLoadStream={() => {
-            void loadStreamEvents(false);
-          }}
-          onLoadMoreStream={() => {
-            void loadStreamEvents(true);
-          }}
-          onStreamWindowStart={setStreamWindowStart}
-          onToggleStreamPayload={toggleStreamPayload}
-        />
-      </section>
+        </section>
+      </main>
 
       {clearOpen ? (
         <ClearDialog
           clearing={clearing}
-          onCancel={() => {
-            setClearOpen(false);
-          }}
+          onCancel={closeClearDialog}
           onConfirm={() => {
             void clearData();
           }}
         />
       ) : null}
-    </main>
+    </>
   );
 }
 
@@ -1640,15 +1657,66 @@ function ClearDialog(props: {
   readonly onCancel: () => void;
   readonly onConfirm: () => void;
 }): React.ReactElement {
+  const dialogRef = React.useRef<HTMLDivElement>(null);
+  const cancelButtonRef = React.useRef<HTMLButtonElement>(null);
+
+  React.useEffect(() => {
+    cancelButtonRef.current?.focus();
+  }, []);
+
+  function onKeyDown(event: React.KeyboardEvent<HTMLDivElement>): void {
+    if (event.key === "Escape") {
+      if (!props.clearing) {
+        event.preventDefault();
+        props.onCancel();
+      }
+      return;
+    }
+    if (event.key !== "Tab") {
+      return;
+    }
+
+    const focusable = focusableDialogElements(dialogRef.current);
+    if (focusable.length === 0) {
+      event.preventDefault();
+      return;
+    }
+
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    if (active === null || !dialogRef.current?.contains(active)) {
+      event.preventDefault();
+      first?.focus();
+      return;
+    }
+    if (event.shiftKey && active === first) {
+      event.preventDefault();
+      last?.focus();
+      return;
+    }
+    if (!event.shiftKey && active === last) {
+      event.preventDefault();
+      first?.focus();
+    }
+  }
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/40 p-6" role="dialog" aria-modal="true" aria-labelledby="clear-title">
+    <div
+      ref={dialogRef}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/40 p-6"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="clear-title"
+      onKeyDown={onKeyDown}
+    >
       <div className="w-full max-w-md rounded-md border border-stone-300 bg-white p-5 shadow-xl">
         <h2 id="clear-title" className="text-base font-semibold">Clear Spy Data</h2>
         <p className="mt-2 text-sm text-stone-600">
           Captured calls and pending spool files will be deleted. Schema metadata is kept.
         </p>
         <div className="mt-5 flex justify-end gap-2">
-          <Button onClick={props.onCancel}>Cancel</Button>
+          <Button ref={cancelButtonRef} onClick={props.onCancel}>Cancel</Button>
           <Button variant="danger" disabled={props.clearing} onClick={props.onConfirm}>
             {props.clearing ? <Loader2 aria-hidden="true" className="animate-spin" size={15} /> : <Trash2 aria-hidden="true" size={15} />}
             Clear
@@ -1657,6 +1725,22 @@ function ClearDialog(props: {
       </div>
     </div>
   );
+}
+
+function focusableDialogElements(root: HTMLElement | null): HTMLElement[] {
+  if (root === null) {
+    return [];
+  }
+  return Array.from(root.querySelectorAll<HTMLElement>(
+    [
+      "button:not([disabled])",
+      "a[href]",
+      "input:not([disabled])",
+      "select:not([disabled])",
+      "textarea:not([disabled])",
+      "[tabindex]:not([tabindex='-1'])",
+    ].join(","),
+  )).filter((element) => element.tabIndex >= 0 && element.getClientRects().length > 0);
 }
 
 function blockTone(kind: NormalizedBlock["kind"]): "neutral" | "green" | "amber" | "red" | "blue" | "teal" {

@@ -487,6 +487,33 @@ test("bounds high-volume stream events and clears them on range changes", async 
   expect(await page.evaluate(() => document.querySelector("main")?.scrollTop ?? -1)).toBe(0);
 });
 
+test("traps focus in the clear data dialog and closes with Escape", async ({ page }) => {
+  await page.goto("/?since=0");
+  await expect(page.getByTestId("timeline-row")).toHaveCount(5);
+
+  const trigger = page.getByLabel("Clear spy data");
+  await trigger.click();
+
+  const dialog = page.getByRole("dialog", { name: "Clear Spy Data" });
+  const cancel = dialog.getByRole("button", { name: "Cancel" });
+  const clear = dialog.getByRole("button", { name: "Clear", exact: true });
+  await expect(dialog).toBeVisible();
+  await expect(cancel).toBeFocused();
+  await expect.poll(async () => page.evaluate(() => document.querySelector("main")?.hasAttribute("inert") ?? false)).toBe(true);
+
+  await page.keyboard.press("Tab");
+  await expect(clear).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(cancel).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(clear).toBeFocused();
+
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(trigger).toBeFocused();
+  await expect.poll(async () => page.evaluate(() => document.querySelector("main")?.hasAttribute("inert") ?? false)).toBe(false);
+});
+
 test("clears data with confirmation", async ({ page }) => {
   await page.goto("/?since=0");
   await expect(page.getByTestId("timeline-row")).toHaveCount(5);
