@@ -156,7 +156,7 @@ Default VM sizing is:
 | VM | CPUs | Memory | Disk |
 | --- | --- | --- | --- |
 | agent | 8 | 16 GiB | 60 GiB |
-| firewall | 2 | 4 GiB | 16 GiB |
+| firewall | 2 | 4 GiB | 64 GiB |
 
 ## Lifecycle
 

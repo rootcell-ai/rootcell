@@ -9,7 +9,7 @@ import { forgetKnownHost, ProxyJumpSshTransport, sshConfigValue, type ProxyJumpS
 import type { RootcellConfig } from "../types.ts";
 import type { CommandResult, InheritedCommandResult } from "../types.ts";
 import type { LimaUserV2NetworkAttachment } from "./macos-lima-user-v2-network.ts";
-import type { CopyToGuestOptions, ExecOptions, VmProvider, VmRole, VmStatus } from "./types.ts";
+import type { CopyToGuestOptions, ExecOptions, LocalPortForwardHandle, LocalPortForwardOptions, VmProvider, VmRole, VmStatus } from "./types.ts";
 
 const LimaProviderSchema = z.custom<"lima">((value) => value === "lima", { message: "provider mismatch" });
 const LimaVmRoleSchema = z.custom<VmRole>(
@@ -231,6 +231,13 @@ export class LimaVmProvider implements VmProvider<LimaUserV2NetworkAttachment> {
     return this.transport.copyToGuest(name, hostPath, guestPath, options);
   }
 
+  forwardLocalPort(name: string, options: LocalPortForwardOptions): Promise<LocalPortForwardHandle> {
+    if (this.shouldUseBootstrapSsh(name)) {
+      throw new Error(`cannot forward local ports to ${name} before final SSH networking is ready`);
+    }
+    return this.transport.forwardLocalPort(name, options);
+  }
+
   forgetSshHostKey(name: string): Promise<void> {
     this.transport.forgetHostKey(name);
     const state = this.readVmState(name);
@@ -357,7 +364,7 @@ export class LimaVmProvider implements VmProvider<LimaUserV2NetworkAttachment> {
       instanceName: this.config.instanceName,
       cpus: input.role === "agent" ? 8 : 2,
       memoryGiB: input.role === "agent" ? 16 : 4,
-      diskGiB: input.role === "agent" ? 60 : 16,
+      diskGiB: input.role === "agent" ? 60 : 64,
       network: input.network,
       firewallIp: this.config.firewallIp,
       agentIp: this.config.agentIp,
@@ -577,6 +584,9 @@ export function limaYaml(input: {
 }): string {
   const egressInterface = input.network.egressInterface ?? "enp0s2";
   let yaml = NIXOS_LIMA_UPSTREAM_YAML;
+  yaml = replaceTopLevelYamlBlock(yaml, "cpus", [`cpus: ${String(input.cpus)}`]);
+  yaml = replaceTopLevelYamlBlock(yaml, "memory", [`memory: ${yamlString(`${String(input.memoryGiB)}GiB`)}`]);
+  yaml = replaceTopLevelYamlBlock(yaml, "disk", [`disk: ${yamlString(`${String(input.diskGiB)}GiB`)}`]);
   yaml = replaceTopLevelYamlBlock(yaml, "mounts", ["mounts: []", ""]);
   yaml = replaceTopLevelYamlBlock(yaml, "ssh", [
     "ssh:",

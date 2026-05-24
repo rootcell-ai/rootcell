@@ -14,7 +14,7 @@ import {
   type SpyOptions,
 } from "./types.ts";
 
-const DEFAULT_SPY_OPTIONS: SpyOptions = { raw: false, dedupe: true, tui: false };
+const DEFAULT_SPY_OPTIONS: SpyOptions = { open: true };
 
 interface GlobalArgs {
   readonly instance?: string | readonly string[];
@@ -27,9 +27,7 @@ interface GuestArgs extends GlobalArgs {
 }
 
 interface SpyArgs extends GlobalArgs {
-  readonly raw?: boolean;
-  readonly dedupe?: boolean;
-  readonly tui?: boolean;
+  readonly open?: boolean;
 }
 
 interface EditArgs extends GlobalArgs {
@@ -166,20 +164,10 @@ function createParser(args: readonly string[]): Argv<GuestArgs & SpyArgs> {
       subcommandDescription("spy"),
       (argv: ParserArgv<SpyArgs>) => argv
         .parserConfiguration({ "unknown-options-as-args": false })
-        .option("raw", {
-          describe: "also print sanitized raw JSON bodies",
-          type: "boolean",
-          default: false,
-        })
-        .option("dedupe", {
-          describe: "elide repeated cache-marked prompt prefixes",
+        .option("open", {
+          describe: "open the browser after starting the local tunnel; use --no-open to disable",
           type: "boolean",
           default: true,
-        })
-        .option("tui", {
-          describe: "browse captured traffic in an interactive Textual TUI",
-          type: "boolean",
-          default: false,
         })
         .demandCommand(0, 0)
         .strictOptions(),
@@ -211,6 +199,7 @@ function createParser(args: readonly string[]): Argv<GuestArgs & SpyArgs> {
 }
 
 export function parseRootcellArgs(args: readonly string[]): ParsedRootcellArgs {
+  rejectUnknownSpyHelpOptions(args);
   const argv = createParser(args).parseSync();
   const firstToken = firstRootcellToken(args);
   if (
@@ -244,9 +233,7 @@ export function parseRootcellArgs(args: readonly string[]): ParsedRootcellArgs {
       rest,
       spyOptions: subcommand === "spy"
         ? parseSchema(SpyOptionsSchema, {
-          raw: argv.raw ?? false,
-          dedupe: argv.dedupe ?? true,
-          tui: argv.tui ?? false,
+          open: argv.open ?? true,
         }, "invalid spy options")
         : DEFAULT_SPY_OPTIONS,
     }, "invalid parsed rootcell args");
@@ -276,7 +263,44 @@ function parsedSubcommand(argv: ArgumentsCamelCase<GuestArgs & SpyArgs>): Rootce
   return typeof command === "string" && isRootcellSubcommand(command) ? command : undefined;
 }
 
+function rejectUnknownSpyHelpOptions(args: readonly string[]): void {
+  const firstToken = firstRootcellTokenWithIndex(args);
+  if (firstToken?.token !== "spy" || !args.includes("--help")) {
+    return;
+  }
+
+  for (let index = firstToken.index + 1; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === undefined || arg === "--") {
+      return;
+    }
+    if (!arg.startsWith("-")) {
+      continue;
+    }
+    if (arg === "--help" || arg === "--open" || arg === "--no-open" || arg.startsWith("--open=")) {
+      continue;
+    }
+    if (arg === "--instance" || arg === "-i" || arg === "--init-env" || arg === "--get-yargs-completions") {
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--instance=") || arg.startsWith("--init-env=") || arg.startsWith("--get-yargs-completions=") || (arg.startsWith("-i") && arg.length > 2)) {
+      continue;
+    }
+    throw new Error(`Unknown argument: ${unknownOptionName(arg)}`);
+  }
+}
+
+function unknownOptionName(arg: string): string {
+  const name = arg.replace(/^-+/, "").split("=")[0] ?? "";
+  return name.startsWith("no-") ? name.slice(3) : name;
+}
+
 function firstRootcellToken(args: readonly string[]): string | undefined {
+  return firstRootcellTokenWithIndex(args)?.token;
+}
+
+function firstRootcellTokenWithIndex(args: readonly string[]): { readonly token: string; readonly index: number } | undefined {
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === undefined || arg === "--") {
@@ -292,7 +316,7 @@ function firstRootcellToken(args: readonly string[]): string | undefined {
     if (arg.startsWith("-")) {
       continue;
     }
-    return arg;
+    return { token: arg, index };
   }
   return undefined;
 }

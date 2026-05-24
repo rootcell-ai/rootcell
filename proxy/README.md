@@ -152,7 +152,6 @@ ssh -F "$INSTANCE_DIR/ssh/config" rootcell-firewall -- \
 
 # What is the agent sending to Bedrock?
 ./rootcell spy
-./rootcell spy --tui
 
 # Is mitmproxy listening on both ports?
 ssh -F "$INSTANCE_DIR/ssh/config" rootcell-firewall -- \
@@ -170,6 +169,9 @@ ssh -F "$INSTANCE_DIR/ssh/config" rootcell-firewall -- \
   "cat /etc/agent-vm/allowed-https.txt && cat /etc/agent-vm/dnsmasq-allowlist.conf"
 ```
 
+Detailed browser spy behavior, storage, privacy, and troubleshooting notes live
+in [src/spy/README.md](../src/spy/README.md).
+
 ## Files in this directory
 
 - `allowed-https.txt.defaults` `allowed-ssh.txt.defaults`
@@ -180,13 +182,11 @@ ssh -F "$INSTANCE_DIR/ssh/config" rootcell-firewall -- \
 - `mitmproxy_addon.py` — Python addon loaded by mitmdump. Reads the
   allowlist files from `/etc/agent-vm/` inside the firewall VM, with
   mtime-based hot reload.
-- `agent_spy.py` — stdlib-only Bedrock Runtime capture/formatter used by
-  `./rootcell spy`. It detects Bedrock by host + REST path, redacts auth
-  headers, summarizes binary JSON fields, decodes AWS event streams, and
-  elides repeated prompt prefixes marked with `cachePoint` or
-  `cache_control`.
-- `agent_spy_tui.py` — Textual browser for the same spy event stream,
-  launched by `./rootcell spy --tui`.
+- `agent_spy.py` — stdlib-only Bedrock Runtime spool shim imported by
+  mitmproxy. It detects Bedrock by host + REST path, redacts auth headers and
+  credential query parameters, and writes bounded JSON spool events for the
+  TypeScript browser spy service. See [src/spy/README.md](../src/spy/README.md)
+  for the service and UI architecture.
 - `reload.sh` — runs inside the firewall VM after `./rootcell allow` copies
   fresh allowlist files in. Regenerates dnsmasq's config and signals it.
 - This README.

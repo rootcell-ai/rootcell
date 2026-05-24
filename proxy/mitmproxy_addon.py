@@ -336,3 +336,8 @@ def request(flow: http.HTTPFlow) -> None:
 def response(flow: http.HTTPFlow) -> None:
     if agent_spy is not None:
         agent_spy.capture_response(flow)
+
+
+def error(flow: http.HTTPFlow) -> None:
+    if agent_spy is not None:
+        agent_spy.capture_error(flow)

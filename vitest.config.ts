@@ -8,7 +8,10 @@ export default defineConfig({
           name: "unit",
           environment: "node",
           include: ["src/**/*.test.ts"],
-          exclude: ["src/rootcell/integration/**/*.integration.test.ts"],
+          exclude: [
+            "src/rootcell/integration/**/*.integration.test.ts",
+            "src/spy/**/*.test.ts",
+          ],
           testTimeout: 10_000,
           hookTimeout: 10_000,
         },
