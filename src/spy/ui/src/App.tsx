@@ -870,6 +870,7 @@ function TimelineRow(props: {
       )}
       onClick={props.onSelect}
       aria-label={`Open call ${summary.call.id}`}
+      aria-current={props.selected ? "true" : undefined}
       data-testid="timeline-row"
     >
       <div className="mt-1 flex h-9 w-9 items-center justify-center rounded-md border border-stone-300 bg-stone-50 text-stone-700">

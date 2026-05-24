@@ -1029,8 +1029,12 @@ P3 is polish, minor copy, or secondary accessibility.
     dedicated detail scroll body, updated section navigation/reset to target the
     body, and added Playwright coverage proving scrolled detail content is not
     present underneath the header hit-test area.
-- [ ] [P2] SPY-QA-30: Add ARIA state for selected timeline row and active range
+- [x] [P2] SPY-QA-30: Add ARIA state for selected timeline row and active range
   segment. Current active/selected states are visual only.
+  - Fixed on 2026-05-24: confirmed range segments already exposed
+    `aria-pressed`, added `aria-current` to the selected timeline row button,
+    and added Playwright coverage proving row selection state moves between
+    selected calls while active range state remains exposed.
 - [ ] [P2] SPY-QA-31: Improve timeline row accessible names. `aria-label` only
   exposes `Open call <id>` and hides visible model/status/time/usage context from
   assistive technology.
@@ -1063,9 +1067,9 @@ separate tasks.
   crowded.
 - SPY-QA-29: The sticky inspector call header can visually cover scrolled detail
   content, leaving rows partially clipped at the top of the detail pane.
-- SPY-QA-30: Selected timeline row and active time-range segment are only
-  visually indicated; they do not expose `aria-selected`, `aria-pressed`, or
-  `aria-current`.
+- SPY-QA-30: Selected timeline row lacked ARIA state while active time-range
+  segments already exposed `aria-pressed`; fixed by exposing `aria-current` on
+  the selected timeline row.
 - SPY-QA-31: Timeline row accessible names expose only `Open call <id>`, hiding
   visible model/status/time/usage context from assistive technology.
 - SPY-QA-32: The disconnected SSE badge is labeled `Reconnect` but behaves as

@@ -110,6 +110,25 @@ test("keeps custom range state explicit and preserves precise since values", asy
   expect(changedSince % 60).toBe(0);
 });
 
+test("exposes ARIA state for selected timeline row and active range", async ({ page }) => {
+  await page.goto("/?since=0");
+  await expect(page.getByTestId("timeline-row")).toHaveCount(5);
+
+  const selectedRow = page.getByRole("button", { name: "Open call call-fixture-flow-tool-result", exact: true });
+  const otherRow = page.getByRole("button", { name: "Open call call-fixture-flow-tool-use", exact: true });
+
+  await expect(page.getByRole("button", { name: "Custom" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: "Live" })).toHaveAttribute("aria-pressed", "false");
+  await selectedRow.click();
+  await expect(selectedRow).toHaveAttribute("aria-current", "true");
+  expect(await otherRow.getAttribute("aria-current")).toBeNull();
+
+  await otherRow.click();
+
+  await expect(otherRow).toHaveAttribute("aria-current", "true");
+  expect(await selectedRow.getAttribute("aria-current")).toBeNull();
+});
+
 test("keeps relative time ranges rolling on refresh", async ({ page }) => {
   const callSinceValues: number[] = [];
   page.on("request", (request) => {
