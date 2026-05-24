@@ -1023,8 +1023,12 @@ P3 is polish, minor copy, or secondary accessibility.
     compact row/header labels. Added Playwright coverage proving the row remains
     shortened but the selected-call summary exposes
     `us.anthropic.claude-sonnet-4-6`.
-- [ ] [P2] SPY-QA-29: Fix sticky inspector header overlap. Scrolled detail content
+- [x] [P2] SPY-QA-29: Fix sticky inspector header overlap. Scrolled detail content
   can slide underneath the fixed title/status area and appear clipped.
+  - Fixed on 2026-05-24: split the inspector into a non-scrolling header and a
+    dedicated detail scroll body, updated section navigation/reset to target the
+    body, and added Playwright coverage proving scrolled detail content is not
+    present underneath the header hit-test area.
 - [ ] [P2] SPY-QA-30: Add ARIA state for selected timeline row and active range
   segment. Current active/selected states are visual only.
 - [ ] [P2] SPY-QA-31: Improve timeline row accessible names. `aria-label` only

@@ -164,7 +164,8 @@ test("keeps timeline and inspector scroll containers inside the viewport", async
     const main = document.querySelector("main");
     const timeline = document.querySelector('[data-testid="timeline"]');
     const aside = document.querySelector("aside");
-    if (main === null || timeline === null || aside === null) {
+    const inspectorBody = document.querySelector('[data-testid="inspector-scroll-body"]');
+    if (main === null || timeline === null || aside === null || inspectorBody === null) {
       throw new Error("missing layout containers");
     }
 
@@ -178,8 +179,8 @@ test("keeps timeline and inspector scroll containers inside the viewport", async
       timelineClientHeight: timeline.clientHeight,
       timelineScrollHeight: timeline.scrollHeight,
       asideBottom: asideRect.bottom,
-      asideClientHeight: aside.clientHeight,
-      asideScrollHeight: aside.scrollHeight,
+      inspectorBodyClientHeight: inspectorBody.clientHeight,
+      inspectorBodyScrollHeight: inspectorBody.scrollHeight,
     };
   });
 
@@ -187,14 +188,14 @@ test("keeps timeline and inspector scroll containers inside the viewport", async
   expect(initialMetrics.timelineBottom).toBeLessThanOrEqual(initialMetrics.viewportHeight);
   expect(initialMetrics.asideBottom).toBeLessThanOrEqual(initialMetrics.viewportHeight);
   expect(initialMetrics.timelineScrollHeight).toBeGreaterThan(initialMetrics.timelineClientHeight);
-  expect(initialMetrics.asideScrollHeight).toBeGreaterThan(initialMetrics.asideClientHeight);
+  expect(initialMetrics.inspectorBodyScrollHeight).toBeGreaterThan(initialMetrics.inspectorBodyClientHeight);
 
   const tailMetrics = await page.evaluate(() => {
-    const aside = document.querySelector("aside");
-    if (aside === null) {
-      throw new Error("missing inspector");
+    const inspectorBody = document.querySelector('[data-testid="inspector-scroll-body"]');
+    if (inspectorBody === null) {
+      throw new Error("missing inspector body");
     }
-    aside.scrollTop = aside.scrollHeight;
+    inspectorBody.scrollTop = inspectorBody.scrollHeight;
     const healthSummary = Array.from(document.querySelectorAll("summary"))
       .find((summary) => summary.textContent.trim() === "Health");
     if (healthSummary === undefined) {
@@ -205,14 +206,61 @@ test("keeps timeline and inspector scroll containers inside the viewport", async
       viewportHeight: window.innerHeight,
       healthTop: healthRect.top,
       healthBottom: healthRect.bottom,
-      inspectorScrollTop: aside.scrollTop,
-      inspectorMaxScrollTop: aside.scrollHeight - aside.clientHeight,
+      inspectorScrollTop: inspectorBody.scrollTop,
+      inspectorMaxScrollTop: inspectorBody.scrollHeight - inspectorBody.clientHeight,
     };
   });
 
   expect(tailMetrics.inspectorScrollTop).toBe(tailMetrics.inspectorMaxScrollTop);
   expect(tailMetrics.healthTop).toBeGreaterThanOrEqual(0);
   expect(tailMetrics.healthBottom).toBeLessThanOrEqual(tailMetrics.viewportHeight);
+});
+
+test("keeps scrolled inspector content below the inspector header", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto("/?since=0");
+  await expect(page.getByTestId("timeline-row")).toHaveCount(5);
+  await page.getByTestId("timeline-row").first().click();
+
+  const metrics = await page.evaluate(async () => {
+    const header = document.querySelector('[data-testid="inspector-header"]');
+    const body = document.querySelector('[data-testid="inspector-scroll-body"]');
+    const composition = document.querySelector('[data-testid="inspector-section-composition"]');
+    if (header === null || body === null || composition === null) {
+      throw new Error("missing inspector layout elements");
+    }
+    body.scrollTop = 360;
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => {
+        resolve();
+      });
+    });
+
+    const headerRect = header.getBoundingClientRect();
+    const bodyRect = body.getBoundingClientRect();
+    const compositionRect = composition.getBoundingClientRect();
+    const x = bodyRect.left + Math.min(40, bodyRect.width / 2);
+    const headerPointY = headerRect.bottom - 4;
+    const contentUnderHeader = document.elementsFromPoint(x, headerPointY).some((element) => {
+      if (header.contains(element)) {
+        return false;
+      }
+      return element.closest('[data-testid="request-composition"], [data-testid^="inspector-section-"]') !== null;
+    });
+
+    return {
+      bodyTop: Math.round(bodyRect.top),
+      compositionTop: Math.round(compositionRect.top),
+      contentUnderHeader,
+      headerBottom: Math.round(headerRect.bottom),
+      inspectorBodyScrollTop: body.scrollTop,
+    };
+  });
+
+  expect(metrics.inspectorBodyScrollTop).toBeGreaterThan(0);
+  expect(metrics.bodyTop).toBeGreaterThanOrEqual(metrics.headerBottom);
+  expect(metrics.contentUnderHeader).toBe(false);
+  expect(metrics.compositionTop).toBeLessThan(metrics.bodyTop);
 });
 
 test("keeps timeline rows and footer from overlapping", async ({ page }) => {
@@ -331,11 +379,11 @@ test("jumps to buried inspector sections from the section navigator", async ({ p
   await expect(page.getByTestId("inspector-section-nav")).toBeVisible();
 
   const initialMetrics = await page.evaluate(() => {
-    const aside = document.querySelector("aside");
+    const inspectorBody = document.querySelector('[data-testid="inspector-scroll-body"]');
     const requestBlocks = document.querySelector('[data-testid="inspector-section-request-blocks"]');
     const responseBlocks = document.querySelector('[data-testid="inspector-section-response-blocks"]');
     const health = document.querySelector('[data-testid="inspector-section-health"]');
-    if (aside === null || requestBlocks === null || responseBlocks === null || health === null) {
+    if (inspectorBody === null || requestBlocks === null || responseBlocks === null || health === null) {
       throw new Error("missing inspector section");
     }
     return {
@@ -343,7 +391,7 @@ test("jumps to buried inspector sections from the section navigator", async ({ p
       requestBlocksOpen: requestBlocks.hasAttribute("open"),
       responseBlocksOpen: responseBlocks.hasAttribute("open"),
       healthTop: health.getBoundingClientRect().top,
-      asideScrollTop: aside.scrollTop,
+      inspectorScrollTop: inspectorBody.scrollTop,
       mainScrollTop: document.querySelector("main")?.scrollTop,
     };
   });
@@ -351,37 +399,40 @@ test("jumps to buried inspector sections from the section navigator", async ({ p
   expect(initialMetrics.requestBlocksOpen).toBe(false);
   expect(initialMetrics.responseBlocksOpen).toBe(false);
   expect(initialMetrics.healthTop).toBeGreaterThan(initialMetrics.viewportHeight);
-  expect(initialMetrics.asideScrollTop).toBe(0);
+  expect(initialMetrics.inspectorScrollTop).toBe(0);
   expect(initialMetrics.mainScrollTop).toBe(0);
 
   await page.getByTestId("inspector-nav-health").click();
 
   const jumpedMetrics = await page.evaluate(() => {
-    const aside = document.querySelector("aside");
+    const inspectorBody = document.querySelector('[data-testid="inspector-scroll-body"]');
     const main = document.querySelector("main");
     const header = document.querySelector("header");
+    const inspectorHeader = document.querySelector('[data-testid="inspector-header"]');
     const health = document.querySelector('[data-testid="inspector-section-health"]');
-    if (aside === null || main === null || header === null || health === null) {
+    if (inspectorBody === null || main === null || header === null || inspectorHeader === null || health === null) {
       throw new Error("missing layout element");
     }
     const healthRect = health.getBoundingClientRect();
     const headerRect = header.getBoundingClientRect();
+    const inspectorHeaderRect = inspectorHeader.getBoundingClientRect();
     return {
       viewportHeight: window.innerHeight,
-      asideScrollTop: aside.scrollTop,
+      inspectorScrollTop: inspectorBody.scrollTop,
       mainScrollTop: main.scrollTop,
       headerTop: headerRect.top,
       headerBottom: headerRect.bottom,
+      inspectorHeaderBottom: inspectorHeaderRect.bottom,
       healthTop: healthRect.top,
       healthBottom: healthRect.bottom,
     };
   });
 
-  expect(jumpedMetrics.asideScrollTop).toBeGreaterThan(0);
+  expect(jumpedMetrics.inspectorScrollTop).toBeGreaterThan(0);
   expect(jumpedMetrics.mainScrollTop).toBe(0);
   expect(jumpedMetrics.headerTop).toBe(0);
   expect(jumpedMetrics.headerBottom).toBeGreaterThan(0);
-  expect(jumpedMetrics.healthTop).toBeGreaterThanOrEqual(jumpedMetrics.headerBottom);
+  expect(jumpedMetrics.healthTop).toBeGreaterThanOrEqual(jumpedMetrics.inspectorHeaderBottom);
   expect(jumpedMetrics.healthTop).toBeLessThan(jumpedMetrics.viewportHeight);
   expect(jumpedMetrics.healthBottom).toBeLessThanOrEqual(jumpedMetrics.viewportHeight);
 });
@@ -575,25 +626,25 @@ test("resets deep inspector state when reselecting the selected call", async ({ 
   await expect(page.getByTestId("stream-event-card").first()).toBeVisible();
 
   const deepMetrics = await page.evaluate(() => {
-    const aside = document.querySelector("aside");
-    if (aside === null) {
-      throw new Error("missing inspector");
+    const inspectorBody = document.querySelector('[data-testid="inspector-scroll-body"]');
+    if (inspectorBody === null) {
+      throw new Error("missing inspector body");
     }
-    aside.scrollTop = aside.scrollHeight;
+    inspectorBody.scrollTop = inspectorBody.scrollHeight;
     return {
-      asideScrollTop: aside.scrollTop,
+      inspectorScrollTop: inspectorBody.scrollTop,
       streamOpen: document.querySelector('[data-testid="inspector-section-stream"]')?.hasAttribute("open"),
       streamCards: document.querySelectorAll('[data-testid="stream-event-card"]').length,
     };
   });
 
-  expect(deepMetrics.asideScrollTop).toBeGreaterThan(0);
+  expect(deepMetrics.inspectorScrollTop).toBeGreaterThan(0);
   expect(deepMetrics.streamOpen).toBe(true);
   expect(deepMetrics.streamCards).toBeGreaterThan(0);
 
   await page.getByTestId("timeline-row").first().click();
 
-  await expect.poll(async () => page.evaluate(() => document.querySelector("aside")?.scrollTop ?? -1)).toBe(0);
+  await expect.poll(async () => page.evaluate(() => document.querySelector('[data-testid="inspector-scroll-body"]')?.scrollTop ?? -1)).toBe(0);
   await expect(page.getByTestId("stream-event-card")).toHaveCount(0);
   expect(await page.evaluate(() => document.querySelector("main")?.scrollTop ?? -1)).toBe(0);
   expect(await page.evaluate(() => document.querySelector('[data-testid="inspector-section-stream"]')?.hasAttribute("open") ?? null)).toBe(false);
@@ -627,25 +678,25 @@ test("bounds high-volume stream events and clears them on range changes", async 
   await expect(page.getByTestId("stream-event-card")).toHaveCount(25);
 
   const loadedMetrics = await page.evaluate(() => {
-    const aside = document.querySelector("aside");
+    const inspectorBody = document.querySelector('[data-testid="inspector-scroll-body"]');
     const stream = document.querySelector('[data-testid="inspector-section-stream"]');
     return {
       cards: document.querySelectorAll('[data-testid="stream-event-card"]').length,
       payloadBlocks: document.querySelectorAll('[data-testid="stream-event-payload"]').length,
-      asideScrollHeight: aside?.scrollHeight ?? 0,
+      inspectorBodyScrollHeight: inspectorBody?.scrollHeight ?? 0,
       streamHeight: stream?.getBoundingClientRect().height ?? 0,
     };
   });
 
   expect(loadedMetrics.cards).toBe(25);
   expect(loadedMetrics.payloadBlocks).toBe(0);
-  expect(loadedMetrics.asideScrollHeight).toBeLessThan(10_000);
+  expect(loadedMetrics.inspectorBodyScrollHeight).toBeLessThan(10_000);
   expect(loadedMetrics.streamHeight).toBeLessThan(5_000);
 
   await page.getByRole("button", { name: "Today" }).click();
   await expect(page.getByRole("button", { name: "Load Stream Events" })).toBeVisible();
   await expect(page.getByTestId("stream-event-card")).toHaveCount(0);
-  await expect.poll(async () => page.evaluate(() => document.querySelector("aside")?.scrollTop ?? -1)).toBe(0);
+  await expect.poll(async () => page.evaluate(() => document.querySelector('[data-testid="inspector-scroll-body"]')?.scrollTop ?? -1)).toBe(0);
   expect(await page.evaluate(() => document.querySelector("main")?.scrollTop ?? -1)).toBe(0);
 });
 

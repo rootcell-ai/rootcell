@@ -953,8 +953,8 @@ function CallInspector(props: {
   }
 
   return (
-    <aside className="spy-scrollbar min-h-0 min-w-0 overflow-auto bg-[#f3f0eb]">
-      <div className="sticky top-0 z-10 border-b border-stone-300 bg-white px-5 py-3">
+    <aside className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-[#f3f0eb]" data-testid="inspector">
+      <div className="shrink-0 border-b border-stone-300 bg-white px-5 py-3" data-testid="inspector-header">
         <div className="flex min-w-0 items-start justify-between gap-3">
           <div className="min-w-0">
             <h2 className="truncate text-base font-semibold">
@@ -984,8 +984,10 @@ function CallInspector(props: {
         {showSectionNav ? <InspectorSectionNav /> : null}
       </div>
 
-      <div className="space-y-4 p-5">
-        {content}
+      <div className="spy-scrollbar min-h-0 flex-1 overflow-auto" data-testid="inspector-scroll-body">
+        <div className="space-y-4 p-5">
+          {content}
+        </div>
       </div>
     </aside>
   );
@@ -1112,7 +1114,7 @@ function scrollInspectorSection(id: InspectorSectionId): void {
 
 function resetInspectorScroll(): void {
   window.requestAnimationFrame(() => {
-    const inspector = document.querySelector("aside");
+    const inspector = document.querySelector('[data-testid="inspector-scroll-body"]');
     if (inspector instanceof HTMLElement) {
       inspector.scrollTop = 0;
     }
