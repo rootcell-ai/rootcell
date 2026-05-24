@@ -1043,8 +1043,12 @@ P3 is polish, minor copy, or secondary accessibility.
     duration, and request/response block counts. Added Playwright coverage that
     locates rows by the richer accessible name and verifies model/cache-usage
     context is exposed.
-- [ ] [P2] SPY-QA-32: Make the disconnected SSE `Reconnect` badge either a real
+- [x] [P2] SPY-QA-32: Make the disconnected SSE `Reconnect` badge either a real
   control or passive status text. It currently reads like a clickable action.
+  - Fixed on 2026-05-24: disconnected SSE now renders as passive `SSE offline`
+    status text with a status role instead of an action-like `Reconnect` label.
+    Added Playwright coverage that forces `/api/events` offline and proves no
+    `Reconnect` control is exposed.
 - [x] [P2] SPY-QA-33: Reduce nested scroll traps in large JSON/detail panels.
   Stream events and other large detail payloads can catch wheel input and make it
   awkward to continue through the inspector.
@@ -1077,8 +1081,8 @@ separate tasks.
   the selected timeline row.
 - SPY-QA-31: Timeline row accessible names now expose visible model, status,
   time, operation, usage, size, duration, and block-count context.
-- SPY-QA-32: The disconnected SSE badge is labeled `Reconnect` but behaves as
-  passive auto-recovering status, so the label reads like a clickable action.
+- SPY-QA-32: The disconnected SSE badge now renders passive `SSE offline`
+  status text instead of the action-like `Reconnect` label.
 - SPY-QA-34: The timeline count footer can display `1 calls`.
 - SPY-QA-35: Timeline row chips and timestamps are too tight; long token
   labels, token values, and `PM` can wrap or clip into awkward fragments.

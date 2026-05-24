@@ -539,9 +539,14 @@ export function App(): React.ReactElement {
           </div>
 
           <div className="flex items-center gap-2">
-            <Badge tone={sseConnected ? "teal" : "amber"} className="gap-1">
+            <Badge
+              tone={sseConnected ? "teal" : "amber"}
+              className="gap-1"
+              role="status"
+              aria-label={sseConnected ? "SSE connected" : "SSE offline"}
+            >
               {sseConnected ? <Wifi aria-hidden="true" size={13} /> : <WifiOff aria-hidden="true" size={13} />}
-              {sseConnected ? "SSE" : "Reconnect"}
+              {sseConnected ? "SSE" : "SSE offline"}
             </Badge>
             <Badge tone={health?.service.storeRaw === true ? "amber" : "neutral"}>raw {health?.service.storeRaw === true ? "on" : "off"}</Badge>
             <Button aria-label="Refresh calls" size="icon" onClick={() => {

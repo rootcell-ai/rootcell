@@ -1,5 +1,5 @@
 import { cn } from "../../lib/utils.ts";
-import type { ReactElement, ReactNode } from "react";
+import type { HTMLAttributes, ReactElement, ReactNode } from "react";
 
 type BadgeTone = "neutral" | "green" | "amber" | "red" | "blue" | "teal";
 
@@ -12,14 +12,16 @@ const toneClass: Record<BadgeTone, string> = {
   teal: "border-teal-200 bg-teal-50 text-teal-800",
 };
 
-export function Badge(props: {
+type BadgeProps = HTMLAttributes<HTMLSpanElement> & {
   readonly children: ReactNode;
   readonly tone?: BadgeTone | undefined;
   readonly className?: string | undefined;
-}): ReactElement {
-  const { children, tone = "neutral", className } = props;
+};
+
+export function Badge(props: BadgeProps): ReactElement {
+  const { children, tone = "neutral", className, ...spanProps } = props;
   return (
-    <span className={cn("inline-flex h-6 items-center rounded-md border px-2 text-xs font-medium", toneClass[tone], className)}>
+    <span {...spanProps} className={cn("inline-flex h-6 items-center rounded-md border px-2 text-xs font-medium", toneClass[tone], className)}>
       {children}
     </span>
   );

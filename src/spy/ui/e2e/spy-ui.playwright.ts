@@ -18,6 +18,18 @@ test("loads fixture calls and receives live updates", async ({ page }) => {
   await expect(page.getByTestId("timeline-row")).toHaveCount(5);
 });
 
+test("labels disconnected SSE as passive status text", async ({ page }) => {
+  await page.route(/\/api\/events$/, async (route) => {
+    await route.abort();
+  });
+
+  await page.goto("/?since=0");
+  await expect(page.getByRole("heading", { name: "Rootcell Spy" })).toBeVisible();
+  await expect(page.getByRole("status", { name: "SSE offline" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Reconnect", exact: true })).toHaveCount(0);
+  await expect(page.getByText("Reconnect", { exact: true })).toHaveCount(0);
+});
+
 test("keeps timeline range state synchronized with the URL", async ({ page }) => {
   await page.goto("/?since=0");
   await expect(page.getByTestId("timeline-row")).toHaveCount(5);
