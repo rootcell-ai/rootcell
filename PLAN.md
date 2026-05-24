@@ -973,9 +973,14 @@ P3 is polish, minor copy, or secondary accessibility.
     inert app shell, focuses Cancel on open, traps Tab/Shift+Tab inside the
     dialog, closes on Escape, and restores focus to the header trigger. Added
     Playwright coverage for the modal focus loop and Escape close path.
-- [ ] [P2] SPY-QA-22: Make request composition responsive. Provider usage and
+- [x] [P2] SPY-QA-22: Make request composition responsive. Provider usage and
   cache read/write suffixes truncate, and the section table clips horizontally
   at the normal in-app browser width.
+  - Fixed on 2026-05-24: Request Composition metrics now use responsive
+    two/four-column layout with wrapping detail text, and the section table uses
+    narrower fitting tracks instead of hidden horizontal clipping. Added
+    Playwright coverage at 1100 px proving Provider usage and section-table
+    content fit without hidden overflow.
 - [ ] [P2] SPY-QA-23: Move or scope the block-kind filter. It lives under Request
   Blocks, affects request and response blocks, persists across call selection,
   and can make Response Blocks look empty.

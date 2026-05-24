@@ -370,6 +370,35 @@ test("shows provider cache token classes in timeline rows", async ({ page }) => 
   await expect(row).not.toContainText("cache 2");
 });
 
+test("keeps request composition readable at normal browser width", async ({ page }) => {
+  await page.setViewportSize({ width: 1100, height: 850 });
+  await installCacheTimelineRoutes(page);
+  await page.goto("/?since=0");
+
+  const composition = page.getByTestId("request-composition");
+  await expect(composition).toBeVisible();
+  await expect(composition.getByTestId("composition-provider-usage-detail")).toHaveText("in 10 · out 98 · cache 5,200/81");
+
+  const metrics = await composition.evaluate((element) => {
+    const usageDetail = element.querySelector('[data-testid="composition-provider-usage-detail"]');
+    const sectionTable = element.querySelector('[data-testid="composition-section-table"]');
+    if (!(usageDetail instanceof HTMLElement) || !(sectionTable instanceof HTMLElement)) {
+      throw new Error("missing composition responsive elements");
+    }
+    return {
+      usageDetailClientWidth: usageDetail.clientWidth,
+      usageDetailScrollWidth: usageDetail.scrollWidth,
+      sectionTableClientWidth: sectionTable.clientWidth,
+      sectionTableScrollWidth: sectionTable.scrollWidth,
+      sectionTableOverflowX: getComputedStyle(sectionTable).overflowX,
+    };
+  });
+
+  expect(metrics.usageDetailScrollWidth).toBeLessThanOrEqual(metrics.usageDetailClientWidth);
+  expect(metrics.sectionTableScrollWidth).toBeLessThanOrEqual(metrics.sectionTableClientWidth);
+  expect(metrics.sectionTableOverflowX).not.toBe("hidden");
+});
+
 test("keeps service health visible when filters leave no selected call", async ({ page }) => {
   await page.goto("/?since=0");
   await expect(page.getByTestId("timeline-row")).toHaveCount(5);

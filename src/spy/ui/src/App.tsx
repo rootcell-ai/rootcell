@@ -1161,7 +1161,7 @@ function RequestCompositionPanel(props: {
         <Badge tone="neutral">request only</Badge>
       </div>
 
-      <div className="mt-3 grid grid-cols-4 gap-x-4 gap-y-3 border-y border-stone-200 py-3">
+      <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3 border-y border-stone-200 py-3 xl:grid-cols-4">
         <CompositionMetric label="Messages" value={formatNumber(composition.totalMessageCount)} />
         <CompositionMetric label="Blocks" value={formatNumber(composition.totalBlockCount)} />
         <CompositionMetric label="Characters" value={formatNumber(composition.totalCharSize)} />
@@ -1185,11 +1185,12 @@ function RequestCompositionPanel(props: {
           label="Provider usage"
           value={formatUsageTotal(composition.usage)}
           detail={formatCompositionUsageDetail(composition.usage)}
+          detailTestId="composition-provider-usage-detail"
         />
       </div>
 
-      <div className="mt-3 overflow-hidden rounded-md border border-stone-200 text-xs">
-        <div className="grid grid-cols-[minmax(150px,1fr)_72px_72px_72px_88px_88px] gap-2 bg-stone-100 px-3 py-2 font-medium text-stone-600">
+      <div className="spy-scrollbar mt-3 overflow-x-auto rounded-md border border-stone-200 text-xs" data-testid="composition-section-table">
+        <div className="grid grid-cols-[minmax(116px,1fr)_54px_58px_52px_64px_64px] items-center gap-2 bg-stone-100 px-3 py-2 font-medium text-stone-600">
           <span>Section</span>
           <span>State</span>
           <span className="text-right">Messages</span>
@@ -1198,8 +1199,8 @@ function RequestCompositionPanel(props: {
           <span className="text-right">Bytes</span>
         </div>
         {composition.sections.map((section) => (
-          <div key={section.kind} className="grid grid-cols-[minmax(150px,1fr)_72px_72px_72px_88px_88px] gap-2 border-t border-stone-200 px-3 py-2">
-            <span className="truncate font-medium text-stone-800">{blockKindLabel(section.kind)}</span>
+          <div key={section.kind} className="grid grid-cols-[minmax(116px,1fr)_54px_58px_52px_64px_64px] items-center gap-2 border-t border-stone-200 px-3 py-2">
+            <span className="font-medium leading-4 text-stone-800">{blockKindLabel(section.kind)}</span>
             <span className={section.present ? "text-emerald-700" : "text-stone-400"}>
               {section.present ? "present" : "absent"}
             </span>
@@ -1218,12 +1219,15 @@ function CompositionMetric(props: {
   readonly label: string;
   readonly value: string;
   readonly detail?: string | undefined;
+  readonly detailTestId?: string | undefined;
 }): React.ReactElement {
   return (
     <div className="min-w-0">
       <div className="truncate text-xs text-stone-500">{props.label}</div>
-      <div className="mt-0.5 truncate text-sm font-semibold text-stone-950">{props.value}</div>
-      {props.detail === undefined ? null : <div className="mt-0.5 truncate text-xs text-stone-500">{props.detail}</div>}
+      <div className="mt-0.5 break-words text-sm font-semibold text-stone-950">{props.value}</div>
+      {props.detail === undefined ? null : (
+        <div className="mt-0.5 break-words text-xs leading-4 text-stone-500" data-testid={props.detailTestId}>{props.detail}</div>
+      )}
     </div>
   );
 }
