@@ -419,7 +419,7 @@ test("keeps inspector summary metric values readable", async ({ page }) => {
       overflow: styles.overflow,
       scrollWidth: element.scrollWidth,
       textOverflow: styles.textOverflow,
-      value: element.textContent?.trim(),
+      value: element.textContent.trim(),
       whiteSpace: styles.whiteSpace,
     };
   });
