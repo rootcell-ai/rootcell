@@ -1240,7 +1240,7 @@ function SummaryPanel(props: { readonly detail: SpyCallDetail }): React.ReactEle
         </div>
         <div className="mt-1 break-all font-mono text-sm font-semibold text-stone-950">{summary.call.model_id}</div>
       </div>
-      <div className="grid grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 gap-3 2xl:grid-cols-4">
         <PanelMetric icon={<Clock aria-hidden="true" size={16} />} label="Started" value={formatDateTime(summary.call.started_at)} />
         <PanelMetric icon={<Activity aria-hidden="true" size={16} />} label="Duration" value={formatDuration(summary.durationMs)} />
         <PanelMetric icon={<Database aria-hidden="true" size={16} />} label="Request" value={formatBytes(summary.requestByteSize)} />
@@ -1261,7 +1261,9 @@ function PanelMetric(props: {
         {props.icon}
         {props.label}
       </div>
-      <div className="mt-1 truncate text-sm font-semibold text-stone-950">{props.value}</div>
+      <div className="mt-1 break-words text-sm font-semibold leading-5 text-stone-950" data-summary-metric={props.label} title={props.value}>
+        {props.value}
+      </div>
     </div>
   );
 }

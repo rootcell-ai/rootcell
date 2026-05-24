@@ -403,6 +403,34 @@ test("shows full provider model id in the selected-call summary", async ({ page 
   await expect(summary.getByTestId("summary-model-id")).toContainText(fullModelId);
 });
 
+test("keeps inspector summary metric values readable", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto("/?since=0");
+  await expect(page.getByTestId("timeline-row")).toHaveCount(5);
+  await page.getByTestId("timeline-row").first().click();
+
+  const started = page.getByTestId("inspector-section-summary").locator('[data-summary-metric="Started"]');
+  await expect(started).toContainText("May");
+
+  const metrics = await started.evaluate((element) => {
+    const styles = getComputedStyle(element);
+    return {
+      clientWidth: element.clientWidth,
+      overflow: styles.overflow,
+      scrollWidth: element.scrollWidth,
+      textOverflow: styles.textOverflow,
+      value: element.textContent?.trim(),
+      whiteSpace: styles.whiteSpace,
+    };
+  });
+
+  expect(metrics.value).toContain(":");
+  expect(metrics.scrollWidth, "Started summary value should not clip").toBeLessThanOrEqual(metrics.clientWidth);
+  expect(metrics.overflow).not.toBe("hidden");
+  expect(metrics.textOverflow).not.toBe("ellipsis");
+  expect(metrics.whiteSpace).not.toBe("nowrap");
+});
+
 test("shows pinned inspector state when a newer visible call is available", async ({ page }) => {
   await page.goto("/?since=0");
   await expect(page.getByTestId("timeline-row")).toHaveCount(5);

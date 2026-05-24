@@ -1071,8 +1071,13 @@ P3 is polish, minor copy, or secondary accessibility.
     wrapping, markers share the same size/line-height as token values, and
     Playwright coverage measures the cache-heavy row at 1100 px to ensure the
     usage pill does not stretch or clip.
-- [ ] [P3] SPY-QA-36: Prevent top inspector summary cards from truncating
+- [x] [P3] SPY-QA-36: Prevent top inspector summary cards from truncating
   important values such as exact `Started` time.
+  - Fixed on 2026-05-24: changed the inspector Summary metrics from a fixed
+    four-column layout to a two-column layout at normal inspector widths, with
+    four columns only at very wide desktop sizes. Metric values now wrap instead
+    of using ellipsis truncation, and Playwright coverage proves the exact
+    `Started` timestamp does not clip at the reproduced 1280 px viewport.
 
 ID-keyed evidence notes:
 
