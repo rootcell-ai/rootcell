@@ -331,6 +331,19 @@ describe("spy SQLite store", () => {
         since: 350,
         status: "complete",
       }).items).toHaveLength(0);
+      expect(store.searchCallSummaries({
+        query: "call-filter-b",
+      }).items.map((item) => item.call.id)).toEqual(["call-filter-b"]);
+      expect(store.searchCallSummaries({
+        query: "opus",
+      }).items.map((item) => item.call.id)).toEqual(["call-filter-b"]);
+      expect(store.searchCallSummaries({
+        query: "filter-c",
+      }).items.map((item) => item.call.id)).toEqual(["call-filter-c"]);
+      expect(store.searchCallSummaries({
+        query: "sonnet",
+        operation: "converse",
+      }).items.map((item) => item.call.id)).toEqual(["call-filter-c"]);
     } finally {
       store.close();
     }

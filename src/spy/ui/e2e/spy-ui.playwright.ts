@@ -311,20 +311,28 @@ test("jumps to buried inspector sections from the section navigator", async ({ p
   expect(jumpedMetrics.healthBottom).toBeLessThanOrEqual(jumpedMetrics.viewportHeight);
 });
 
-test("loads historical ranges and searches normalized text", async ({ page }) => {
+test("loads historical ranges and searches text plus visible identifiers", async ({ page }) => {
   await page.goto("/?since=0");
   await page.getByRole("button", { name: "10 min" }).click();
   await expect(page.getByTestId("timeline-row").first()).toBeVisible();
+  await expect(page.getByPlaceholder("Search text, call ID, or model")).toBeVisible();
   await page.getByLabel("Filter by provider").selectOption("bedrock");
   await page.getByLabel("Filter by operation").selectOption("invoke");
   await expect(page.getByText("No provider calls match the current search or filters.")).toBeVisible();
   await expect(page.getByText("No provider calls in this range.")).toHaveCount(0);
-  await page.getByLabel("Search normalized text").fill("Fixture capture");
+  await page.getByLabel("Search text, call ID, or model").fill("Fixture capture");
   await page.getByRole("button", { name: "Search" }).click();
   await expect(page.getByText("No provider calls match the current search or filters.")).toBeVisible();
   await expect(page.getByText("No provider calls in this range.")).toHaveCount(0);
   await page.getByLabel("Filter by operation").selectOption("converse-stream");
   await expect(page.getByTestId("timeline-row").first()).toBeVisible();
+  await page.getByLabel("Search text, call ID, or model").fill("call-fixture-flow-tool-result");
+  await page.getByRole("button", { name: "Search" }).click();
+  await expect(page.getByTestId("timeline-row")).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "Open call call-fixture-flow-tool-result", exact: true })).toBeVisible();
+  await page.getByLabel("Search text, call ID, or model").fill("sonnet");
+  await page.getByRole("button", { name: "Search" }).click();
+  await expect(page.getByTestId("timeline-row")).toHaveCount(5);
 });
 
 test("keeps service health visible when filters leave no selected call", async ({ page }) => {

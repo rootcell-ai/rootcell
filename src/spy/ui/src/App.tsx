@@ -657,9 +657,9 @@ function TimelineControls(props: {
         <form className="relative min-w-[245px] flex-1" onSubmit={props.onSubmitSearch}>
           <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-stone-500" size={15} />
           <Input
-            aria-label="Search normalized text"
+            aria-label="Search text, call ID, or model"
             className="pl-9 pr-24"
-            placeholder="Search text"
+            placeholder="Search text, call ID, or model"
             value={props.searchDraft}
             onChange={(event) => {
               props.onSearchDraft(event.target.value);

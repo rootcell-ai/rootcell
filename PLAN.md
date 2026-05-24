@@ -921,9 +921,14 @@ P3 is polish, minor copy, or secondary accessibility.
   - Closed on 2026-05-24 as a product enhancement, not a current bug. Search is
     functioning as normalized FTS token search; snippets/highlights would be an
     explanatory feature.
-- [ ] [P1] SPY-QA-14: Clarify search scope and include or explicitly exclude call
+- [x] [P1] SPY-QA-14: Clarify search scope and include or explicitly exclude call
   ids/model ids/metadata. Visible call-id fragments return no results while the
   placeholder only says `Search text`.
+  - Fixed on 2026-05-24: `/api/search` now matches normalized block text plus
+    visible provider-call metadata including call ids, flow ids, model ids,
+    provider, operation, and status. The UI search label now names the expanded
+    scope, and store/service/Playwright coverage proves call-id, model-fragment,
+    and normalized-text searches.
 - [x] [P1] SPY-QA-15: Submit search on Enter. The input updates but results do not
   change until the Search button is clicked.
   - Closed on 2026-05-24 as stale/no-repro in the current tree. The search input
@@ -992,9 +997,6 @@ ID-keyed evidence notes:
 These notes are retained only where they clarify an open bug ID. They are not
 separate tasks.
 
-- SPY-QA-14: Search currently scopes to normalized block text. Visible call-id
-  fragments such as `41739b60` return no results, while the placeholder only
-  says `Search text`.
 - SPY-QA-17: Diff baselines can come from outside the active time range. In QA,
   the first visible post-5:30 Live call diffed against a 05:14:07 PM request
   that was not visible in the Live timeline.

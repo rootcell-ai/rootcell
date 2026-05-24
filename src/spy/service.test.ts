@@ -169,6 +169,16 @@ describe("spy web service", () => {
     const searchResponse = await fetch(`${handle.url}/api/search?q=${encodeURIComponent("Fixture capture")}`);
     const searchPage = await jsonAs(searchResponse, SpyCallSummaryPageSchema);
     expect(searchPage.items.length).toBeGreaterThan(0);
+    const callIdSearch = await jsonAs(
+      await fetch(`${handle.url}/api/search?q=${encodeURIComponent(callId)}`),
+      SpyCallSummaryPageSchema,
+    );
+    expect(callIdSearch.items.map((item) => item.call.id)).toEqual([callId]);
+    const modelSearch = await jsonAs(
+      await fetch(`${handle.url}/api/search?q=${encodeURIComponent("sonnet")}`),
+      SpyCallSummaryPageSchema,
+    );
+    expect(modelSearch.items).toHaveLength(5);
 
     const filteredCallsResponse = await fetch(`${handle.url}/api/calls?provider=bedrock&model_id=${encodeURIComponent("us.anthropic.claude-sonnet-4-6")}&operation=converse-stream&status=complete`);
     const filteredCalls = await jsonAs(filteredCallsResponse, SpyCallSummaryPageSchema);

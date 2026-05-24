@@ -547,14 +547,33 @@ LIMIT ?
 
   searchCallSummaries(options: SpySearchCallsOptions): SpyPaginatedResult<SpyCallSummary> {
     const ftsQuery = ftsQueryForSearch(options.query);
-    if (ftsQuery === null) {
+    const metadataPattern = likePatternForSearch(options.query);
+    const matchQueries: string[] = [];
+    const params: SqlParam[] = [];
+    if (ftsQuery !== null) {
+      matchQueries.push(`
+  SELECT DISTINCT nb.call_id
+  FROM normalized_block_fts
+  JOIN normalized_block nb ON nb.id = normalized_block_fts.block_id
+  WHERE normalized_block_fts MATCH ?
+`);
+      params.push(ftsQuery);
+    }
+    if (metadataPattern !== null) {
+      matchQueries.push(`
+  SELECT pc_match.id AS call_id
+  FROM provider_call pc_match
+  WHERE ${providerCallMetadataSearchCondition("pc_match")}
+`);
+      appendProviderCallMetadataSearchParams(params, metadataPattern);
+    }
+    if (matchQueries.length === 0) {
       return { items: [] };
     }
 
     const limit = queryLimit(options.limit);
     const cursor = options.cursor === undefined ? undefined : decodeCallCursor(options.cursor);
     const callConditions: string[] = [];
-    const params: SqlParam[] = [ftsQuery];
     appendProviderCallFilters(callConditions, params, options, "pc");
     if (cursor !== undefined) {
       callConditions.push("(pc.started_at < ? OR (pc.started_at = ? AND pc.id < ?))");
@@ -564,10 +583,7 @@ LIMIT ?
 
     const rows = this.db.query(`
 WITH matched_call AS (
-  SELECT DISTINCT nb.call_id
-  FROM normalized_block_fts
-  JOIN normalized_block nb ON nb.id = normalized_block_fts.block_id
-  WHERE normalized_block_fts MATCH ?
+${matchQueries.join("  UNION\n")}
 )
 SELECT pc.id, pc.provider, pc.operation, pc.model_id, pc.status, pc.started_at,
        pc.completed_at, pc.status_code, pc.request_flow_id, pc.response_flow_id,
@@ -1467,6 +1483,34 @@ function ftsQueryForSearch(query: string): string | null {
     return null;
   }
   return tokens.map((token) => `"${token.replaceAll("\"", "\"\"")}"`).join(" AND ");
+}
+
+function likePatternForSearch(query: string): string | null {
+  const trimmed = query.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+  return `%${trimmed
+    .replaceAll("\\", "\\\\")
+    .replaceAll("%", "\\%")
+    .replaceAll("_", "\\_")}%`;
+}
+
+function providerCallMetadataSearchCondition(alias: string): string {
+  const column = (name: string): string => `${alias}.${name}`;
+  return [
+    column("id"),
+    column("request_flow_id"),
+    column("response_flow_id"),
+    column("model_id"),
+    column("provider"),
+    column("operation"),
+    column("status"),
+  ].map((field) => `${field} LIKE ? ESCAPE '\\'`).join(" OR ");
+}
+
+function appendProviderCallMetadataSearchParams(params: SqlParam[], pattern: string): void {
+  params.push(pattern, pattern, pattern, pattern, pattern, pattern, pattern);
 }
 
 function appendProviderCallFilters(
