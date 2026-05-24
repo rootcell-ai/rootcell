@@ -77,6 +77,10 @@ export function formatNumber(value: number | null | undefined): string {
   return value === null || value === undefined ? "-" : NUMBER_FORMAT.format(value);
 }
 
+export function formatCount(value: number, singular: string, plural = `${singular}s`): string {
+  return `${formatNumber(value)} ${value === 1 ? singular : plural}`;
+}
+
 export function formatUsageTotal(usage: SpyUsageSummary): string {
   return usage.totalTokens === null ? "usage n/a" : `${formatCompactNumber(usage.totalTokens)} tok`;
 }

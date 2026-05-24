@@ -1055,7 +1055,11 @@ P3 is polish, minor copy, or secondary accessibility.
   - Closed on 2026-05-24 as a product enhancement, not a proved current bug. The
     bounded detail panes are intentional; any alternate detail-pane interaction
     should be tracked outside the bug backlog.
-- [ ] [P3] SPY-QA-34: Fix singular/plural call count grammar (`1 calls`).
+- [x] [P3] SPY-QA-34: Fix singular/plural call count grammar (`1 calls`).
+  - Fixed on 2026-05-24: added a shared count formatter for singular/plural UI
+    labels and used it in the timeline footer so one visible provider call now
+    renders `1 call` instead of `1 calls`. Added unit coverage for count labels
+    and Playwright coverage for a one-call filtered timeline.
 - [ ] [P3] SPY-QA-35: Loosen timeline row chips/badges. Long token labels,
   token values, and timestamps can wrap or clip into awkward multi-line
   fragments.

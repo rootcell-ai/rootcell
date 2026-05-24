@@ -26,6 +26,7 @@ import {
   blockText,
   clipped,
   formatBytes,
+  formatCount,
   formatDateTime,
   formatDuration,
   formatHttpTarget,
@@ -850,7 +851,7 @@ function Timeline(props: {
       </div>
       <div className="border-t border-stone-300 bg-white/95 p-3 backdrop-blur" data-testid="timeline-footer">
         <div className="flex items-center justify-between text-xs text-stone-500">
-          <span>{formatNumber(props.calls.length)} calls</span>
+          <span>{formatCount(props.calls.length, "call")}</span>
           <Button size="sm" disabled={!props.hasMore || props.loading} onClick={props.onLoadMore}>
             Load More
           </Button>

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { blockKindLabel, formatBytes, formatDuration, formatHttpTarget, secondsForPreset, shortModelId } from "./format.ts";
+import { blockKindLabel, formatBytes, formatCount, formatDuration, formatHttpTarget, secondsForPreset, shortModelId } from "./format.ts";
 
 describe("spy UI format helpers", () => {
   test("formats byte sizes", () => {
@@ -12,6 +12,13 @@ describe("spy UI format helpers", () => {
     expect(formatDuration(null)).toBe("pending");
     expect(formatDuration(250)).toBe("250 ms");
     expect(formatDuration(1250)).toBe("1.3 s");
+  });
+
+  test("formats singular and plural counts", () => {
+    expect(formatCount(0, "call")).toBe("0 calls");
+    expect(formatCount(1, "call")).toBe("1 call");
+    expect(formatCount(2, "call")).toBe("2 calls");
+    expect(formatCount(2, "entry", "entries")).toBe("2 entries");
   });
 
   test("derives preset timestamps", () => {

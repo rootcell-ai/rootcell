@@ -18,6 +18,18 @@ test("loads fixture calls and receives live updates", async ({ page }) => {
   await expect(page.getByTestId("timeline-row")).toHaveCount(5);
 });
 
+test("uses singular grammar for one visible timeline call", async ({ page }) => {
+  await page.goto("/?since=0");
+  await expect(timelineRow(page, "call-fixture-flow-simple")).toBeVisible();
+
+  await page.getByLabel("Search text, call ID, or model").fill("call-fixture-flow-simple");
+  await page.getByRole("button", { name: "Search" }).click();
+
+  await expect(page.getByTestId("timeline-row")).toHaveCount(1);
+  await expect(page.getByTestId("timeline-footer")).toHaveText(/^\s*1 call\s*Load More\s*$/);
+  await expect(page.getByText("1 calls", { exact: true })).toHaveCount(0);
+});
+
 test("labels disconnected SSE as passive status text", async ({ page }) => {
   await page.route(/\/api\/events$/, async (route) => {
     await route.abort();
