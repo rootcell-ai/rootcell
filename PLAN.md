@@ -864,9 +864,13 @@ P3 is polish, minor copy, or secondary accessibility.
     window with collapsed payload previews, and loaded stream state is cleared
     when selecting a new call or changing timeline context. Added Playwright
     coverage with a synthetic 250-event stream response.
-- [ ] [P1] SPY-QA-06: Reset inspector scroll and panel state when selecting a new
+- [x] [P1] SPY-QA-06: Reset inspector scroll and panel state when selecting a new
   call, or expose an explicit reset affordance. Selecting a different call after
   deep stream inspection can keep `scrollTop` thousands of pixels down.
+  - Fixed on 2026-05-23: re-clicking the already-selected timeline row now
+    clears loaded stream state, remounts inspector sections so lower panels
+    close, and scrolls the inspector to the top. Added Playwright coverage for
+    the deep stream-inspection reset path.
 - [x] [P1] SPY-QA-07: Clarify selected-call pinning while live calls arrive.
   New rows appear above the selected row, but the inspector stays on the older
   call without an explicit pinned/auto-follow state.
@@ -1042,12 +1046,15 @@ Detailed issues and reproduction notes:
   Fixed on 2026-05-23 by rendering a bounded stream-event window, collapsing
   payload previews by default, and clearing stream state on timeline-context
   changes.
-- [ ] There is no obvious way to reset a deeply scrolled inspector. After
+- [x] There is no obvious way to reset a deeply scrolled inspector. After
   loading stream events and changing ranges, re-clicking the already-selected
   row left the inspector at the deep stream-event scroll position with the
   stream panel still open. In the post-5:30 loop, selecting the newest different
   call updated the content but kept the old `scrollTop` around 4558 px, so the
   user can land mid-detail instead of at the selected call's title/summary.
+  Fixed on 2026-05-23 by making re-click of the already-selected row explicitly
+  reset loaded stream state, close inspector sections through remount, and
+  scroll the inspector back to the top.
 - [ ] Network metadata paths are visually truncated and show URL-encoded model
   punctuation such as `%3A0`, which makes the model/request path harder to
   inspect at a glance.

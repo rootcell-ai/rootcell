@@ -334,6 +334,41 @@ test("loads stream events on demand", async ({ page }) => {
   await expect(page.getByText("messageStart").first()).toBeVisible();
 });
 
+test("resets deep inspector state when reselecting the selected call", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto("/?since=0");
+  await expect(page.getByTestId("timeline-row")).toHaveCount(5);
+
+  await page.getByTestId("timeline-row").first().click();
+  await page.getByTestId("inspector-nav-stream").click();
+  await page.getByRole("button", { name: "Load Stream Events" }).click();
+  await expect(page.getByTestId("stream-event-card").first()).toBeVisible();
+
+  const deepMetrics = await page.evaluate(() => {
+    const aside = document.querySelector("aside");
+    if (aside === null) {
+      throw new Error("missing inspector");
+    }
+    aside.scrollTop = aside.scrollHeight;
+    return {
+      asideScrollTop: aside.scrollTop,
+      streamOpen: document.querySelector('[data-testid="inspector-section-stream"]')?.hasAttribute("open"),
+      streamCards: document.querySelectorAll('[data-testid="stream-event-card"]').length,
+    };
+  });
+
+  expect(deepMetrics.asideScrollTop).toBeGreaterThan(0);
+  expect(deepMetrics.streamOpen).toBe(true);
+  expect(deepMetrics.streamCards).toBeGreaterThan(0);
+
+  await page.getByTestId("timeline-row").first().click();
+
+  await expect.poll(async () => page.evaluate(() => document.querySelector("aside")?.scrollTop ?? -1)).toBe(0);
+  await expect(page.getByTestId("stream-event-card")).toHaveCount(0);
+  expect(await page.evaluate(() => document.querySelector("main")?.scrollTop ?? -1)).toBe(0);
+  expect(await page.evaluate(() => document.querySelector('[data-testid="inspector-section-stream"]')?.hasAttribute("open") ?? null)).toBe(false);
+});
+
 test("bounds high-volume stream events and clears them on range changes", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
   await installHeavyStreamRoutes(page);

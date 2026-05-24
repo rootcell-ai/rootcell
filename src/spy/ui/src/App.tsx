@@ -139,6 +139,7 @@ export function App(): React.ReactElement {
   const [selectedCallId, setSelectedCallId] = React.useState<string | undefined>();
   const [detailState, setDetailState] = React.useState<DetailState | null>(null);
   const [streamState, setStreamState] = React.useState<StreamState | null>(null);
+  const [inspectorResetKey, setInspectorResetKey] = React.useState(0);
   const [health, setHealth] = React.useState<SpyServiceHealth | null>(null);
   const [sseConnected, setSseConnected] = React.useState(false);
   const [sseError, setSseError] = React.useState<string | undefined>();
@@ -464,6 +465,20 @@ export function App(): React.ReactElement {
     });
   }
 
+  function selectTimelineCall(callId: string): void {
+    if (callId === selectedCallId) {
+      resetSelectedCallInspection();
+      return;
+    }
+    setSelectedCallId(callId);
+  }
+
+  function resetSelectedCallInspection(): void {
+    setStreamState(null);
+    setInspectorResetKey((key) => key + 1);
+    resetInspectorScroll();
+  }
+
   async function clearData(): Promise<void> {
     setClearing(true);
     try {
@@ -541,7 +556,7 @@ export function App(): React.ReactElement {
             selectedCallId={selectedCallId}
             loading={callState === "loading"}
             hasMore={nextCursor !== undefined}
-            onSelect={setSelectedCallId}
+            onSelect={selectTimelineCall}
             onLoadMore={() => {
               void loadMore();
             }}
@@ -552,6 +567,7 @@ export function App(): React.ReactElement {
           summary={selectedSummary}
           detailState={detailState}
           streamState={streamState}
+          resetKey={inspectorResetKey}
           pinned={selectedCallIsPinned}
           filters={filters}
           health={health}
@@ -843,6 +859,7 @@ function CallInspector(props: {
   readonly summary: SpyCallSummary | null;
   readonly detailState: DetailState | null;
   readonly streamState: StreamState | null;
+  readonly resetKey: number;
   readonly pinned: boolean;
   readonly filters: UiFilters;
   readonly health: SpyServiceHealth | null;
@@ -867,6 +884,7 @@ function CallInspector(props: {
   } else {
     content = (
       <InspectorContent
+        key={props.resetKey}
         detail={detailState.detail}
         diff={detailState.diff}
         streamState={props.streamState}
