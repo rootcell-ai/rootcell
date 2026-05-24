@@ -59,6 +59,21 @@ const BLOCK_SECTION_AUTO_OPEN_MAX_BLOCKS = 6;
 const BLOCK_SECTION_AUTO_OPEN_MAX_BYTES = 24 * 1024;
 const STREAM_EVENT_WINDOW_SIZE = 25;
 const STREAM_EVENT_PAYLOAD_PREVIEW_CHARS = 4_000;
+const BLOCK_KIND_OPTIONS: readonly NormalizedBlock["kind"][] = [
+  "provider-envelope",
+  "harness-system-context",
+  "user-visible-message",
+  "prior-conversation-history",
+  "current-user-input",
+  "assistant-output",
+  "thinking",
+  "tool-definition",
+  "tool-call",
+  "tool-result",
+  "cache-marker",
+  "media-summary",
+  "unknown",
+];
 const PROVIDER_OPTIONS = [
   { value: "bedrock", label: "Bedrock" },
 ] as const;
@@ -1000,13 +1015,13 @@ function InspectorContent(props: {
       <InspectorAnchor id="composition">
         <RequestCompositionPanel composition={props.detail.requestComposition} />
       </InspectorAnchor>
+      <BlockToolbar filters={props.filters} onFilters={props.onFilters} />
       <Section
         id="request-blocks"
         title="Request Blocks"
         meta={blockListMeta(requestBlocks)}
         defaultOpen={blockSectionsDefaultOpen}
       >
-        <BlockToolbar filters={props.filters} onFilters={props.onFilters} />
         <BlockList blocks={requestBlocks} filterKind={props.filters.blockKind} diffByBlockId={diffByBlockId} />
       </Section>
       <Section
@@ -1244,35 +1259,29 @@ function BlockToolbar(props: {
   readonly filters: UiFilters;
   readonly onFilters: (filters: UiFilters) => void;
 }): React.ReactElement {
-  const kinds: readonly NormalizedBlock["kind"][] = [
-    "provider-envelope",
-    "harness-system-context",
-    "user-visible-message",
-    "prior-conversation-history",
-    "current-user-input",
-    "assistant-output",
-    "thinking",
-    "tool-definition",
-    "tool-call",
-    "tool-result",
-    "cache-marker",
-    "media-summary",
-    "unknown",
-  ];
   return (
-    <div className="mb-3 flex items-center justify-end">
-      <Select
-        aria-label="Filter blocks by kind"
-        value={props.filters.blockKind}
-        onChange={(event) => {
-          props.onFilters({ ...props.filters, blockKind: event.target.value });
-        }}
-      >
-        <option value={ALL_FILTER}>All block kinds</option>
-        {kinds.map((kind) => (
-          <option key={kind} value={kind}>{blockKindLabel(kind)}</option>
-        ))}
-      </Select>
+    <div
+      className="rounded-md border border-stone-300 bg-white p-4 shadow-sm"
+      data-testid="block-filter-toolbar"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-sm font-semibold text-stone-900">Block Filter</div>
+          <div className="text-xs text-stone-500">Request and response blocks</div>
+        </div>
+        <Select
+          aria-label="Filter request and response blocks by kind"
+          value={props.filters.blockKind}
+          onChange={(event) => {
+            props.onFilters({ ...props.filters, blockKind: event.target.value });
+          }}
+        >
+          <option value={ALL_FILTER}>All block kinds</option>
+          {BLOCK_KIND_OPTIONS.map((kind) => (
+            <option key={kind} value={kind}>{blockKindLabel(kind)}</option>
+          ))}
+        </Select>
+      </div>
     </div>
   );
 }
@@ -1286,7 +1295,10 @@ function BlockList(props: {
     ? props.blocks
     : props.blocks.filter((block) => block.kind === props.filterKind);
   if (blocks.length === 0) {
-    return <div className="rounded-md border border-stone-200 bg-stone-50 p-3 text-sm text-stone-500">No blocks.</div>;
+    const emptyMessage = props.filterKind === ALL_FILTER
+      ? "No blocks captured in this section."
+      : `No ${blockFilterLabel(props.filterKind)} blocks in this section.`;
+    return <div className="rounded-md border border-stone-200 bg-stone-50 p-3 text-sm text-stone-500">{emptyMessage}</div>;
   }
   return (
     <div className="space-y-2">
@@ -1295,6 +1307,12 @@ function BlockList(props: {
       ))}
     </div>
   );
+}
+
+function blockFilterLabel(kind: string): string {
+  return BLOCK_KIND_OPTIONS.includes(kind as NormalizedBlock["kind"])
+    ? blockKindLabel(kind as NormalizedBlock["kind"])
+    : "matching";
 }
 
 function BlockRow(props: {

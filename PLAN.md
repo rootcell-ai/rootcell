@@ -981,9 +981,14 @@ P3 is polish, minor copy, or secondary accessibility.
     narrower fitting tracks instead of hidden horizontal clipping. Added
     Playwright coverage at 1100 px proving Provider usage and section-table
     content fit without hidden overflow.
-- [ ] [P2] SPY-QA-23: Move or scope the block-kind filter. It lives under Request
+- [x] [P2] SPY-QA-23: Move or scope the block-kind filter. It lives under Request
   Blocks, affects request and response blocks, persists across call selection,
   and can make Response Blocks look empty.
+  - Fixed on 2026-05-24: moved the block-kind filter to an inspector-level
+    toolbar above both Request Blocks and Response Blocks, labeled its
+    request/response scope, and changed filtered-empty block lists to explain
+    that the selected kind has no blocks in that section. Added Playwright
+    coverage for the shared filter scope and call-selection persistence.
 - [ ] [P2] SPY-QA-24: Improve custom-range state. `Apply` stays green while all
   range pills are inactive, lacks ARIA state, and minute precision rounded a
   prior `since` down to `:00`.
@@ -1030,10 +1035,6 @@ separate tasks.
   the visible cache read/write suffix can truncate at normal desktop width. The
   section table is also wider than its visible card without a responsive
   treatment.
-- SPY-QA-23: The block-kind filter is presented under Request Blocks but filters
-  request and response blocks, persists across call selection, and can make
-  Response Blocks say "No blocks" when the chosen kind only appears in the
-  request.
 - SPY-QA-24: Custom range active state is represented by the `Apply` button
   staying green while all range pills are inactive. The button lacks ARIA state,
   and applying the minute-precision input can round a previous second-level

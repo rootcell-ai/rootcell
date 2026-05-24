@@ -370,6 +370,34 @@ test("shows provider cache token classes in timeline rows", async ({ page }) => 
   await expect(row).not.toContainText("cache 2");
 });
 
+test("scopes block-kind filtering across request and response blocks", async ({ page }) => {
+  await installBlockFilterRoutes(page);
+  await page.goto("/?since=0");
+
+  const toolbar = page.getByTestId("block-filter-toolbar");
+  const filter = toolbar.getByLabel("Filter request and response blocks by kind");
+  const requestSection = page.getByTestId("inspector-section-request-blocks");
+  const responseSection = page.getByTestId("inspector-section-response-blocks");
+
+  await expect(toolbar).toBeVisible();
+  await expect(toolbar.getByText("Request and response blocks", { exact: true })).toBeVisible();
+  await expect(requestSection.getByLabel("Filter request and response blocks by kind")).toHaveCount(0);
+  await expect(requestSection.getByText("Only appears in request A", { exact: true })).toBeVisible();
+  await expect(responseSection.getByText("Only appears in response A", { exact: true })).toBeVisible();
+
+  await filter.selectOption("current-user-input");
+  await expect(requestSection.getByText("Only appears in request A", { exact: true })).toBeVisible();
+  await expect(responseSection.getByText("No Current User Input blocks in this section.", { exact: true })).toBeVisible();
+  await expect(responseSection.getByText("Only appears in response A", { exact: true })).toHaveCount(0);
+
+  await page.getByRole("button", { name: `Open call ${BLOCK_FILTER_CALL_B_ID}`, exact: true }).click();
+  await expect(page.locator("aside").getByText(BLOCK_FILTER_CALL_B_ID, { exact: true })).toBeVisible();
+  await expect(filter).toHaveValue("current-user-input");
+  await expect(requestSection.getByText("Only appears in request B", { exact: true })).toBeVisible();
+  await expect(responseSection.getByText("No Current User Input blocks in this section.", { exact: true })).toBeVisible();
+  await expect(responseSection.getByText("Only appears in response B", { exact: true })).toHaveCount(0);
+});
+
 test("keeps request composition readable at normal browser width", async ({ page }) => {
   await page.setViewportSize({ width: 1100, height: 850 });
   await installCacheTimelineRoutes(page);
@@ -582,6 +610,9 @@ const DIFF_SCOPE_TS = 2100;
 const DIFF_SCOPE_PREVIOUS_TS = 1900;
 const CACHE_TIMELINE_CALL_ID = "call-cache-timeline";
 const CACHE_TIMELINE_TS = 1779562500;
+const BLOCK_FILTER_CALL_A_ID = "call-block-filter-a";
+const BLOCK_FILTER_CALL_B_ID = "call-block-filter-b";
+const BLOCK_FILTER_TS = 1779563000;
 const BLOCK_KINDS: readonly NormalizedBlock["kind"][] = [
   "provider-envelope",
   "harness-system-context",
@@ -667,6 +698,35 @@ async function installCacheTimelineRoutes(page: Page): Promise<void> {
   await page.route(/\/api\/search(?:\?.*)?$/, async (route) => {
     await fulfillJson(route, { items: [fixture.summary] });
   });
+}
+
+async function installBlockFilterRoutes(page: Page): Promise<void> {
+  const fixture = blockFilterFixture();
+  await page.route(/\/api\/health$/, async (route) => {
+    await fulfillJson(route, fixture.health);
+  });
+  await page.route(/\/api\/calls\/([^/?]+)\/diff$/, async (route) => {
+    const callId = callIdFromRoute(route);
+    await fulfillJson(route, fixture.diffs.get(callId));
+  });
+  await page.route(/\/api\/calls\/([^/?]+)$/, async (route) => {
+    const callId = callIdFromRoute(route);
+    await fulfillJson(route, fixture.details.get(callId));
+  });
+  await page.route(/\/api\/calls(?:\?.*)?$/, async (route) => {
+    await fulfillJson(route, { items: fixture.summaries });
+  });
+  await page.route(/\/api\/search(?:\?.*)?$/, async (route) => {
+    await fulfillJson(route, { items: fixture.summaries });
+  });
+}
+
+function callIdFromRoute(route: Route): string {
+  const callId = new URL(route.request().url()).pathname.split("/")[3];
+  if (callId === undefined || callId.length === 0) {
+    throw new Error(`missing call id in route ${route.request().url()}`);
+  }
+  return callId;
 }
 
 async function fulfillJson(route: Route, payload: unknown): Promise<void> {
@@ -871,6 +931,126 @@ function cacheTimelineFixture(): {
       blocks: detail.blocks.map((block) => ({ block, classification: "new" as const })),
     },
     health: healthFixture(1, CACHE_TIMELINE_TS),
+  };
+}
+
+function blockFilterFixture(): {
+  readonly summaries: readonly SpyCallSummary[];
+  readonly details: ReadonlyMap<string, SpyCallDetail>;
+  readonly diffs: ReadonlyMap<string, SpyCallDiff>;
+  readonly health: SpyServiceHealth;
+} {
+  const usage = {
+    inputTokens: 1,
+    outputTokens: 2,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    totalTokens: 3,
+  };
+  const firstDetail = blockFilterDetail(
+    BLOCK_FILTER_CALL_A_ID,
+    BLOCK_FILTER_TS,
+    "Only appears in request A",
+    "Only appears in response A",
+    usage,
+  );
+  const secondDetail = blockFilterDetail(
+    BLOCK_FILTER_CALL_B_ID,
+    BLOCK_FILTER_TS + 10,
+    "Only appears in request B",
+    "Only appears in response B",
+    usage,
+  );
+  const details = new Map([
+    [BLOCK_FILTER_CALL_A_ID, firstDetail],
+    [BLOCK_FILTER_CALL_B_ID, secondDetail],
+  ]);
+  const diffs = new Map(Array.from(details, ([callId, detail]) => [
+    callId,
+    {
+      call: detail.summary,
+      previousCall: null,
+      blocks: detail.blocks.map((block) => ({ block, classification: "new" as const })),
+    },
+  ]));
+  return {
+    summaries: [firstDetail.summary, secondDetail.summary],
+    details,
+    diffs,
+    health: healthFixture(2, BLOCK_FILTER_TS),
+  };
+}
+
+function blockFilterDetail(
+  callId: string,
+  startedAt: number,
+  requestText: string,
+  responseText: string,
+  usage: SpyCallSummary["usage"],
+): SpyCallDetail {
+  const call = {
+    id: callId,
+    provider: "bedrock" as const,
+    operation: "converse-stream",
+    model_id: HEAVY_STREAM_MODEL_ID,
+    status: "complete" as const,
+    started_at: startedAt,
+    completed_at: startedAt + 1,
+    status_code: 200,
+    request_flow_id: `${callId}-request-flow`,
+    response_flow_id: `${callId}-response-flow`,
+    request_content_hash: `${callId}-request-hash`,
+    response_content_hash: `${callId}-response-hash`,
+  };
+  const requestByteSize = new TextEncoder().encode(requestText).length;
+  const responseByteSize = new TextEncoder().encode(responseText).length;
+  const summary: SpyCallSummary = {
+    call,
+    durationMs: 1000,
+    usage,
+    requestBlockCount: 1,
+    responseBlockCount: 1,
+    requestByteSize,
+    responseByteSize,
+    cacheMarkerCount: 0,
+    streamEventCount: 0,
+    rawPayloadCount: 0,
+  };
+  const blocks = [
+    blockFilterBlock(`${callId}-request-only`, callId, "request", 0, "current-user-input", requestText),
+    blockFilterBlock(`${callId}-response-only`, callId, "response", 0, "assistant-output", responseText),
+  ];
+  return {
+    summary,
+    requestComposition: requestComposition(usage),
+    httpEvents: [],
+    blocks,
+    usageRecords: [],
+    rawPayloads: [],
+  };
+}
+
+function blockFilterBlock(
+  id: string,
+  callId: string,
+  direction: NormalizedBlock["direction"],
+  ordinal: number,
+  kind: NormalizedBlock["kind"],
+  text: string,
+): NormalizedBlock {
+  return {
+    id,
+    call_id: callId,
+    direction,
+    ordinal,
+    kind,
+    source: "synthetic-block-filter",
+    provider_path: "$.synthetic",
+    text,
+    char_size: text.length,
+    byte_size: new TextEncoder().encode(text).length,
+    content_hash: `${id}-hash`,
+    cache_marker: false,
   };
 }
 
