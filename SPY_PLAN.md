@@ -743,6 +743,29 @@ V1 excludes:
     `bun run test:spy-ui:unit`, `bun run build:spy`,
     `bun run test:spy-ui:e2e`, and `git diff --check`; localhost-bound tests
     and live VM work were run outside the sandbox where required.
+- Completed V1.5 P0 large-content handling:
+  - Virtualized large request and response block lists in the inspector so
+    repeated block rows do not create runaway DOM size.
+  - Replaced silent block body clipping with an explicit preview/full-text flow.
+    Large block previews are labeled, and expanded block bodies mount the full
+    captured text in a bounded readonly textarea.
+  - Preserved long-range text selection inside expanded block bodies so the
+    existing selected-text provider token counter can measure large spans such
+    as the first half of a compaction request.
+  - Kept full captured content as the source of truth for token counts, byte
+    counts, hashes, search, and diffing. No service API, SQLite schema,
+    provider adapter, or persistence changes were needed.
+  - Made raw payload and stream payload bodies collapsed by default, with
+    bounded preview/full-text expansion instead of silent truncation.
+  - Added Playwright coverage for large synthetic request blocks, bounded DOM
+    row counts, exact selected-substring submission to `POST /api/token-count`,
+    and large raw/stream payload expansion.
+  - Fixed the expanded full-text control styling so preview and full text use
+    the same monospace font, size, line height, and letter spacing.
+  - Verified `bun run typecheck`, `bun run lint`, `bun run test:spy-ui:unit`,
+    `bun run test:spy-ui:e2e`, `bun run build:spy`, and `git diff --check`;
+    localhost-bound Playwright tests were run outside the sandbox where
+    required.
 
 ### V1
 
@@ -831,7 +854,7 @@ notes, and follow-up verification baseline were moved to
 
 Add analysis depth:
 
-- [ ] P0 viewport virtualization for all large content surfaces.
+- [x] P0 viewport virtualization for all large content surfaces.
   - The UI must handle a provider request with a one million token context
     window without freezing, scroll jumps, runaway DOM size, or silent body
     truncation.
@@ -844,6 +867,10 @@ Add analysis depth:
     optimization and must be labeled or expandable when it is not the full body.
   - Replace `clipped(...)` body rendering with explicit viewport/lazy rendering
     behavior and add regression coverage using very large synthetic blocks.
+  - Large block bodies are not line-virtualized because selected-text token
+    counting must support selecting large spans of text. Expanded blocks use a
+    bounded readonly textarea that mounts the full block text and preserves
+    native selection behavior.
 - [x] Shared token-count contracts for `call`, `section`, `block`, and
   `selection` subjects.
 - [x] Provider-only token-count mode. Local estimates and `estimated`
