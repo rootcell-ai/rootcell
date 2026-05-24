@@ -892,8 +892,10 @@ Add analysis depth:
   - Pi-specific request patterns from fixtures.
   - Generic fallback heuristics.
   - Labels that distinguish Pi-specific candidates from heuristic candidates.
-- [ ] Dedicated compaction investigation view.
-- [ ] Visual regression/screenshot checks.
+- [x] Dedicated compaction investigation view closed as not needed for V1.5:
+  the existing summary label plus visible request/response blocks make real
+  harness compaction calls obvious enough for the current operator workflow.
+- [x] Visual regression/screenshot checks for stable desktop UI states.
 
 ### V2
 

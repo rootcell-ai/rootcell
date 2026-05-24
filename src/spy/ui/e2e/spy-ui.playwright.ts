@@ -1009,6 +1009,66 @@ test("clears data with confirmation", async ({ page }) => {
   await expect(page.getByText("No provider calls in this range.")).toBeVisible();
 });
 
+test.describe("visual regression screenshots", () => {
+  test("captures the selected-call desktop shell", async ({ page }) => {
+    await prepareVisualPage(page);
+    await installCacheTimelineRoutes(page);
+    await page.goto("/?since=0");
+    await timelineRow(page, CACHE_TIMELINE_CALL_ID).click();
+    await expect(page.getByTestId("inspector-section-summary")).toBeVisible();
+
+    await expect(page).toHaveScreenshot("spy-default-selected-call.png", SCREENSHOT_OPTIONS);
+  });
+
+  test("captures selected-call summary and composition", async ({ page }) => {
+    await prepareVisualPage(page);
+    await installCacheTimelineRoutes(page);
+    await page.goto("/?since=0");
+    await timelineRow(page, CACHE_TIMELINE_CALL_ID).click();
+    await expect(page.getByTestId("request-composition")).toBeVisible();
+
+    await expect(page.getByTestId("inspector")).toHaveScreenshot("spy-inspector-summary-composition.png", SCREENSHOT_OPTIONS);
+  });
+
+  test("captures the compaction candidate summary label", async ({ page }) => {
+    await prepareVisualPage(page);
+    await installCompactionRoutes(page);
+    await page.goto("/?since=0");
+    await timelineRow(page, DIFF_SCOPE_CALL_ID).click();
+    const candidate = page.getByTestId("compaction-candidate");
+    await expect(candidate).toBeVisible();
+
+    await expect(candidate).toHaveScreenshot("spy-compaction-candidate-label.png", SCREENSHOT_OPTIONS);
+  });
+
+  test("captures large-content preview and expansion controls", async ({ page }) => {
+    await prepareVisualPage(page);
+    await installLargeContentRoutes(page);
+    await page.goto("/?since=0");
+    await expect(page.getByTestId("timeline-row")).toHaveCount(1);
+    await page.getByTestId("inspector-nav-request-blocks").click();
+
+    const largeBlock = page.getByTestId("block-row-large-request-000");
+    await expect(largeBlock.getByText("Preview", { exact: true })).toBeVisible();
+    await largeBlock.getByRole("button", { name: "Show Full Text" }).click();
+    await expect(largeBlock.getByTestId("block-body-full")).toBeVisible();
+
+    await expect(largeBlock).toHaveScreenshot("spy-large-content-expanded-block.png", SCREENSHOT_OPTIONS);
+  });
+
+  test("captures the clear-data confirmation dialog", async ({ page }) => {
+    await prepareVisualPage(page);
+    await installCacheTimelineRoutes(page);
+    await page.goto("/?since=0");
+    await expect(page.getByTestId("timeline-row")).toHaveCount(1);
+    await page.getByLabel("Clear spy data").click();
+    const dialog = page.getByRole("dialog", { name: "Clear Spy Data" });
+    await expect(dialog).toBeVisible();
+
+    await expect(dialog).toHaveScreenshot("spy-clear-data-dialog.png", SCREENSHOT_OPTIONS);
+  });
+});
+
 async function readRangeState(page: Page): Promise<{
   readonly activeButtons: readonly string[];
   readonly subtitle: string;
@@ -1048,6 +1108,10 @@ const BLOCK_FILTER_CALL_B_ID = "call-block-filter-b";
 const BLOCK_FILTER_TS = 1779563000;
 const LARGE_CONTENT_CALL_ID = "call-large-content";
 const LARGE_CONTENT_TS = 1779563200;
+const SCREENSHOT_OPTIONS = {
+  animations: "disabled" as const,
+  maxDiffPixelRatio: 0.01,
+};
 const BLOCK_KINDS: readonly NormalizedBlock["kind"][] = [
   "provider-envelope",
   "harness-system-context",
@@ -1063,6 +1127,34 @@ const BLOCK_KINDS: readonly NormalizedBlock["kind"][] = [
   "media-summary",
   "unknown",
 ];
+
+async function prepareVisualPage(page: Page): Promise<void> {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.addInitScript(() => {
+    class StableEventSource extends EventTarget {
+      readonly url: string;
+      readyState = 1;
+
+      constructor(url: string | URL) {
+        super();
+        this.url = String(url);
+        setTimeout(() => {
+          this.dispatchEvent(new Event("open"));
+        }, 0);
+      }
+
+      close(): void {
+        this.readyState = 2;
+      }
+    }
+
+    Object.defineProperty(window, "EventSource", {
+      configurable: true,
+      writable: true,
+      value: StableEventSource,
+    });
+  });
+}
 
 async function installHeavyStreamRoutes(page: Page): Promise<void> {
   const fixture = heavyStreamFixture();
