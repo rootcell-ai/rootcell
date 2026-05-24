@@ -34,6 +34,13 @@ code {
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 }
 
+.spy-text-font {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.75rem;
+  letter-spacing: 0;
+  line-height: 1.25rem;
+}
+
 ::selection {
   background: #0f766e;
   color: white;

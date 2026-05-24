@@ -1,6 +1,7 @@
 import { expect, type Locator, type Page, type Route, test } from "@playwright/test";
 import type {
   NormalizedBlock,
+  RawPayloadRecord,
   SpyCallDetail,
   SpyCallDiff,
   SpyCallSummary,
@@ -895,6 +896,83 @@ test("shows backend token provenance and counts selected block text", async ({ p
   await expect(block.getByTestId("selection-token-count")).toContainText("provider counted");
 });
 
+test("virtualizes large block lists while preserving large block text selection", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  const fixture = largeContentFixture();
+  const expectedSelection = fixture.largeText.slice(0, Math.floor(fixture.largeText.length / 2));
+  const tokenCapture = { count: 0, sawExpectedSelection: false, lastLength: 0 };
+  await installLargeContentRoutes(page, { expectedSelection, tokenCapture });
+
+  await page.goto("/?since=0");
+  await expect(page.getByTestId("timeline-row")).toHaveCount(1);
+  await page.getByTestId("inspector-nav-request-blocks").click();
+
+  const virtualList = page.getByTestId("virtual-block-list").first();
+  await expect(virtualList).toBeVisible();
+  await expect(page.getByTestId("block-row-large-request-000")).toBeVisible();
+
+  const initialMetrics = await page.evaluate(() => ({
+    mountedRows: document.querySelectorAll('[data-testid^="block-row-"]').length,
+    fullTextControls: document.querySelectorAll('textarea[data-testid="block-body-full"]').length,
+  }));
+  expect(initialMetrics.mountedRows).toBeLessThan(40);
+  expect(initialMetrics.fullTextControls).toBe(0);
+
+  const largeBlock = page.getByTestId("block-row-large-request-000");
+  await expect(largeBlock.getByText("Preview", { exact: true })).toBeVisible();
+  await largeBlock.getByRole("button", { name: "Show Full Text" }).click();
+  const fullText = largeBlock.getByTestId("block-body-full");
+  await expect(fullText).toBeVisible();
+
+  const selectionLength = expectedSelection.length;
+  await fullText.evaluate((element, end) => {
+    if (!(element instanceof HTMLTextAreaElement)) {
+      throw new Error("large block full text is not a textarea");
+    }
+    element.focus();
+    element.setSelectionRange(0, end);
+  }, selectionLength);
+
+  await largeBlock.getByTestId("selection-count-large-request-000").click();
+  await expect(largeBlock.getByTestId("selection-token-count")).toContainText("12,345 tok");
+  expect(tokenCapture.count).toBe(1);
+  expect(tokenCapture.lastLength).toBe(expectedSelection.length);
+  expect(tokenCapture.sawExpectedSelection).toBe(true);
+});
+
+test("keeps large raw and stream payloads collapsed and bounded", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await installLargeContentRoutes(page);
+
+  await page.goto("/?since=0");
+  await expect(page.getByTestId("timeline-row")).toHaveCount(1);
+
+  await page.getByTestId("inspector-nav-stream").click();
+  await page.getByRole("button", { name: "Load Stream Events" }).click();
+  await page.getByTestId("stream-event-card").first().getByRole("button", { name: "Show Payload" }).click();
+  await expect(page.getByTestId("stream-event-payload")).toHaveCount(1);
+  await expect(page.getByTestId("stream-event-payload-body-preview")).toBeVisible();
+  await expect(page.getByTestId("stream-event-payload-body-full")).toHaveCount(0);
+  await page.getByTestId("stream-event-payload").getByRole("button", { name: "Show Full Text" }).click();
+  await expect(page.getByTestId("stream-event-payload-body-full")).toBeVisible();
+
+  await page.getByTestId("inspector-nav-raw").click();
+  await expect(page.getByTestId("raw-payload-card")).toBeVisible();
+  await expect(page.getByTestId("raw-payload-body")).toHaveCount(0);
+  await page.getByTestId("raw-payload-card").getByRole("button", { name: "Show Payload" }).click();
+  await expect(page.getByTestId("raw-payload-body")).toBeVisible();
+  await expect(page.getByTestId("raw-payload-text-preview")).toBeVisible();
+  await page.getByTestId("raw-payload-body").getByRole("button", { name: "Show Full Text" }).click();
+  await expect(page.getByTestId("raw-payload-text-full")).toBeVisible();
+
+  const payloadMetrics = await page.evaluate(() => ({
+    streamPayloadHeight: document.querySelector('[data-testid="stream-event-payload"]')?.getBoundingClientRect().height ?? 0,
+    rawPayloadHeight: document.querySelector('[data-testid="raw-payload-body"]')?.getBoundingClientRect().height ?? 0,
+  }));
+  expect(payloadMetrics.streamPayloadHeight).toBeLessThan(700);
+  expect(payloadMetrics.rawPayloadHeight).toBeLessThan(700);
+});
+
 test("traps focus in the clear data dialog and closes with Escape", async ({ page }) => {
   await page.goto("/?since=0");
   await expect(page.getByTestId("timeline-row")).toHaveCount(5);
@@ -968,6 +1046,8 @@ const NETWORK_METADATA_RAW_PATH = "/model/us.anthropic.claude-haiku-4-5-20251001
 const BLOCK_FILTER_CALL_A_ID = "call-block-filter-a";
 const BLOCK_FILTER_CALL_B_ID = "call-block-filter-b";
 const BLOCK_FILTER_TS = 1779563000;
+const LARGE_CONTENT_CALL_ID = "call-large-content";
+const LARGE_CONTENT_TS = 1779563200;
 const BLOCK_KINDS: readonly NormalizedBlock["kind"][] = [
   "provider-envelope",
   "harness-system-context",
@@ -1028,6 +1108,58 @@ async function installHeavyStreamRoutes(page: Page): Promise<void> {
         tokens: subject?.type === "selection" ? 5 : 77,
         provenance: "provider_counted",
         countedAt: HEAVY_STREAM_TS + 3,
+      }],
+    });
+  });
+  await page.route(/\/api\/calls(?:\?.*)?$/, async (route) => {
+    await fulfillJson(route, { items: [fixture.summary] });
+  });
+  await page.route(/\/api\/search(?:\?.*)?$/, async (route) => {
+    await fulfillJson(route, { items: [fixture.summary] });
+  });
+}
+
+async function installLargeContentRoutes(page: Page, options: {
+  readonly expectedSelection?: string | undefined;
+  readonly tokenCapture?: { count: number; sawExpectedSelection: boolean; lastLength: number } | undefined;
+} = {}): Promise<void> {
+  const fixture = largeContentFixture();
+  await page.route(/\/api\/health$/, async (route) => {
+    await fulfillJson(route, fixture.health);
+  });
+  await page.route(/\/api\/calls\/call-large-content\/stream-events(?:\?.*)?$/, async (route) => {
+    await fulfillJson(route, { items: fixture.streamEvents });
+  });
+  await page.route(/\/api\/calls\/call-large-content\/diff$/, async (route) => {
+    await fulfillJson(route, fixture.diff);
+  });
+  await page.route(/\/api\/calls\/call-large-content$/, async (route) => {
+    await fulfillJson(route, fixture.detail);
+  });
+  await page.route(/\/api\/token-count$/, async (route) => {
+    const body = await route.request().postDataJSON() as {
+      readonly subjects?: readonly { readonly type: string; readonly callId?: string; readonly text?: string }[];
+    };
+    const subject = body.subjects?.[0];
+    const selectedText = subject?.text ?? "";
+    if (options.tokenCapture !== undefined) {
+      options.tokenCapture.count += 1;
+      options.tokenCapture.lastLength = selectedText.length;
+      options.tokenCapture.sawExpectedSelection = selectedText === options.expectedSelection;
+    }
+    await fulfillJson(route, {
+      mode: "provider",
+      records: [{
+        subjectType: "selection",
+        callId: subject?.callId ?? LARGE_CONTENT_CALL_ID,
+        direction: "request",
+        kind: "current-user-input",
+        label: "selection",
+        sourceHash: "large-content-selection-hash",
+        modelId: HEAVY_STREAM_MODEL_ID,
+        tokens: 12_345,
+        provenance: "provider_counted",
+        countedAt: LARGE_CONTENT_TS + 3,
       }],
     });
   });
@@ -1682,6 +1814,121 @@ function heavyStreamFixture(): {
   };
 }
 
+function largeContentFixture(): {
+  readonly summary: SpyCallSummary;
+  readonly detail: SpyCallDetail;
+  readonly diff: SpyCallDiff;
+  readonly health: SpyServiceHealth;
+  readonly streamEvents: readonly StreamEvent[];
+  readonly largeText: string;
+} {
+  const usage = {
+    inputTokens: 90_000,
+    outputTokens: 100,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    totalTokens: 90_100,
+  };
+  const largeText = largeTextFixture("compaction-user-message", 1_600);
+  const rawPayloadText = largeTextFixture("raw-provider-payload", 1_000);
+  const streamPayloadText = largeTextFixture("stream-provider-payload", 900);
+  const requestBlocks = [
+    largeContentBlock("large-request-000", "request", 0, "current-user-input", largeText),
+    ...Array.from({ length: 139 }, (_, index) => largeContentBlock(
+      `large-request-${String(index + 1).padStart(3, "0")}`,
+      "request",
+      index + 1,
+      index % 5 === 0 ? "prior-conversation-history" : "harness-system-context",
+      `synthetic context block ${String(index + 1)} ${"ctx ".repeat(20)}`,
+    )),
+  ];
+  const responseBlocks = [
+    largeContentBlock("large-response-000", "response", 0, "assistant-output", "large content fixture response"),
+  ];
+  const blocks = [...requestBlocks, ...responseBlocks];
+  const requestByteSize = requestBlocks.reduce((total, block) => total + block.byte_size, 0);
+  const responseByteSize = responseBlocks.reduce((total, block) => total + block.byte_size, 0);
+  const call = {
+    id: LARGE_CONTENT_CALL_ID,
+    provider: "bedrock" as const,
+    operation: "converse-stream",
+    model_id: HEAVY_STREAM_MODEL_ID,
+    status: "complete" as const,
+    started_at: LARGE_CONTENT_TS,
+    completed_at: LARGE_CONTENT_TS + 2,
+    status_code: 200,
+    request_flow_id: "large-content-flow",
+    response_flow_id: "large-content-flow",
+    request_content_hash: "large-content-request-hash",
+    response_content_hash: "large-content-response-hash",
+  };
+  const summary: SpyCallSummary = {
+    call,
+    durationMs: 2000,
+    usage,
+    requestBlockCount: requestBlocks.length,
+    responseBlockCount: responseBlocks.length,
+    requestByteSize,
+    responseByteSize,
+    cacheMarkerCount: 0,
+    streamEventCount: 1,
+    rawPayloadCount: 1,
+  };
+  const rawPayload: RawPayloadRecord = {
+    id: "raw-large-content-request",
+    call_id: LARGE_CONTENT_CALL_ID,
+    direction: "request",
+    content_type: "application/json",
+    body_text: rawPayloadText,
+    body_sha256: "raw-large-content-sha",
+  };
+  const detail: SpyCallDetail = {
+    summary,
+    requestComposition: {
+      ...requestComposition(usage),
+      totalBlockCount: requestBlocks.length,
+      totalMessageCount: 1,
+      totalCharSize: requestBlocks.reduce((total, block) => total + block.char_size, 0),
+      totalByteSize: requestByteSize,
+    },
+    compaction: noCompaction(summary),
+    tokenCounts: tokenCountsFor(summary, blocks),
+    httpEvents: [],
+    blocks,
+    usageRecords: [],
+    rawPayloads: [rawPayload],
+  };
+  return {
+    summary,
+    detail,
+    diff: {
+      call: summary,
+      previousCall: null,
+      blocks: requestBlocks.map((block) => ({ block, classification: "new" as const })),
+    },
+    health: healthFixture(1, LARGE_CONTENT_TS),
+    streamEvents: [{
+      id: "stream-large-content-000",
+      call_id: LARGE_CONTENT_CALL_ID,
+      ordinal: 0,
+      event_type: "contentBlockDelta",
+      headers: {
+        ":event-type": "contentBlockDelta",
+        ":content-type": "application/json",
+      },
+      payload: {
+        contentBlockIndex: 0,
+        delta: {
+          text: streamPayloadText,
+        },
+      },
+      payload_sha256: "stream-large-content-sha",
+      observed_at: LARGE_CONTENT_TS + 1,
+    }],
+    largeText,
+  };
+}
+
 function healthFixture(providerCallCount: number, lastIngestAt: number): SpyServiceHealth {
   return {
     ok: true,
@@ -1858,6 +2105,35 @@ function normalizedBlock(
     content_hash: `${id}-hash`,
     cache_marker: false,
   };
+}
+
+function largeContentBlock(
+  id: string,
+  direction: NormalizedBlock["direction"],
+  ordinal: number,
+  kind: NormalizedBlock["kind"],
+  text: string,
+): NormalizedBlock {
+  return {
+    id,
+    call_id: LARGE_CONTENT_CALL_ID,
+    direction,
+    ordinal,
+    kind,
+    source: "synthetic-large-content",
+    provider_path: "$.synthetic.large",
+    text,
+    char_size: text.length,
+    byte_size: new TextEncoder().encode(text).length,
+    content_hash: `${id}-hash`,
+    cache_marker: false,
+  };
+}
+
+function largeTextFixture(label: string, lineCount: number): string {
+  return Array.from({ length: lineCount }, (_, index) => (
+    `${label} line ${String(index).padStart(4, "0")} ${"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".repeat(3)}`
+  )).join("\n");
 }
 
 function diffScopeBlock(

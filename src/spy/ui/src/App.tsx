@@ -26,7 +26,6 @@ import { Select } from "./components/ui/select.tsx";
 import {
   blockKindLabel,
   blockText,
-  clipped,
   formatBytes,
   formatCount,
   formatDateTime,
@@ -62,8 +61,13 @@ const api = new SpyApiClient();
 const CALL_LIMIT = 100;
 const ALL_FILTER = "all";
 const TIMELINE_ROW_ESTIMATE = 138;
+const BLOCK_LIST_VIRTUALIZE_MIN_ITEMS = 24;
+const BLOCK_ROW_ESTIMATE = 230;
+const BLOCK_LIST_VIEWPORT_HEIGHT = 680;
 const BLOCK_SECTION_AUTO_OPEN_MAX_BLOCKS = 6;
 const BLOCK_SECTION_AUTO_OPEN_MAX_BYTES = 24 * 1024;
+const BLOCK_BODY_PREVIEW_CHARS = 6_000;
+const RAW_PAYLOAD_PREVIEW_CHARS = 4_000;
 const STREAM_EVENT_WINDOW_SIZE = 25;
 const STREAM_EVENT_PAYLOAD_PREVIEW_CHARS = 4_000;
 const BLOCK_KIND_OPTIONS: readonly NormalizedBlock["kind"][] = [
@@ -1122,8 +1126,14 @@ function InspectorContent(props: {
   readonly onStreamWindowStart: (windowStart: number) => void;
   readonly onToggleStreamPayload: (eventId: string) => void;
 }): React.ReactElement {
-  const requestBlocks = props.detail.blocks.filter((block) => block.direction === "request");
-  const responseBlocks = props.detail.blocks.filter((block) => block.direction === "response");
+  const requestBlocks = React.useMemo(
+    () => props.detail.blocks.filter((block) => block.direction === "request"),
+    [props.detail.blocks],
+  );
+  const responseBlocks = React.useMemo(
+    () => props.detail.blocks.filter((block) => block.direction === "response"),
+    [props.detail.blocks],
+  );
   const blockSectionsDefaultOpen = shouldAutoOpenBlockSections(requestBlocks, responseBlocks);
   const diffByBlockId = React.useMemo(() => {
     return new Map(props.diff.blocks.map((entry) => [entry.block.id, entry.classification]));
@@ -1593,14 +1603,23 @@ function BlockList(props: {
   readonly diffByBlockId: ReadonlyMap<string, DiffClassification>;
   readonly tokenCounts: readonly SpyTokenCountRecord[];
 }): React.ReactElement {
-  const blocks = props.filterKind === ALL_FILTER
+  const blocks = React.useMemo(() => props.filterKind === ALL_FILTER
     ? props.blocks
-    : props.blocks.filter((block) => block.kind === props.filterKind);
+    : props.blocks.filter((block) => block.kind === props.filterKind), [props.blocks, props.filterKind]);
   if (blocks.length === 0) {
     const emptyMessage = props.filterKind === ALL_FILTER
       ? "No blocks captured in this section."
       : `No ${blockFilterLabel(props.filterKind)} blocks in this section.`;
     return <div className="rounded-md border border-stone-200 bg-stone-50 p-3 text-sm text-stone-500">{emptyMessage}</div>;
+  }
+  if (blocks.length >= BLOCK_LIST_VIRTUALIZE_MIN_ITEMS) {
+    return (
+      <VirtualizedBlockList
+        blocks={blocks}
+        diffByBlockId={props.diffByBlockId}
+        tokenCounts={props.tokenCounts}
+      />
+    );
   }
   return (
     <div className="space-y-2">
@@ -1612,6 +1631,60 @@ function BlockList(props: {
           tokenCount={tokenCountForBlock(props.tokenCounts, block.id)}
         />
       ))}
+    </div>
+  );
+}
+
+function VirtualizedBlockList(props: {
+  readonly blocks: readonly NormalizedBlock[];
+  readonly diffByBlockId: ReadonlyMap<string, DiffClassification>;
+  readonly tokenCounts: readonly SpyTokenCountRecord[];
+}): React.ReactElement {
+  const parentRef = React.useRef<HTMLDivElement | null>(null);
+  const rowVirtualizer = useVirtualizer({
+    count: props.blocks.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => BLOCK_ROW_ESTIMATE,
+    getItemKey: (index) => props.blocks[index]?.id ?? index,
+    overscan: 5,
+  });
+  const virtualItems = rowVirtualizer.getVirtualItems();
+
+  React.useEffect(() => {
+    parentRef.current?.scrollTo({ top: 0 });
+    rowVirtualizer.measure();
+  }, [props.blocks]);
+
+  return (
+    <div
+      ref={parentRef}
+      className="spy-scrollbar overflow-auto rounded-md border border-stone-200 bg-stone-100 p-2"
+      data-testid="virtual-block-list"
+      style={{ maxHeight: `${String(BLOCK_LIST_VIEWPORT_HEIGHT)}px` }}
+    >
+      <div className="relative w-full" style={{ height: `${String(rowVirtualizer.getTotalSize())}px` }}>
+        {virtualItems.map((virtualRow) => {
+          const block = props.blocks[virtualRow.index];
+          if (block === undefined) {
+            return null;
+          }
+          return (
+            <div
+              key={virtualRow.key}
+              ref={rowVirtualizer.measureElement}
+              data-index={virtualRow.index}
+              className="absolute left-0 top-0 w-full pb-2"
+              style={{ transform: `translateY(${String(virtualRow.start)}px)` }}
+            >
+              <BlockRow
+                block={block}
+                diff={props.diffByBlockId.get(block.id)}
+                tokenCount={tokenCountForBlock(props.tokenCounts, block.id)}
+              />
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -1628,9 +1701,12 @@ function BlockRow(props: {
   readonly tokenCount: SpyTokenCountRecord | undefined;
 }): React.ReactElement {
   const text = blockText(props.block);
+  const fullTextRef = React.useRef<HTMLTextAreaElement | null>(null);
   const [selectionCount, setSelectionCount] = React.useState<SpyTokenCountRecord | null>(null);
   const countSelection = (): void => {
-    const selectedText = window.getSelection()?.toString() ?? "";
+    const textareaSelectedText = selectedTextFromTextarea(fullTextRef.current, text);
+    const browserSelectedText = window.getSelection()?.toString() ?? "";
+    const selectedText = textareaSelectedText.length > 0 ? textareaSelectedText : browserSelectedText;
     if (selectedText.length === 0) {
       setSelectionCount(unavailableUiTokenCount(props.block, "select text inside a block first"));
       return;
@@ -1668,13 +1744,107 @@ function BlockRow(props: {
         </div>
       )}
       {text.length === 0 ? null : (
-        <pre className="spy-scrollbar mt-3 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-stone-950 p-3 text-xs leading-5 text-stone-50">
-          {clipped(text, 6_000)}
-        </pre>
+        <SelectableTextViewer
+          text={text}
+          previewChars={BLOCK_BODY_PREVIEW_CHARS}
+          fullTextRef={fullTextRef}
+          fullLabel={`${blockKindLabel(props.block.kind)} block body`}
+          testId="block-body"
+          variant="dark"
+        />
       )}
       <div className="mt-2 truncate text-xs text-stone-500">{props.block.provider_path ?? props.block.source}</div>
     </div>
   );
+}
+
+function selectedTextFromTextarea(textarea: HTMLTextAreaElement | null, text: string): string {
+  if (textarea === null) {
+    return "";
+  }
+  const start = Math.min(textarea.selectionStart, textarea.selectionEnd);
+  const end = Math.max(textarea.selectionStart, textarea.selectionEnd);
+  if (end <= start) {
+    return "";
+  }
+  return text.slice(start, end);
+}
+
+function SelectableTextViewer(props: {
+  readonly text: string;
+  readonly previewChars: number;
+  readonly fullLabel: string;
+  readonly testId: string;
+  readonly variant?: "dark" | "light" | undefined;
+  readonly fullTextRef?: React.RefObject<HTMLTextAreaElement | null> | undefined;
+}): React.ReactElement {
+  const [expanded, setExpanded] = React.useState(false);
+  const isLarge = props.text.length > props.previewChars;
+  const variant = props.variant ?? "light";
+  if (!isLarge) {
+    return (
+      <pre className={textViewerClassName(variant)} data-testid={`${props.testId}-full`}>
+        {props.text}
+      </pre>
+    );
+  }
+  const previewText = textPreview(props.text, props.previewChars);
+  return (
+    <div className="mt-3 rounded-md border border-stone-700/20 bg-white/5 p-2" data-testid={`${props.testId}-viewer`}>
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge tone="amber">Preview</Badge>
+        <span className={cn("text-xs", variant === "dark" ? "text-stone-300" : "text-stone-500")}>
+          Showing {formatNumber(previewText.length)} of {formatNumber(props.text.length)} chars
+        </span>
+        <Button
+          type="button"
+          className="ml-auto"
+          variant="secondary"
+          size="sm"
+          onClick={() => {
+            setExpanded((current) => !current);
+          }}
+        >
+          {expanded ? "Hide Full Text" : "Show Full Text"}
+        </Button>
+      </div>
+      {expanded ? (
+        <textarea
+          ref={props.fullTextRef}
+          aria-label={props.fullLabel}
+          className={cn(
+            "spy-scrollbar spy-text-font mt-2 h-80 w-full resize-y overflow-auto rounded-md border p-3 text-xs leading-5 outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 focus-visible:ring-offset-2",
+            variant === "dark"
+              ? "border-stone-700 bg-stone-950 text-stone-50"
+              : "border-stone-200 bg-white text-stone-700",
+          )}
+          data-testid={`${props.testId}-full`}
+          readOnly
+          spellCheck={false}
+          value={props.text}
+        />
+      ) : (
+        <pre className={textViewerClassName(variant)} data-testid={`${props.testId}-preview`}>
+          {previewText}
+          {"\n..."}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+function textViewerClassName(variant: "dark" | "light"): string {
+  return cn(
+    "spy-scrollbar mt-3 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md p-3 text-xs leading-5",
+    "spy-text-font",
+    variant === "dark"
+      ? "bg-stone-950 text-stone-50"
+      : "bg-white text-stone-700",
+  );
+}
+
+function textPreview(text: string, maxChars: number): string {
+  return text.slice(0, maxChars).trimEnd();
 }
 
 function DiffPanel(props: {
@@ -1910,9 +2080,14 @@ function StreamEventRow(props: {
         </Button>
       </div>
       {props.expanded ? (
-        <pre className="mt-2 whitespace-pre-wrap break-words rounded-md bg-white p-3 text-xs text-stone-700" data-testid="stream-event-payload">
-          {clipped(payloadText, STREAM_EVENT_PAYLOAD_PREVIEW_CHARS)}
-        </pre>
+        <div data-testid="stream-event-payload">
+          <SelectableTextViewer
+            text={payloadText}
+            previewChars={STREAM_EVENT_PAYLOAD_PREVIEW_CHARS}
+            fullLabel="Stream event payload"
+            testId="stream-event-payload-body"
+          />
+        </div>
       ) : null}
     </div>
   );
@@ -1932,21 +2107,48 @@ function RawPayloadPanel(props: {
   return (
     <div className="space-y-2">
       {props.rawPayloads.map((payload) => (
-        <div key={payload.id} className="rounded-md border border-stone-200 bg-stone-50 p-3">
-          <div className="flex items-center gap-2">
-            <Badge tone={payload.direction === "request" ? "teal" : "green"}>{payload.direction}</Badge>
-            <span className="text-xs text-stone-500">{payload.content_type ?? payload.body_encoding ?? "payload"} · {payload.body_sha256 ?? "no hash"}</span>
-          </div>
-          {payload.body_text === undefined ? (
-            <div className="mt-2 text-xs text-stone-500">base64 payload · {payload.body_b64 === undefined ? "not available" : `${formatNumber(payload.body_b64.length)} encoded chars`}</div>
-          ) : (
-            <pre className="spy-scrollbar mt-2 max-h-52 overflow-auto whitespace-pre-wrap break-words rounded-md bg-white p-3 text-xs text-stone-700">
-              {clipped(payload.body_text, 4_000)}
-            </pre>
-          )}
-        </div>
+        <RawPayloadRow key={payload.id} payload={payload} />
       ))}
       <div className="text-xs text-stone-500">Stored payload records: {formatNumber(props.rawPayloadCount)}</div>
+    </div>
+  );
+}
+
+function RawPayloadRow(props: { readonly payload: RawPayloadRecord }): React.ReactElement {
+  const [expanded, setExpanded] = React.useState(false);
+  const payload = props.payload;
+  return (
+    <div className="rounded-md border border-stone-200 bg-stone-50 p-3" data-testid="raw-payload-card">
+      <div className="flex items-center gap-2">
+        <Badge tone={payload.direction === "request" ? "teal" : "green"}>{payload.direction}</Badge>
+        <span className="min-w-0 truncate text-xs text-stone-500">{payload.content_type ?? payload.body_encoding ?? "payload"} · {payload.body_sha256 ?? "no hash"}</span>
+        {payload.body_text === undefined ? null : (
+          <Button
+            type="button"
+            className="ml-auto"
+            size="sm"
+            onClick={() => {
+              setExpanded((current) => !current);
+            }}
+          >
+            {expanded ? "Hide Payload" : "Show Payload"}
+          </Button>
+        )}
+      </div>
+      {payload.body_text === undefined ? (
+        <div className="mt-2 text-xs text-stone-500">base64 payload · {payload.body_b64 === undefined ? "not available" : `${formatNumber(payload.body_b64.length)} encoded chars`}</div>
+      ) : expanded ? (
+        <div data-testid="raw-payload-body">
+          <SelectableTextViewer
+            text={payload.body_text}
+            previewChars={RAW_PAYLOAD_PREVIEW_CHARS}
+            fullLabel="Raw provider payload"
+            testId="raw-payload-text"
+          />
+        </div>
+      ) : (
+        <div className="mt-2 text-xs text-stone-500">Payload body collapsed.</div>
+      )}
     </div>
   );
 }
