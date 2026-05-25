@@ -1,6 +1,18 @@
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import { parseRootcellArgs } from "./args.ts";
+import {
+  ensureExtensionsConfig,
+  formatExtensionsList,
+  parseExtensionsConfig,
+  renderExtensionsConfig,
+  setExtensionEnabled,
+} from "./extensions/config.ts";
+import {
+  GENERATED_EXTENSION_HOOK_FILES,
+  renderExtensionNixAggregator,
+  writeExtensionNixAggregators,
+} from "./extensions/nix.ts";
 import { ROOTCELL_SUBCOMMANDS } from "./metadata.ts";
 import { loadDotEnv, parseSecretMappings } from "./env.ts";
 import { resolveHostTool } from "./host-tools.ts";
@@ -42,7 +54,7 @@ import {
 } from "./images.ts";
 import { forgetKnownHost, sshConfig } from "./transports/proxyjump-ssh.ts";
 import { dnsmasqAllowlistConfig, generatedLineCount } from "../bin/reload.ts";
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -160,8 +172,50 @@ describe("rootcell argument parsing", () => {
       spyOptions: { open: true },
     });
 
+    const extensions = runArgs(["edit", "extensions"]);
+    expectRunArgs(extensions);
+    expect(extensions).toEqual({
+      kind: "run",
+      instanceName: "default",
+      subcommand: "edit",
+      rest: ["extensions"],
+      spyOptions: { open: true },
+    });
+
     expect(() => parseRootcellArgs(["edit"])).toThrow();
     expect(() => parseRootcellArgs(["edit", "smtp"])).toThrow();
+  });
+
+  test("parses extension subcommands", () => {
+    const list = runArgs(["extension", "list"]);
+    expectRunArgs(list);
+    expect(list).toEqual({
+      kind: "run",
+      instanceName: "default",
+      subcommand: "extension",
+      rest: ["list"],
+      spyOptions: { open: true },
+    });
+
+    const enable = runArgs(["--instance", "dev", "extension", "enable", "subagent"]);
+    expectRunArgs(enable);
+    expect(enable).toEqual({
+      kind: "run",
+      instanceName: "dev",
+      subcommand: "extension",
+      rest: ["enable", "subagent"],
+      spyOptions: { open: true },
+    });
+
+    const missingNestedCommand = runArgs(["extension"]);
+    expectRunArgs(missingNestedCommand);
+    expect(missingNestedCommand).toEqual({
+      kind: "run",
+      instanceName: "default",
+      subcommand: "extension",
+      rest: [],
+      spyOptions: { open: true },
+    });
   });
 
   test("parses pass-through guest commands", () => {
@@ -438,6 +492,103 @@ describe("environment parsing", () => {
       ROOTCELL_AWS_REGION: "us-west-2",
       ROOTCELL_AWS_CONTROL_CIDR: "999.51.100.10/32",
     })).toThrow("IPv4 CIDR");
+  });
+});
+
+describe("rootcell extension config", () => {
+  test("parses extension booleans and unknown valid keys", () => {
+    const config = parseExtensionsConfig([
+      "# local extension choices",
+      "subagent=yes",
+      "plannotator",
+      "future-extension=off",
+      "",
+    ].join("\n"));
+
+    expect(config.enabled.has("subagent")).toBe(true);
+    expect(config.enabled.has("plannotator")).toBe(false);
+    expect(config.unknownKeys).toEqual(["future-extension"]);
+  });
+
+  test("rejects invalid extension keys, values, and duplicates", () => {
+    expect(() => parseExtensionsConfig("Bad=true\n")).toThrow("invalid extension key");
+    expect(() => parseExtensionsConfig("subagent=maybe\n")).toThrow("invalid boolean value");
+    expect(() => parseExtensionsConfig("subagent=true\nsubagent=false\n")).toThrow("duplicate extension key");
+  });
+
+  test("preserves comments, ordering, and unknown keys while appending missing known keys", () => {
+    const rendered = renderExtensionsConfig(parseExtensionsConfig([
+      "# keep this",
+      "future-extension=true",
+      "",
+      "subagent=off",
+      "",
+    ].join("\n")), new Map([["subagent", true]]));
+
+    expect(rendered).toBe([
+      "# keep this",
+      "future-extension=true",
+      "",
+      "subagent=true",
+      "plannotator=false",
+      "",
+    ].join("\n"));
+  });
+
+  test("seeds and rewrites extensions.txt idempotently", () => {
+    const repo = makeInstanceRepo();
+    try {
+      const path = join(repo, "extensions.txt");
+      const seeded = ensureExtensionsConfig(path);
+      expect(formatExtensionsList(seeded)).toContain("plannotator  disabled");
+      expect(readFileSync(path, "utf8")).toBe("plannotator=false\nsubagent=false\n");
+
+      const enabled = setExtensionEnabled(path, "subagent", true);
+      expect(enabled.changed).toBe(true);
+      expect(readFileSync(path, "utf8")).toBe("plannotator=false\nsubagent=true\n");
+
+      const enabledAgain = setExtensionEnabled(path, "subagent", true);
+      expect(enabledAgain.changed).toBe(false);
+      expect(readFileSync(path, "utf8")).toBe("plannotator=false\nsubagent=true\n");
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("rootcell extension Nix hooks", () => {
+  test("renders empty aggregators when no extensions are enabled", () => {
+    expect(renderExtensionNixAggregator(parseExtensionsConfig("subagent=false\n"), "homeManager")).toBe([
+      "# Generated by ./rootcell from this instance's extensions.txt. DO NOT EDIT.",
+      "{ ... }:",
+      "{",
+      "  imports = [",
+      "  ];",
+      "}",
+      "",
+    ].join("\n"));
+  });
+
+  test("renders enabled Home Manager extension imports", () => {
+    const rendered = renderExtensionNixAggregator(parseExtensionsConfig("subagent=true\n"), "homeManager");
+    expect(rendered).toContain("../extensions/subagent/home-manager.nix");
+    expect(renderExtensionNixAggregator(parseExtensionsConfig("subagent=true\n"), "agentNixos")).not.toContain("../extensions/subagent");
+  });
+
+  test("writes the explicit generated hook files", () => {
+    const repo = makeInstanceRepo();
+    try {
+      const generatedDir = join(repo, "generated");
+      mkdirSync(generatedDir, { recursive: true });
+      writeExtensionNixAggregators(generatedDir, parseExtensionsConfig("subagent=true\n"));
+
+      for (const file of GENERATED_EXTENSION_HOOK_FILES) {
+        expect(readFileSync(join(generatedDir, file), "utf8")).toContain("Generated by ./rootcell");
+      }
+      expect(readFileSync(join(generatedDir, "extensions-home-manager.nix"), "utf8")).toContain("../extensions/subagent/home-manager.nix");
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 });
 
@@ -1072,6 +1223,7 @@ describe("VM and network providers", () => {
     expect(commonModule).toContain("networking.nat.enable = lib.mkForce false;");
 
     const firewallModule = readFileSync("firewall-vm.nix", "utf8");
+    expect(firewallModule).toContain("extensions-firewall-vm.nix");
     expect(firewallModule).toContain("systemd.network.wait-online.enable = false;");
     expect(firewallModule).toContain("linkConfig.RequiredForOnline = false;");
     expect(firewallModule).toContain("Rootcell keeps DHCP routes and DNS disabled");
@@ -1099,16 +1251,23 @@ describe("VM and network providers", () => {
     const rootcellSource = readFileSync("src/rootcell/rootcell.ts", "utf8");
     expect(rootcellSource).toContain("\"dist/spy-service.js\"");
     expect(rootcellSource).toContain("\"dist/spy-ui\"");
+    expect(rootcellSource).toContain("GENERATED_EXTENSION_HOOK_FILES");
+    expect(rootcellSource).toContain("copyGeneratedExtensionsIntoVm");
     expect(rootcellSource).toContain("private guestFlakeRef");
     expect(rootcellSource).toContain("path:${this.config.guestRepoDir}#");
     expect(rootcellSource).toContain("sudo grep -Eq '^ROOTCELL_SPY_ENABLED=");
     expect(rootcellSource).not.toContain("private async installFirewallSpyAssets");
 
     const agentModule = readFileSync("agent-vm.nix", "utf8");
+    expect(agentModule).toContain("extensions-agent-vm.nix");
     expect(agentModule).toContain('DHCP = "ipv4";');
     expect(agentModule).toContain("UseDNS = false;");
     expect(agentModule).toContain("UseRoutes = false;");
     expect(agentModule).toContain("PreferredSource = net.agentIp;");
+
+    const homeModule = readFileSync("home.nix", "utf8");
+    expect(homeModule).toContain("extensions-home-manager.nix");
+    expect(homeModule).not.toContain(".pi/agent/extensions/subagent");
   });
 
   test("user-v2 proof gate rejects extra agent interfaces and default-route bypasses", () => {
@@ -1871,6 +2030,70 @@ describe("rootcell edit command", () => {
     }
   });
 
+  test("opens the selected instance extensions file in EDITOR", async () => {
+    const repo = makeInstanceRepo();
+    const oldRootcellStateDir = process.env.ROOTCELL_STATE_DIR;
+    const oldEditor = process.env.EDITOR;
+    const oldRecord = process.env.ROOTCELL_EDITOR_RECORD;
+    try {
+      mkdirSync(join(repo, "src", "bin"), { recursive: true });
+      writeFileSync(join(repo, "flake.nix"), "{}\n", "utf8");
+
+      const editor = join(repo, "editor.sh");
+      const record = join(repo, "opened.txt");
+      writeFileSync(editor, "#!/bin/sh\nprintf '%s\\n' \"$1\" > \"$ROOTCELL_EDITOR_RECORD\"\n", "utf8");
+      chmodSync(editor, 0o700);
+
+      process.env.ROOTCELL_STATE_DIR = join(repo, ".state");
+      process.env.EDITOR = editor;
+      process.env.ROOTCELL_EDITOR_RECORD = record;
+
+      const status = await rootcellMain(["--instance", "dev", "edit", "extensions"], join(repo, "src", "bin", "rootcell.ts"));
+
+      expect(status).toBe(0);
+      expect(readFileSync(record, "utf8").trim()).toBe(join(repo, ".state", "dev", "extensions.txt"));
+      expect(readFileSync(join(repo, ".state", "dev", "extensions.txt"), "utf8")).toBe("plannotator=false\nsubagent=false\n");
+    } finally {
+      restoreEnv("ROOTCELL_STATE_DIR", oldRootcellStateDir);
+      restoreEnv("EDITOR", oldEditor);
+      restoreEnv("ROOTCELL_EDITOR_RECORD", oldRecord);
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("rootcell extension command", () => {
+  test("lists, enables, disables, and rejects unknown extensions", () => {
+    const repo = makeInstanceRepo();
+    try {
+      const env = { ...process.env, ROOTCELL_STATE_DIR: join(repo, ".state") };
+      const list = runCapture("./rootcell", ["--instance", "dev", "extension", "list"], { env });
+      expect(list.stdout).toContain("plannotator  disabled");
+      expect(list.stdout).toContain("subagent     disabled");
+      expect(readFileSync(join(repo, ".state", "dev", "extensions.txt"), "utf8")).toBe("plannotator=false\nsubagent=false\n");
+
+      const enable = runCapture("./rootcell", ["--instance", "dev", "extension", "enable", "subagent"], { env });
+      expect(enable.stdout).toContain("subagent enabled for instance 'dev'.");
+      expect(enable.stdout).toContain("run ./rootcell --instance dev provision to apply VM changes.");
+      expect(readFileSync(join(repo, ".state", "dev", "extensions.txt"), "utf8")).toBe("plannotator=false\nsubagent=true\n");
+
+      const enableAgain = runCapture("./rootcell", ["--instance", "dev", "extension", "enable", "subagent"], { env });
+      expect(enableAgain.stdout).toContain("subagent already enabled for instance 'dev'.");
+
+      const disable = runCapture("./rootcell", ["--instance", "dev", "extension", "disable", "subagent"], { env });
+      expect(disable.stdout).toContain("subagent disabled for instance 'dev'.");
+      expect(readFileSync(join(repo, ".state", "dev", "extensions.txt"), "utf8")).toBe("plannotator=false\nsubagent=false\n");
+
+      const invalid = runCapture("./rootcell", ["--instance", "dev", "extension", "enable", "missing"], { env, allowFailure: true });
+      expect(invalid.status).toBe(2);
+      expect(invalid.stderr).toContain("unknown extension id 'missing'");
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("rootcell edit env command", () => {
   test("opens the selected instance environment in EDITOR", async () => {
     const repo = makeInstanceRepo();
     const oldRootcellStateDir = process.env.ROOTCELL_STATE_DIR;
@@ -1935,6 +2158,37 @@ describe("shell completions", () => {
       expect(choices).toContain(subcommand.name);
     }
   });
+
+  test("extension completions use selected instance state without seeding", () => {
+    const repo = makeInstanceRepo();
+    try {
+      const stateDir = join(repo, ".state");
+      const instanceDir = join(stateDir, "dev");
+      mkdirSync(instanceDir, { recursive: true });
+      writeFileSync(join(instanceDir, "extensions.txt"), "plannotator=false\nsubagent=true\n", "utf8");
+      const env = completionEnv("/bin/bash");
+      env.ROOTCELL_STATE_DIR = stateDir;
+
+      const root = runCapture("./rootcell", ["--get-yargs-completions", "rootcell", "--instance", "dev", "extension", ""], { env }).stdout;
+      expect(root).toContain("list\n");
+      expect(root).toContain("enable\n");
+      expect(root).toContain("disable\n");
+
+      const enable = runCapture("./rootcell", ["--get-yargs-completions", "rootcell", "--instance", "dev", "extension", "enable", ""], { env }).stdout;
+      expect(enable).toContain("plannotator\n");
+      expect(enable).not.toContain("subagent\n");
+
+      const disable = runCapture("./rootcell", ["--get-yargs-completions", "rootcell", "--instance", "dev", "extension", "disable", ""], { env }).stdout;
+      expect(disable).toContain("subagent\n");
+      expect(disable).not.toContain("plannotator\n");
+
+      const missing = runCapture("./rootcell", ["--get-yargs-completions", "rootcell", "--instance", "new", "extension", "disable", ""], { env }).stdout;
+      expect(missing).toBe("");
+      expect(existsSync(join(stateDir, "new", "extensions.txt"))).toBe(false);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
 });
 
 function runArgs(args: readonly string[]): ParsedRootcellRunArgs {
@@ -1994,6 +2248,7 @@ function fakeInstance(name: string, repo = "/repo", env: NodeJS.ProcessEnv = {})
     dir: paths.dir,
     envPath: paths.envPath,
     secretsPath: paths.secretsPath,
+    extensionsPath: paths.extensionsPath,
     proxyDir: paths.proxyDir,
     pkiDir: paths.pkiDir,
     generatedDir: paths.generatedDir,

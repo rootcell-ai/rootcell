@@ -88,7 +88,10 @@ in
 # can hot-reload them without a guest rebuild.
 
 {
-  imports = [ ./common.nix ];
+  imports =
+    [ ./common.nix ]
+    ++ lib.optional (builtins.pathExists ./generated/extensions-firewall-vm.nix)
+      ./generated/extensions-firewall-vm.nix;
 
   networking.hostName = "firewall-vm";
   environment.systemPackages = [

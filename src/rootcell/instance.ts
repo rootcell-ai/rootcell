@@ -9,6 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { ensureExtensionsConfig } from "./extensions/config.ts";
 import { parseSchema } from "./schema.ts";
 import {
   InstanceStateSchema,
@@ -29,6 +30,7 @@ export interface InstancePaths {
   readonly dir: string;
   readonly envPath: string;
   readonly secretsPath: string;
+  readonly extensionsPath: string;
   readonly proxyDir: string;
   readonly pkiDir: string;
   readonly generatedDir: string;
@@ -75,6 +77,9 @@ export function seedRootcellInstanceFiles(repoDir: string, instanceName: string,
     log,
     `${instanceName} secrets.env`,
   );
+  ensureExtensionsConfig(paths.extensionsPath, (message) => {
+    log(`${instanceName} ${message}`);
+  });
 
   for (const file of ["allowed-https.txt", "allowed-ssh.txt", "allowed-dns.txt"]) {
     const legacyLive = join(repoDir, "proxy", file);
@@ -141,6 +146,7 @@ function rootcellInstanceFromPaths(paths: InstancePaths, state: InstanceState): 
     dir: paths.dir,
     envPath: paths.envPath,
     secretsPath: paths.secretsPath,
+    extensionsPath: paths.extensionsPath,
     proxyDir: paths.proxyDir,
     pkiDir: paths.pkiDir,
     generatedDir: paths.generatedDir,
@@ -160,6 +166,7 @@ function pathsFromDir(name: string, dir: string): InstancePaths {
     dir,
     envPath: join(dir, ".env"),
     secretsPath: join(dir, "secrets.env"),
+    extensionsPath: join(dir, "extensions.txt"),
     proxyDir: join(dir, "proxy"),
     pkiDir: join(dir, "pki"),
     generatedDir: join(dir, "generated"),

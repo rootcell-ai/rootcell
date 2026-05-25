@@ -1,5 +1,6 @@
 import yargs from "yargs/yargs";
 import type { Argv, ArgumentsCamelCase } from "yargs";
+import { completeExtensionCommand } from "./extensions/commands.ts";
 import { isRootcellSubcommand, ROOTCELL_SUBCOMMANDS, type RootcellSubcommand } from "./metadata.ts";
 import { listRootcellInstanceNames, validateInstanceName } from "./instance.ts";
 import { parseSchema } from "./schema.ts";
@@ -32,6 +33,10 @@ interface SpyArgs extends GlobalArgs {
 
 interface EditArgs extends GlobalArgs {
   readonly target?: string;
+}
+
+interface ExtensionArgs extends GlobalArgs {
+  readonly extensionArgs?: readonly string[];
 }
 
 type ParserArgv<T> = Argv<T>;
@@ -97,21 +102,48 @@ function completion(
   completionFilter: (done: (error: Error | null, completions: string[] | undefined) => void) => void,
   done: (completions: string[]) => void,
 ): void {
+  const currentInstance = lastString(argv.instance);
+  if (currentInstance === current) {
+    done([...completeInstances(current)]);
+    return;
+  }
+
+  const extensionCompletions = completeExtensionCompletion(current, argv);
+  if (extensionCompletions !== undefined) {
+    done([...extensionCompletions]);
+    return;
+  }
+
   completionFilter((error, completions) => {
     if (error !== null) {
       throw error;
     }
     const defaults = (completions ?? []).filter((completion) => !completion.startsWith("$0"));
-    const currentInstance = lastString(argv.instance);
-    if (currentInstance === current) {
-      done([...completeInstances(current), ...defaults]);
-      return;
-    }
     done(defaults);
   });
 }
 
-function createParser(args: readonly string[]): Argv<GuestArgs & SpyArgs> {
+function completeExtensionCompletion(
+  current: string,
+  argv: ArgumentsCamelCase<GlobalArgs>,
+): readonly string[] | undefined {
+  const rawWords = argv._.map((value) => String(value));
+  const words = rawWords[0] === "rootcell" ? rawWords.slice(1) : rawWords;
+  const instance = lastString(argv.instance) ?? "default";
+  try {
+    return completeExtensionCommand({
+      repoDir: process.cwd(),
+      env: process.env,
+      instanceName: instance,
+      words,
+      current,
+    });
+  } catch {
+    return [];
+  }
+}
+
+function createParser(args: readonly string[]): Argv<GuestArgs & SpyArgs & ExtensionArgs> {
   return yargs([...args])
     .scriptName("rootcell")
     .exitProcess(false)
@@ -152,8 +184,20 @@ function createParser(args: readonly string[]): Argv<GuestArgs & SpyArgs> {
       subcommandDescription("edit"),
       (argv: ParserArgv<EditArgs>) => argv
         .positional("target", {
-          choices: ["env", "http", "https", "dns", "ssh"],
+          choices: ["env", "http", "https", "dns", "ssh", "extensions"],
           describe: "instance file to edit",
+          type: "string",
+        })
+        .demandCommand(0, 0)
+        .strictOptions(),
+    )
+    .command(
+      "extension [extensionArgs..]",
+      subcommandDescription("extension"),
+      (argv: ParserArgv<ExtensionArgs>) => argv
+        .positional("extensionArgs", {
+          array: true,
+          describe: "extension command and arguments",
           type: "string",
         })
         .demandCommand(0, 0)
@@ -225,7 +269,11 @@ export function parseRootcellArgs(args: readonly string[]): ParsedRootcellArgs {
   }
 
   if (subcommand !== undefined) {
-    const rest = subcommand === "edit" ? [argString((argv as ArgumentsCamelCase<EditArgs>).target)] : [];
+    const rest = subcommand === "edit"
+      ? [argString((argv as ArgumentsCamelCase<EditArgs>).target)]
+      : subcommand === "extension"
+        ? stringArray((argv as ArgumentsCamelCase<ExtensionArgs>).extensionArgs)
+        : [];
     return parseSchema(ParsedRootcellRunArgsSchema, {
       kind: "run",
       instanceName: instanceName(argv),
@@ -258,7 +306,7 @@ function fail(message: string, error: Error): never {
   throw error instanceof Error ? error : new Error(message);
 }
 
-function parsedSubcommand(argv: ArgumentsCamelCase<GuestArgs & SpyArgs>): RootcellSubcommand | undefined {
+function parsedSubcommand(argv: ArgumentsCamelCase<GuestArgs & SpyArgs & ExtensionArgs>): RootcellSubcommand | undefined {
   const command = argv._[0];
   return typeof command === "string" && isRootcellSubcommand(command) ? command : undefined;
 }

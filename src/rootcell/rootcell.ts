@@ -9,6 +9,9 @@ import { createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { parseRootcellArgs } from "./args.ts";
 import { loadDotEnv, nixString, parseSecretMappings } from "./env.ts";
+import { runExtensionCommand } from "./extensions/commands.ts";
+import { enabledExtensionIds, ensureExtensionsConfig } from "./extensions/config.ts";
+import { GENERATED_EXTENSION_HOOK_FILES, writeExtensionNixAggregators } from "./extensions/nix.ts";
 import { DEFAULT_IMAGE_MANIFEST_URL } from "./images.ts";
 import { initRootcellInstanceEnv } from "./init-env.ts";
 import {
@@ -36,7 +39,7 @@ const EDIT_PROXY_FILES = {
   ssh: "allowed-ssh.txt",
 } as const;
 
-const EDIT_TARGETS = ["env", "http", "https", "dns", "ssh"] as const;
+const EDIT_TARGETS = ["env", "http", "https", "dns", "ssh", "extensions"] as const;
 
 const VM_FILES: VmFileSet = {
   agent: [
@@ -47,6 +50,7 @@ const VM_FILES: VmFileSet = {
     "home.nix",
     "network.nix",
     "pi",
+    "extensions",
   ],
   firewall: [
     "flake.nix",
@@ -54,6 +58,7 @@ const VM_FILES: VmFileSet = {
     "common.nix",
     "firewall-vm.nix",
     "network.nix",
+    "extensions",
     "proxy",
     "src/bin/reload.ts",
     "dist/spy-service.js",
@@ -142,6 +147,7 @@ export function buildConfig(repoDir: string, env: NodeJS.ProcessEnv, instance: R
     instanceDir: instance.dir,
     envPath: instance.envPath,
     secretsPath: instance.secretsPath,
+    extensionsPath: instance.extensionsPath,
     proxyDir: instance.proxyDir,
     pkiDir: instance.pkiDir,
     generatedDir: instance.generatedDir,
@@ -187,6 +193,10 @@ export class RootcellApp<TAttachment extends VmNetworkAttachment> {
     }
 
     this.writeNetworkLocalNix();
+    const extensions = this.writeExtensionAggregators();
+    if (subcommand === "provision") {
+      log(`enabled extensions: ${enabledExtensionIds(extensions).join(", ") || "none"}`);
+    }
 
     if (subcommand === "pubkey") {
       return await this.printPubkey();
@@ -327,6 +337,12 @@ export class RootcellApp<TAttachment extends VmNetworkAttachment> {
     writeFileSync(join(this.config.generatedDir, "network-local.nix"), content, "utf8");
   }
 
+  private writeExtensionAggregators(): ReturnType<typeof ensureExtensionsConfig> {
+    const extensions = ensureExtensionsConfig(this.config.extensionsPath, log);
+    writeExtensionNixAggregators(this.config.generatedDir, extensions);
+    return extensions;
+  }
+
   private async printPubkey(): Promise<number> {
     const status = await this.providers.vm.status(this.config.agentVm);
     if (status.state !== "running") {
@@ -432,6 +448,16 @@ chmod 0644 "$bundle"
       join(this.config.generatedDir, "git-local.nix"),
       join(this.config.guestRepoDir, "git-local.nix"),
     );
+  }
+
+  private async copyGeneratedExtensionsIntoVm(vm: string): Promise<void> {
+    for (const file of GENERATED_EXTENSION_HOOK_FILES) {
+      await this.copyHostFileIntoVm(
+        vm,
+        join(this.config.generatedDir, file),
+        join(this.config.guestRepoDir, "generated", file),
+      );
+    }
   }
 
   private async copyAgentCaIntoVm(vm: string): Promise<void> {
@@ -867,6 +893,7 @@ systemctl is-active mitmproxy-explicit >/dev/null 2>&1 \\
     this.ensureCa();
     await this.copyRepoIntoVm(this.config.firewallVm, VM_FILES.firewall);
     await this.copyGeneratedNetworkIntoVm(this.config.firewallVm);
+    await this.copyGeneratedExtensionsIntoVm(this.config.firewallVm);
     await this.bootstrapFirewallDns();
     await this.runNixosSwitch("firewall", `
 set -e
@@ -917,6 +944,7 @@ sudo nixos-rebuild switch --flake ${shellQuote(this.guestFlakeRef(this.nixosConf
     await this.copyRepoIntoVm(this.config.agentVm, VM_FILES.agent);
     await this.copyGeneratedNetworkIntoVm(this.config.agentVm);
     await this.copyGeneratedGitIntoVm(this.config.agentVm);
+    await this.copyGeneratedExtensionsIntoVm(this.config.agentVm);
     await this.copyAgentCaIntoVm(this.config.agentVm);
     await this.bootstrapAgentFirewallRoute();
     await this.bootstrapAgentFirewallTrust();
@@ -1156,6 +1184,9 @@ function editPath(paths: ReturnType<typeof instancePaths>, target: (typeof EDIT_
   if (target === "env") {
     return paths.envPath;
   }
+  if (target === "extensions") {
+    return paths.extensionsPath;
+  }
   return join(paths.proxyDir, EDIT_PROXY_FILES[target]);
 }
 
@@ -1274,6 +1305,15 @@ export async function rootcellMain(args: readonly string[], importMetaPath: stri
     }
     if (parsed.subcommand === "edit") {
       return runEditCommand(repoDir, process.env, parsed.instanceName, parsed.rest[0]);
+    }
+    if (parsed.subcommand === "extension") {
+      return runExtensionCommand({
+        repoDir,
+        env: process.env,
+        instanceName: parsed.instanceName,
+        rest: parsed.rest,
+        log,
+      });
     }
 
     seedRootcellInstanceFiles(repoDir, parsed.instanceName, log);
