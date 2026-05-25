@@ -23,7 +23,7 @@ export function createPlannotatorTunnelCommand(
     complete: () => [],
     run: async (context, args) => {
       if (args.length > 0) {
-        context.log("usage: rootcell extension plannotator tunnel");
+        context.log("usage: rootcell extension pi-plannotator tunnel");
         return 2;
       }
 
@@ -66,5 +66,5 @@ function logAgentVmNotRunning(context: ExtensionHostCommandContext, status: Excl
     return;
   }
   context.log(`agent VM for instance '${context.instanceName}' is not ready: ${status.detail}`);
-  context.log(`resolve the VM state, then try ./rootcell --instance ${context.instanceName} extension plannotator tunnel again.`);
+  context.log(`resolve the VM state, then try ./rootcell --instance ${context.instanceName} extension pi-plannotator tunnel again.`);
 }

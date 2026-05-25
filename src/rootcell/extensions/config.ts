@@ -15,6 +15,11 @@ import {
   type RootcellExtensionId,
 } from "./registry.ts";
 
+const LEGACY_EXTENSION_IDS = new Map<string, RootcellExtensionId>([
+  ["plannotator", "pi-plannotator"],
+  ["subagent", "pi-subagents"],
+]);
+
 export const ExtensionConfigKeySchema = z.string()
   .regex(/^[a-z](?:[a-z0-9-]*[a-z0-9])?$/, "must be lowercase kebab-case");
 
@@ -102,15 +107,17 @@ export function parseExtensionsConfig(text: string): ParsedExtensionsConfig {
     if (!ExtensionConfigKeySchema.safeParse(key).success) {
       throw new Error(`invalid extension key in extensions.txt on line ${String(index + 1)}: ${key}`);
     }
-    if (seen.has(key)) {
+    const canonicalId = canonicalRootcellExtensionId(key);
+    const canonicalKey = canonicalId ?? key;
+    if (seen.has(canonicalKey)) {
       throw new Error(`duplicate extension key in extensions.txt on line ${String(index + 1)}: ${key}`);
     }
-    seen.add(key);
+    seen.add(canonicalKey);
 
     const valueEnabled = parseExtensionBoolean(value, key, index + 1);
-    const known = isRootcellExtensionId(key);
+    const known = canonicalId !== undefined;
     if (known && valueEnabled) {
-      enabled.add(key);
+      enabled.add(canonicalId);
     }
     if (!known) {
       unknownKeys.push(key);
@@ -183,11 +190,14 @@ export function renderExtensionsConfig(
       lines.push(line.raw);
       continue;
     }
-    present.add(line.key);
-    if (isRootcellExtensionId(line.key) && overrides.has(line.key)) {
-      lines.push(`${line.key}=${overrides.get(line.key) === true ? "true" : "false"}`);
+    const canonicalId = canonicalRootcellExtensionId(line.key);
+    if (canonicalId !== undefined) {
+      present.add(canonicalId);
+      const enabled = overrides.has(canonicalId) ? overrides.get(canonicalId) === true : line.enabled;
+      lines.push(`${canonicalId}=${enabled ? "true" : "false"}`);
       continue;
     }
+    present.add(line.key);
     lines.push(line.raw);
   }
 
@@ -217,6 +227,13 @@ function writeExtensionsConfig(path: string, text: string): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const mode = existsSync(path) ? statSync(path).mode : 0o644;
   writeFileSync(path, text, { encoding: "utf8", mode });
+}
+
+function canonicalRootcellExtensionId(key: string): RootcellExtensionId | undefined {
+  if (isRootcellExtensionId(key)) {
+    return key;
+  }
+  return LEGACY_EXTENSION_IDS.get(key);
 }
 
 function parseExtensionBoolean(value: string, key: string, line: number): boolean {

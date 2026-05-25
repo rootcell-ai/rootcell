@@ -6,10 +6,10 @@ import type { LocalPortForwardOptions, LocalPortForwardHandle, VmRole, VmStatus 
 import type { RootcellConfig } from "../types.ts";
 import { completeExtensionCommand, runExtensionCommand } from "./commands.ts";
 import { parseExtensionsConfig } from "./config.ts";
-import { createPlannotatorTunnelCommand } from "./plannotator.ts";
+import { createPlannotatorTunnelCommand } from "./pi-plannotator.ts";
 import type { ExtensionHostCommandContext } from "./registry.ts";
 
-describe("plannotator extension host command", () => {
+describe("pi-plannotator extension host command", () => {
   test("disabled extension gating prevents context creation", async () => {
     const repo = makeRepo();
     try {
@@ -18,13 +18,13 @@ describe("plannotator extension host command", () => {
       const logs: string[] = [];
       let contexts = 0;
       mkdirSync(instanceDir, { recursive: true });
-      writeFileSync(join(instanceDir, "extensions.txt"), "plannotator=false\nsubagent=false\n", "utf8");
+      writeFileSync(join(instanceDir, "extensions.txt"), "pi-plannotator=false\npi-subagents=false\n", "utf8");
 
       const status = await runExtensionCommand({
         repoDir: repo,
         env: { ...process.env, ROOTCELL_STATE_DIR: stateDir },
         instanceName: "dev",
-        rest: ["plannotator", "tunnel"],
+        rest: ["pi-plannotator", "tunnel"],
         log: (message) => logs.push(message),
         createContext: () => {
           contexts += 1;
@@ -34,7 +34,7 @@ describe("plannotator extension host command", () => {
 
       expect(status).toBe(1);
       expect(contexts).toBe(0);
-      expect(logs.join("\n")).toContain("extension 'plannotator' is disabled");
+      expect(logs.join("\n")).toContain("extension 'pi-plannotator' is disabled");
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }
@@ -47,7 +47,7 @@ describe("plannotator extension host command", () => {
       const instanceDir = join(stateDir, "dev");
       const env = { ...process.env, ROOTCELL_STATE_DIR: stateDir };
       mkdirSync(instanceDir, { recursive: true });
-      writeFileSync(join(instanceDir, "extensions.txt"), "plannotator=true\nsubagent=false\n", "utf8");
+      writeFileSync(join(instanceDir, "extensions.txt"), "pi-plannotator=true\npi-subagents=false\n", "utf8");
 
       expect(completeExtensionCommand({
         repoDir: repo,
@@ -55,30 +55,30 @@ describe("plannotator extension host command", () => {
         instanceName: "dev",
         words: ["extension", ""],
         current: "",
-      })).toContain("plannotator");
+      })).toContain("pi-plannotator");
       expect(completeExtensionCommand({
         repoDir: repo,
         env,
         instanceName: "dev",
-        words: ["extension", "plannotator", ""],
+        words: ["extension", "pi-plannotator", ""],
         current: "",
       })).toEqual(["tunnel"]);
       expect(completeExtensionCommand({
         repoDir: repo,
         env,
         instanceName: "dev",
-        words: ["extension", "plannotator", "tunnel", ""],
+        words: ["extension", "pi-plannotator", "tunnel", ""],
         current: "",
       })).toEqual([]);
 
-      writeFileSync(join(instanceDir, "extensions.txt"), "plannotator=false\nsubagent=false\n", "utf8");
+      writeFileSync(join(instanceDir, "extensions.txt"), "pi-plannotator=false\npi-subagents=false\n", "utf8");
       expect(completeExtensionCommand({
         repoDir: repo,
         env,
         instanceName: "dev",
         words: ["extension", ""],
         current: "",
-      })).not.toContain("plannotator");
+      })).not.toContain("pi-plannotator");
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }
@@ -99,7 +99,7 @@ describe("plannotator extension host command", () => {
 
     expect(status).toBe(2);
     expect(statusChecks).toBe(0);
-    expect(logs).toEqual(["usage: rootcell extension plannotator tunnel"]);
+    expect(logs).toEqual(["usage: rootcell extension pi-plannotator tunnel"]);
   });
 
   test.each([
@@ -199,7 +199,7 @@ describe("plannotator extension host command", () => {
 });
 
 function makeRepo(): string {
-  return mkdtempSync(join(tmpdir(), "rootcell-plannotator-"));
+  return mkdtempSync(join(tmpdir(), "rootcell-pi-plannotator-"));
 }
 
 function testContext(input: {
@@ -210,7 +210,7 @@ function testContext(input: {
   return {
     repoDir: "/repo",
     instanceName: "dev",
-    extensionConfig: parseExtensionsConfig("plannotator=true\nsubagent=false\n"),
+    extensionConfig: parseExtensionsConfig("pi-plannotator=true\npi-subagents=false\n"),
     config: {} as RootcellConfig,
     log: (message) => input.logs?.push(message),
     vmStatus: input.vmStatus ?? (() => Promise.resolve({ state: "running" })),

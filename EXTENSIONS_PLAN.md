@@ -8,6 +8,10 @@ Add an opt-in Rootcell extension mechanism so optional Rootcell capabilities can
 
 Rootcell extensions are not the same thing as Pi extensions. A Rootcell extension may install/configure Pi extensions, add host commands/tunnels, ship firewall services, or eventually target other coding harnesses such as Claude Code or Codex. Pi integration is the first use case, not the abstraction boundary.
 
+The initial two built-in Rootcell extension ids are `pi-plannotator` and
+`pi-subagents` because they install/configure Pi resources. The `pi-` prefix is
+part of the name, not the extension abstraction.
+
 Initial target extensions:
 
 - Existing Pi `subagent` package/extension currently installed for every agent VM by `home.nix`; should move behind opt-in.
@@ -19,7 +23,7 @@ Initial target extensions:
 - Rootcell extensions are per-instance opt-ins, persisted in host-side `instances/<name>/extensions.txt`.
 - `extensions.txt` is dotenv-style `id=true|false`, seeded with all known extensions set to `false`.
 - Initial UX: `rootcell extension list`, `rootcell extension enable <id>`, `rootcell extension disable <id>`, and `rootcell edit extensions`.
-- Extension-specific commands live under `rootcell extension <id> ...`; initial operational command is `rootcell extension plannotator tunnel`.
+- Extension-specific commands live under `rootcell extension <id> ...`; initial operational command is `rootcell extension pi-plannotator tunnel`.
 - `extension enable/disable` seed config files if needed, are idempotent, do not provision, and always print instance-qualified provision guidance.
 - Operational extension commands require the selected existing instance to have that extension enabled; completions should hide disabled extension command groups.
 - Rootcell extension definitions are static built-ins for V1, but shaped for future third-party extraction.
@@ -33,8 +37,8 @@ Initial target extensions:
 - Plannotator sets `PLANNOTATOR_REMOTE=true` and `PLANNOTATOR_PORT=19432` in the enabled Home Manager module.
 - Plannotator tunnel goes through firewall ProxyJump to the agent VM, binds host side to `127.0.0.1`, prefers local port `19432`, chooses another free local port on conflict, prints the URL, and stays foreground until Ctrl-C.
 - Plannotator tunnel does not start/provision VMs, does not health-check the service, does not open a browser, and is separate from running Pi.
-- `subagent` opt-in preserves current behavior: Pi subagent extension plus example agents.
-- Existing VMs keep old subagent files until explicit provision; after provisioning with `subagent=false`, managed subagent resources are removed.
+- `pi-subagents` opt-in preserves current behavior: Pi subagent extension plus example agents.
+- Existing VMs keep old subagent files until explicit provision; after provisioning with `pi-subagents=false`, managed subagent resources are removed.
 - Testing should focus on the Rootcell extension framework, command dispatch, generated config, completions, and tunnel wiring, not Plannotator product behavior.
 
 ## Non-goals for V1
@@ -65,13 +69,13 @@ Initial target extensions:
 ## Architecture
 
 1. Add a static built-in Rootcell extension registry describing optional features for the first iteration. Design the registry shape as a future public extension-definition API so third-party Rootcell extensions can be supported later without a rewrite. Include human-readable descriptions for help/docs, but default `extension list` only shows id/status. Do not include `defaultEnabled` in the registry; all known extensions are seeded as disabled in `extensions.txt` by policy.
-2. Persist enabled extensions per Rootcell instance in a human-editable `extensions.txt` file at `instances/<name>/extensions.txt`, next to that instance's `.env` and `secrets.env` files. Add this path to `instancePaths` as `extensionsPath`. The file is dotenv-like and seeded with every known extension defaulting to false, e.g. `plannotator=false` and `subagent=false`, so users can discover available extensions without the CLI. If missing for an existing instance, seed it the same way and log the path. Comments and blank lines are supported and preserved. Existing ordering is preserved. Missing newly-known extension keys are appended with `false`. Unknown keys are warned about and ignored by the current Rootcell version, but preserved when the CLI rewrites the file for forward/backward compatibility.
+2. Persist enabled extensions per Rootcell instance in a human-editable `extensions.txt` file at `instances/<name>/extensions.txt`, next to that instance's `.env` and `secrets.env` files. Add this path to `instancePaths` as `extensionsPath`. The file is dotenv-like and seeded with every known extension defaulting to false, e.g. `pi-plannotator=false` and `pi-subagents=false`, so users can discover available extensions without the CLI. If missing for an existing instance, seed it the same way and log the path. Comments and blank lines are supported and preserved. Existing ordering is preserved. Missing newly-known extension keys are appended with `false`. Unknown keys are warned about and ignored by the current Rootcell version, but preserved when the CLI rewrites the file for forward/backward compatibility.
 3. During provisioning, render generated Nix/config that installs only enabled Rootcell extension resources. Extension-provided guest files should be installed by NixOS/Home Manager modules or Nix derivations wherever possible, not manually copied into final guest locations by the host CLI. Rootcell may still copy the Rootcell repo/generated Nix inputs into the VM so Nix can evaluate them, but ownership of guest-visible extension resources should be declarative through Nix/Home Manager. Model this as hook points in the master guest configs: agent NixOS, firewall NixOS, and agent Home Manager import generated extension module lists. Extensions create/implement separate module files referenced by those masters; extensions must not edit the master config files themselves.
 4. Add host command surface to manage extensions under `rootcell extension`. Parse `extension` as a top-level Rootcell subcommand that captures the rest; dispatch nested commands manually through an extension command dispatcher rather than modeling every nested command directly in yargs. This supports dynamic enabled-extension completions now and future custom extension completion behavior. Initial commands:
    - `rootcell extension list` showing all known extensions and enabled/disabled status, plus a warning/list for unknown valid keys found in `extensions.txt`; do not include a `requiresProvision`/apply column in the first iteration
    - `rootcell extension enable <id>`
    - `rootcell extension disable <id>`
-   - `rootcell extension plannotator tunnel`
+   - `rootcell extension pi-plannotator tunnel`
 5. Reuse or generalize the SSH local-port forwarding implementation from the spy-browser branch for browser-backed extensions.
 6. Implement Plannotator as the first browser-backed extension:
    - install/configure the Plannotator Pi package in the agent VM only when opted in;
@@ -93,10 +97,11 @@ Initial target extensions:
 
 - Extensions are enabled/disabled per Rootcell instance, not globally or per invocation.
 - Persist state in host-side `instances/<name>/extensions.txt`, exposed as `instancePaths(...).extensionsPath`. Do not copy this file into the VM.
-- `extensions.txt` is seeded with all known extensions set to `false`, e.g. `plannotator=false` and `subagent=false`. Missing files for existing instances are seeded the same way and logged.
+- `extensions.txt` is seeded with all known extensions set to `false`, e.g. `pi-plannotator=false` and `pi-subagents=false`. Missing files for existing instances are seeded the same way and logged.
 - Parse `extensions.txt` with Rootcell dotenv-style semantics: skip blank/comment lines, split on the first `=`, and treat missing `=` as an empty value.
 - Boolean parsing accepts `true`, `1`, `yes`, `on` as true; `false`, `0`, `no`, `off`, and empty values as false. Invalid key syntax or invalid boolean values fail clearly.
 - Comments, blank lines, and existing ordering are preserved. Missing newly-known extension keys are appended with `false`. Unknown valid keys are warned/ignored by this version but preserved on rewrite.
+- Legacy first-party keys `plannotator` and `subagent` are migrated to `pi-plannotator` and `pi-subagents` when Rootcell rewrites `extensions.txt`.
 - `extension enable`/`disable` reject unknown ids for V1. Unknown valid keys may be preserved if already present, but the CLI should not create them until third-party definitions exist.
 - Initial UX: `rootcell extension list`, `rootcell extension enable <id>`, `rootcell extension disable <id>`, and `rootcell edit extensions`.
 - `rootcell extension list` seeds config if missing, shows all known extension ids and enabled status, and reports unknown valid keys separately. It should not load provider config or secrets and should not show `requiresProvision`/apply columns.
@@ -141,10 +146,10 @@ Initial target extensions:
 
 - Prefer the published npm package `@plannotator/pi-extension`, pinned by version/hash, if it contains source-like extension files and built browser assets needed at runtime.
 - Install/configure via Nix/Home Manager during VM provisioning, following the existing Pi/subagent pattern. Do not use mutable in-VM `pi install` or host-side prefetch/copy cache.
-- Preserve a source-like npm package layout in the VM so Pi and the agent can inspect JS/TS code; do not rename/reshape it just because the Rootcell extension id is `plannotator`.
+- Preserve a source-like npm package layout in the VM so Pi and the agent can inspect JS/TS code; do not rename/reshape it just because the Rootcell extension id is `pi-plannotator`.
 - Set `PLANNOTATOR_REMOTE=true` and `PLANNOTATOR_PORT=19432` in the enabled Plannotator Home Manager module/user environment so any Pi invocation sees them.
-- Keep Plannotator tunnel and Pi execution separate. Users run `rootcell extension plannotator tunnel` in one terminal and start Pi normally in another.
-- `rootcell extension plannotator tunnel` requires the selected existing instance to have Plannotator enabled and the agent VM running. It does not seed, start, provision, or health-check.
+- Keep Plannotator tunnel and Pi execution separate. Users run `rootcell extension pi-plannotator tunnel` in one terminal and start Pi normally in another.
+- `rootcell extension pi-plannotator tunnel` requires the selected existing instance to have Plannotator enabled and the agent VM running. It does not seed, start, provision, or health-check.
 - The tunnel goes through the firewall via SSH ProxyJump to the agent VM, forwarding to agent-side port `19432`. Bind host side to `127.0.0.1` only.
 - Prefer host local port `19432`; if busy, choose another free localhost port and print the actual URL.
 - Foreground until Ctrl-C only. Do not add background mode, browser auto-open, or `--open` in V1. Print a concise forwarding/Ctrl-C message and the host URL.
@@ -152,9 +157,9 @@ Initial target extensions:
 
 ### Subagent migration
 
-- Move current unconditional subagent install into the `subagent` Rootcell extension's Home Manager hook.
-- Enabling `subagent` preserves current behavior: install the Pi subagent extension plus bundled example agents (`planner.md`, `reviewer.md`, `scout.md`, `worker.md`).
-- All extensions default false. Existing VMs keep current files until explicit provision; after provisioning with `subagent=false`, managed subagent resources are removed. Document how to opt back in.
+- Move current unconditional subagent install into the `pi-subagents` Rootcell extension's Home Manager hook.
+- Enabling `pi-subagents` preserves current behavior: install the Pi subagent extension plus bundled example agents (`planner.md`, `reviewer.md`, `scout.md`, `worker.md`).
+- All extensions default false. Existing VMs keep current files until explicit provision; after provisioning with `pi-subagents=false`, managed subagent resources are removed. Document how to opt back in.
 
 ### Testing
 
@@ -167,8 +172,8 @@ Initial target extensions:
 - `src/rootcell/extensions/config.ts` — `extensions.txt` seeding, parsing, preserving, enable/disable rewrites, enabled-state queries.
 - `src/rootcell/extensions/commands.ts` — `rootcell extension ...` nested command dispatcher and completion helpers.
 - `src/rootcell/extensions/nix.ts` — generated Nix aggregator rendering for agent NixOS, firewall NixOS, and agent Home Manager hooks.
-- `extensions/subagent/home-manager.nix` — Home Manager hook module preserving current subagent behavior behind opt-in.
-- `extensions/plannotator/home-manager.nix` — Home Manager hook module for Plannotator package/env setup.
+- `extensions/pi-subagents/home-manager.nix` — Home Manager hook module preserving current subagent behavior behind opt-in.
+- `extensions/pi-plannotator/home-manager.nix` — Home Manager hook module for Plannotator package/env setup.
 - `agent-vm.nix`, `firewall-vm.nix`, `home.nix` — master configs gain stable guarded imports of generated hook aggregators only.
 - `src/rootcell/instance.ts` / types — add `extensionsPath`.
 - `src/rootcell/args.ts` / metadata — add top-level `extension` command capture and completion routing.
@@ -178,7 +183,7 @@ Initial target extensions:
 
 - Exact Nix packaging method for `@plannotator/pi-extension` while preserving a source-like npm package layout and including its runtime dependencies/assets.
 - Exact Pi auto-discovery/package-compatible filesystem layout for Plannotator under Rootcell-managed paths; implementation should validate against Pi's resource loader behavior.
-- Home Manager migration behavior when moving current subagent symlinks out of unconditional `home.nix` and behind the `subagent` extension.
+- Home Manager migration behavior when moving current subagent symlinks out of unconditional `home.nix` and behind the `pi-subagents` extension.
 - Availability/API shape of the generic `forwardLocalPort` implementation from the spy browser branch at implementation time.
 - Future third-party Rootcell extension extraction: keep built-in registry/path assumptions contained so external extension definitions can be loaded later.
 
@@ -186,9 +191,9 @@ Initial target extensions:
 
 ### Phase 1: Core extension model
 
-Implementation update: the first Phase 1 slice added a Zod-validated built-in extension registry, per-instance `extensions.txt`, management CLI commands, dynamic completions, generated Nix hook aggregators, guarded master imports, explicit generated-file VM copy wiring, and moved the Pi `subagent` extension/example agents behind `subagent=true`. Verification passed with `bun run typecheck`, `bun run lint`, `bun run test:unit:vitest`, and lightweight Nix evals for the agent, firewall, and Home Manager entrypoints.
+Implementation update: the first Phase 1 slice added a Zod-validated built-in extension registry, per-instance `extensions.txt`, management CLI commands, dynamic completions, generated Nix hook aggregators, guarded master imports, explicit generated-file VM copy wiring, and moved the Pi `subagent` extension/example agents behind `pi-subagents=true`. Verification passed with `bun run typecheck`, `bun run lint`, `bun run test:unit:vitest`, and lightweight Nix evals for the agent, firewall, and Home Manager entrypoints.
 
-Implementation update: the host-command registry slice added `RootcellExtensionDefinition.hostCommands`, validated command metadata, async extension-owned command dispatch under `rootcell extension <id> <command>`, metadata-driven enable/disable guidance through `requiresProvision`, enabled-state gating for operational commands, dynamic completions for enabled command groups, and a narrow `ExtensionHostCommandContext` exposing only config, logging, VM status, and local-port-forward helpers. The slice intentionally did not add `plannotator tunnel`; that remains a later tunnel/Plannotator task. Verification passed with `bun run typecheck`, `bun run lint`, `bun run test:unit:vitest`, and `git diff --check`.
+Implementation update: the host-command registry slice added `RootcellExtensionDefinition.hostCommands`, validated command metadata, async extension-owned command dispatch under `rootcell extension <id> <command>`, metadata-driven enable/disable guidance through `requiresProvision`, enabled-state gating for operational commands, dynamic completions for enabled command groups, and a narrow `ExtensionHostCommandContext` exposing only config, logging, VM status, and local-port-forward helpers. The slice intentionally did not add `pi-plannotator tunnel`; that remains a later tunnel/Plannotator task. Verification passed with `bun run typecheck`, `bun run lint`, `bun run test:unit:vitest`, and `git diff --check`.
 
 - [X] Define extension ids and metadata in TypeScript.
 - [X] Do not model per-extension defaults in the registry; seed all known extension keys as `false` in `extensions.txt`.
@@ -196,7 +201,7 @@ Implementation update: the host-command registry slice added `RootcellExtensionD
 - [X] Include a minimal extension host command registry interface even in the first implementation: an extension can define commands with `name`, `description`, `complete`, and `run`.
 - [X] Pass extension host commands a narrow V1 context rather than the entire `RootcellApp`: include only what is needed, such as config, providers/tunnel helper, logging, enabled-state helpers, and VM-running checks.
 - [X] Model guest-side extension contributions as declarative hook modules for each master config: `agent-vm.nix`, `firewall-vm.nix`, and `home.nix`.
-- [X] Store first-party built-in guest/Nix payload files under a top-level `extensions/` directory, e.g. `extensions/subagent/home-manager.nix` and `extensions/plannotator/home-manager.nix`.
+- [X] Store first-party built-in guest/Nix payload files under a top-level `extensions/` directory, e.g. `extensions/pi-subagents/home-manager.nix` and `extensions/pi-plannotator/home-manager.nix`.
 - [X] Store TypeScript registry/host command implementation under `src/rootcell/extensions/`.
 - [X] Treat these built-in locations as the current first-party source layout, not as a permanent coupling: design paths/metadata so these built-ins can later move out of the repository when third-party Rootcell extensions are supported.
 - [X] Copy the top-level `extensions/` directory to both VMs with the Rootcell repo inputs in the first implementation. Nix only imports enabled fragments through generated aggregators; selective copying can come later if needed.
@@ -213,8 +218,8 @@ Implementation update: the host-command registry slice added `RootcellExtensionD
 - [X] Add generated Nix file(s) consumed by the master hook imports to conditionally include enabled extension modules.
 - [X] Write/update generated extension aggregators before any command path that may evaluate guest Nix (provision and normal ensure paths), even though extension changes still require explicit provision to take effect.
 - [X] During `provision`, log the enabled extension set concisely (including `none`).
-- [X] Change `home.nix` so `subagent` is no longer unconditional and is provided by its extension's Home Manager hook module.
-- [X] The `subagent` Rootcell extension should preserve current behavior behind opt-in: install the Pi subagent extension and the bundled example agents (`planner.md`, `reviewer.md`, `scout.md`, `worker.md`).
+- [X] Change `home.nix` so the Pi subagent package is no longer unconditional and is provided by the `pi-subagents` Home Manager hook module.
+- [X] The `pi-subagents` Rootcell extension should preserve current behavior behind opt-in: install the Pi subagent extension and the bundled example agents (`planner.md`, `reviewer.md`, `scout.md`, `worker.md`).
 - [X] Add tests around the Rootcell extension framework itself: parsing, boolean handling, comment preservation, unknown-key preservation, config generation, explicit-provision workflow checks, dynamic completions based on `extensions.txt` plus selected `--instance`, and extension-owned command dispatch.
 - [X] Do not add integration tests for actual Plannotator product usage in Rootcell; that belongs with the Plannotator extension when it moves out.
 - [X] Extension management commands, including `extension list`, seed/create instance config files when needed, so users can discover/enable extensions before first VM boot.
@@ -249,10 +254,10 @@ Implementation update: the Phase 3 slice added a Nix package for `@plannotator/p
 
 ### Phase 4: Plannotator host command
 
-Implementation update: the Phase 4 slice added `rootcell extension plannotator tunnel` as an extension-owned host command in `src/rootcell/extensions/plannotator.ts` and registered it from the built-in extension registry. The command requires `plannotator=true` and a running agent VM, forwards host `127.0.0.1:<local>` to agent `127.0.0.1:19432` with local port fallback, prints the URL, and keeps the SSH tunnel in the foreground until Ctrl-C. It intentionally does not start/provision VMs, health-check Plannotator, launch a browser, or add background supervision. Tests in `src/rootcell/extensions/plannotator.test.ts` cover enabled-state gating, completions, argument validation, VM-state failures, tunnel wiring, URL output, and foreground close behavior. Verification passed with `bun run typecheck`, `bun run lint`, `bun run test:unit:vitest`, and `git diff --check`.
+Implementation update: the Phase 4 slice added `rootcell extension pi-plannotator tunnel` as an extension-owned host command in `src/rootcell/extensions/pi-plannotator.ts` and registered it from the built-in extension registry. The command requires `pi-plannotator=true` and a running agent VM, forwards host `127.0.0.1:<local>` to agent `127.0.0.1:19432` with local port fallback, prints the URL, and keeps the SSH tunnel in the foreground until Ctrl-C. It intentionally does not start/provision VMs, health-check Plannotator, launch a browser, or add background supervision. Tests in `src/rootcell/extensions/pi-plannotator.test.ts` cover enabled-state gating, completions, argument validation, VM-state failures, tunnel wiring, URL output, and foreground close behavior. Verification passed with `bun run typecheck`, `bun run lint`, `bun run test:unit:vitest`, and `git diff --check`.
 
 - [X] Add a host command to open/hold the SSH tunnel through the firewall ProxyJump to the agent VM, forwarding host `127.0.0.1:<local>` to the Plannotator service on the agent (`127.0.0.1:19432` or agent private IP if binding requires it).
-- [X] Require `plannotator=true` before `rootcell extension plannotator tunnel` runs; if disabled, fail with guidance to enable and provision. Dynamic completions should not offer this command path for instances where Plannotator is disabled.
+- [X] Require `pi-plannotator=true` before `rootcell extension pi-plannotator tunnel` runs; if disabled, fail with guidance to enable and provision. Dynamic completions should not offer this command path for instances where Plannotator is disabled.
 - [X] Require an existing instance and the agent VM to already be running; do not seed, start, or provision from the tunnel command. Fail with guidance to enable/provision/start as appropriate.
 - [X] Do not require or perform a Plannotator service health check before opening the tunnel; the expected workflow often starts the tunnel before Pi opens a Plannotator review server.
 - [X] Keep the tunnel in the foreground until Ctrl-C; do not add background mode until Rootcell has an intentional process supervision/story for stopping background tunnels.
@@ -267,5 +272,5 @@ Implementation update: the Phase 4 slice added `rootcell extension plannotator t
 Implementation update: the Phase 5 documentation slice added a README Extensions section explaining per-instance opt-ins in `instances/<name>/extensions.txt`, management commands, explicit provision requirements, the Plannotator tunnel workflow, and the subagent migration. Related README examples were refreshed in Daily Workflow, Common Changes, Customize Pi, and Project Layout. Verification passed with a docs-focused `rg` check for the new extension terms and `git diff --check`.
 
 - [X] Document the extension concept, commands, and Plannotator workflow.
-- [X] Document the subagent migration clearly: existing VMs keep current files until explicit provision, but after provisioning with `subagent=false`, Home Manager removes the previously managed subagent extension/example agents. Users who rely on it must run `./rootcell extension enable subagent && ./rootcell provision`.
+- [X] Document the subagent migration clearly: existing VMs keep current files until explicit provision, but after provisioning with `pi-subagents=false`, Home Manager removes the previously managed subagent extension/example agents. Users who rely on it must run `./rootcell extension enable pi-subagents && ./rootcell provision`.
 - [X] Add README examples.

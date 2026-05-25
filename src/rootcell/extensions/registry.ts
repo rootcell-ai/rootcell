@@ -3,9 +3,9 @@ import type { LocalPortForwardHandle, LocalPortForwardOptions, VmRole, VmStatus 
 import { NonEmptyStringSchema, parseSchema } from "../schema.ts";
 import type { RootcellConfig } from "../types.ts";
 import type { ParsedExtensionsConfig } from "./config.ts";
-import { PLANNOTATOR_TUNNEL_COMMAND } from "./plannotator.ts";
+import { PLANNOTATOR_TUNNEL_COMMAND } from "./pi-plannotator.ts";
 
-export const RootcellExtensionIdSchema = z.enum(["plannotator", "subagent"]);
+export const RootcellExtensionIdSchema = z.enum(["pi-plannotator", "pi-subagents"]);
 
 export type RootcellExtensionId = z.infer<typeof RootcellExtensionIdSchema>;
 
@@ -107,24 +107,24 @@ const NO_HOST_COMMANDS: readonly RootcellExtensionHostCommand[] = parseSchema(
 
 export const ROOTCELL_EXTENSIONS: readonly RootcellExtensionDefinition[] = parseSchema(RootcellExtensionDefinitionsSchema, [
   {
-    id: "plannotator",
+    id: "pi-plannotator",
     description: "Pi Plannotator integration package and remote-session configuration",
     requiresProvision: true,
     guestHooks: {
       agentNixos: [],
       firewallNixos: [],
-      homeManager: ["extensions/plannotator/home-manager.nix"],
+      homeManager: ["extensions/pi-plannotator/home-manager.nix"],
     },
     hostCommands: [PLANNOTATOR_TUNNEL_COMMAND],
   },
   {
-    id: "subagent",
+    id: "pi-subagents",
     description: "Pi subagent extension and bundled example agents",
     requiresProvision: true,
     guestHooks: {
       agentNixos: [],
       firewallNixos: [],
-      homeManager: ["extensions/subagent/home-manager.nix"],
+      homeManager: ["extensions/pi-subagents/home-manager.nix"],
     },
     hostCommands: NO_HOST_COMMANDS,
   },

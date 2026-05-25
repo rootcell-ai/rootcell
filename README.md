@@ -225,7 +225,7 @@ state root.
 ./rootcell remove --instance dev  # stop dev and delete its provider VM state
 ./rootcell spy                    # open the browser spy through a local SSH tunnel
 ./rootcell extension list         # show optional extensions for this instance
-./rootcell extension enable plannotator   # enable an extension for next provision
+./rootcell extension enable pi-plannotator   # enable an extension for next provision
 ./rootcell -i aws-dev --init-env aws-ec2     # initialize a provider-specific instance .env
 ./rootcell -i local --init-env macos-lima    # initialize an explicit local Lima .env
 
@@ -241,9 +241,18 @@ Detailed browser spy operator and developer notes live in
 ## Extensions
 
 Rootcell extensions are per-instance opt-ins for optional Rootcell capabilities.
-They are broader than Pi extensions: a Rootcell extension can install Pi
-resources, add host commands, expose local tunnels, or contribute guest NixOS and
-Home Manager modules.
+They are rootcell concepts, not Pi concepts. Some extensions install Pi
+resources, but others could add VM packages, host commands, local tunnels,
+firewall services, protocol support, allowlists, or guest NixOS and Home Manager
+modules without involving Pi at all.
+For example, a future `lazyvim` extension could install editor tooling in the
+agent VM, while an `ftp` extension could add firewall protocol support and
+allowlist entries.
+
+The first built-ins are Pi-related, so their IDs carry a `pi-` prefix:
+`pi-plannotator` and `pi-subagents`.
+Older `plannotator` and `subagent` keys in `extensions.txt` are migrated to
+those names when rootcell rewrites the file.
 
 Each instance stores its enabled extensions in
 `instances/<name>/extensions.txt`, or under the configured
@@ -253,48 +262,48 @@ Enabling or disabling an extension only edits that file; run
 
 ```bash
 ./rootcell extension list
-./rootcell extension enable plannotator
-./rootcell extension disable plannotator
+./rootcell extension enable pi-plannotator
+./rootcell extension disable pi-plannotator
 ./rootcell edit extensions
 
 ./rootcell --instance dev extension list
-./rootcell --instance dev extension enable subagent
+./rootcell --instance dev extension enable pi-subagents
 ./rootcell --instance dev provision
 ```
 
 ### Plannotator
 
-The `plannotator` extension installs the Plannotator Pi package in the agent VM
-and configures Pi sessions for remote browser access. A typical workflow is:
+The `pi-plannotator` extension installs the Plannotator Pi package in the agent
+VM and configures Pi sessions for remote browser access. A typical workflow is:
 
 ```bash
-./rootcell extension enable plannotator
+./rootcell extension enable pi-plannotator
 ./rootcell provision
 
 # Terminal 1: keep the tunnel open.
-./rootcell extension plannotator tunnel
+./rootcell extension pi-plannotator tunnel
 
 # Terminal 2: start Pi normally.
 ./rootcell pi
 ```
 
-The tunnel command requires `plannotator=true` and a running agent VM. It prints
-the localhost URL to open, prefers port `19432`, chooses another local port if
-needed, and stays in the foreground until Ctrl-C. It does not start or provision
-VMs, health-check the Plannotator server, or open a browser.
+The tunnel command requires `pi-plannotator=true` and a running agent VM. It
+prints the localhost URL to open, prefers port `19432`, chooses another local
+port if needed, and stays in the foreground until Ctrl-C. It does not start or
+provision VMs, health-check the Plannotator server, or open a browser.
 
-### Subagent
+### Pi Subagents
 
-The `subagent` extension installs the Pi subagent extension and bundled example
-agents. It is disabled by default for new provisions.
+The `pi-subagents` extension installs the Pi subagent extension and bundled
+example agents. It is disabled by default for new provisions.
 
 Existing VMs can keep the previously managed subagent files until the next
-explicit provision. After provisioning with `subagent=false`, Home Manager
+explicit provision. After provisioning with `pi-subagents=false`, Home Manager
 removes Rootcell-managed subagent resources. If you rely on them, opt back in
 before provisioning:
 
 ```bash
-./rootcell extension enable subagent && ./rootcell provision
+./rootcell extension enable pi-subagents && ./rootcell provision
 ```
 
 ## Allowing Network Access
@@ -366,9 +375,10 @@ the agent VM.
 - `pi/agent/AGENTS.md` becomes the global instruction file.
 - `pi/agent/skills/<name>/SKILL.md` becomes a global pi skill.
 
-Optional Rootcell-managed Pi packages and extension resources live under the
-top-level `extensions/` directory and are installed only when their Rootcell
-extension is enabled and provisioned.
+Optional Rootcell-managed extension payloads live under the top-level
+`extensions/` directory and are installed only when their Rootcell extension is
+enabled and provisioned. The current built-ins happen to install Pi resources;
+future extensions do not need to.
 
 Add or edit files there, then run `./rootcell provision`.
 
