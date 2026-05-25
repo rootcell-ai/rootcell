@@ -1,6 +1,6 @@
 # Rootcell Extensions Implementation Plan
 
-Status: Phase 1 core extension framework is mostly implemented; extension host-command dispatch remains open.
+Status: Phase 1 core extension framework is implemented through extension-owned host-command dispatch; tunnel-specific work remains in later phases.
 
 ## Goal
 
@@ -188,11 +188,13 @@ Initial target extensions:
 
 Implementation update: the first Phase 1 slice added a Zod-validated built-in extension registry, per-instance `extensions.txt`, management CLI commands, dynamic completions, generated Nix hook aggregators, guarded master imports, explicit generated-file VM copy wiring, and moved the Pi `subagent` extension/example agents behind `subagent=true`. Verification passed with `bun run typecheck`, `bun run lint`, `bun run test:unit:vitest`, and lightweight Nix evals for the agent, firewall, and Home Manager entrypoints.
 
+Implementation update: the host-command registry slice added `RootcellExtensionDefinition.hostCommands`, validated command metadata, async extension-owned command dispatch under `rootcell extension <id> <command>`, metadata-driven enable/disable guidance through `requiresProvision`, enabled-state gating for operational commands, dynamic completions for enabled command groups, and a narrow `ExtensionHostCommandContext` exposing only config, logging, VM status, and local-port-forward helpers. The slice intentionally did not add `plannotator tunnel`; that remains a later tunnel/Plannotator task. Verification passed with `bun run typecheck`, `bun run lint`, `bun run test:unit:vitest`, and `git diff --check`.
+
 - [X] Define extension ids and metadata in TypeScript.
 - [X] Do not model per-extension defaults in the registry; seed all known extension keys as `false` in `extensions.txt`.
-- [ ] Include `requiresProvision` in extension metadata so the CLI can print accurate next steps. Open: metadata exists, but enable/disable guidance is still unconditional instead of metadata-driven.
-- [ ] Include a minimal extension host command registry interface even in the first implementation: an extension can define commands with `name`, `description`, `complete`, and `run`. Open: management commands are implemented, but extension-owned host commands are not yet registered through the extension definitions.
-- [ ] Pass extension host commands a narrow V1 context rather than the entire `RootcellApp`: include only what is needed, such as config, providers/tunnel helper, logging, enabled-state helpers, and VM-running checks. Open: blocked on the host command registry interface.
+- [X] Include `requiresProvision` in extension metadata so the CLI can print accurate next steps.
+- [X] Include a minimal extension host command registry interface even in the first implementation: an extension can define commands with `name`, `description`, `complete`, and `run`.
+- [X] Pass extension host commands a narrow V1 context rather than the entire `RootcellApp`: include only what is needed, such as config, providers/tunnel helper, logging, enabled-state helpers, and VM-running checks.
 - [X] Model guest-side extension contributions as declarative hook modules for each master config: `agent-vm.nix`, `firewall-vm.nix`, and `home.nix`.
 - [X] Store first-party built-in guest/Nix payload files under a top-level `extensions/` directory, e.g. `extensions/subagent/home-manager.nix` and `extensions/plannotator/home-manager.nix`.
 - [X] Store TypeScript registry/host command implementation under `src/rootcell/extensions/`.
@@ -213,7 +215,8 @@ Implementation update: the first Phase 1 slice added a Zod-validated built-in ex
 - [X] During `provision`, log the enabled extension set concisely (including `none`).
 - [X] Change `home.nix` so `subagent` is no longer unconditional and is provided by its extension's Home Manager hook module.
 - [X] The `subagent` Rootcell extension should preserve current behavior behind opt-in: install the Pi subagent extension and the bundled example agents (`planner.md`, `reviewer.md`, `scout.md`, `worker.md`).
-- [ ] Add tests around the Rootcell extension framework itself: parsing, boolean handling, comment preservation, unknown-key preservation, config generation, explicit-provision workflow checks, dynamic completions based on `extensions.txt` plus selected `--instance`, and command dispatch/tunnel setup behavior. Open: framework tests exist, but command-dispatch/tunnel setup tests are still open with the host command registry.
+- [X] Add tests around the Rootcell extension framework itself: parsing, boolean handling, comment preservation, unknown-key preservation, config generation, explicit-provision workflow checks, dynamic completions based on `extensions.txt` plus selected `--instance`, and extension-owned command dispatch.
+- [ ] Add tunnel setup tests with the tunnel implementation. Open: tunnel setup behavior depends on the Phase 2 tunnel primitive and Phase 4 Plannotator host command.
 - [X] Do not add integration tests for actual Plannotator product usage in Rootcell; that belongs with the Plannotator extension when it moves out.
 - [X] Extension management commands, including `extension list`, seed/create instance config files when needed, so users can discover/enable extensions before first VM boot.
 - [X] Add `extensions` to the existing `rootcell edit` targets so users can run `rootcell edit extensions`.

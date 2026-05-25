@@ -10,6 +10,7 @@ import { dirname, join, resolve } from "node:path";
 import { parseRootcellArgs } from "./args.ts";
 import { loadDotEnv, nixString, parseSecretMappings } from "./env.ts";
 import { runExtensionCommand } from "./extensions/commands.ts";
+import type { ExtensionHostCommandContext } from "./extensions/registry.ts";
 import { enabledExtensionIds, ensureExtensionsConfig } from "./extensions/config.ts";
 import { GENERATED_EXTENSION_HOOK_FILES, writeExtensionNixAggregators } from "./extensions/nix.ts";
 import { DEFAULT_IMAGE_MANIFEST_URL } from "./images.ts";
@@ -25,7 +26,7 @@ import {
 import { runCapture, runInherited } from "./process.ts";
 import { parseAwsEc2Config, parseRootcellVmProvider } from "./providers/aws-ec2-config.ts";
 import { createProviderBundle } from "./providers/factory.ts";
-import type { NetworkPlan, ProviderBundle, VmNetworkAttachment, VmStatus } from "./providers/types.ts";
+import type { NetworkPlan, ProviderBundle, VmNetworkAttachment, VmRole, VmStatus } from "./providers/types.ts";
 import { parseSchema } from "./schema.ts";
 import { parseAwsSecretsManagerProviderConfigs } from "./secrets/aws-secrets-manager-config.ts";
 import { RootcellConfigSchema, type RootcellConfig, type RootcellInstance, type SpyOptions, type VmFileSet } from "./types.ts";
@@ -1093,6 +1094,34 @@ function appForInstance(repoDir: string, env: NodeJS.ProcessEnv, instance: Rootc
   return new RootcellApp(config, createProviderBundle(config, log));
 }
 
+function extensionHostCommandContext(
+  repoDir: string,
+  env: NodeJS.ProcessEnv,
+  instanceName: string,
+  extensionConfig: ExtensionHostCommandContext["extensionConfig"],
+): ExtensionHostCommandContext {
+  const instanceEnv = envForExistingInstance(repoDir, env, instanceName);
+  const instance = loadExistingRootcellInstance(repoDir, instanceName, instanceEnv);
+  if (instance === null) {
+    throw new Error(`rootcell instance '${instanceName}' not found; run ./rootcell --instance ${instanceName} first.`);
+  }
+  const config = buildConfig(repoDir, instanceEnv, instance);
+  const providers = createProviderBundle(config, log);
+  return {
+    repoDir,
+    instanceName,
+    extensionConfig,
+    config,
+    log,
+    vmStatus: (role) => providers.vm.status(vmNameForRole(config, role)),
+    forwardLocalPort: (role, options) => providers.vm.forwardLocalPort(vmNameForRole(config, role), options),
+  };
+}
+
+function vmNameForRole(config: RootcellConfig, role: VmRole): string {
+  return role === "agent" ? config.agentVm : config.firewallVm;
+}
+
 function envForExistingInstance(repoDir: string, baseEnv: NodeJS.ProcessEnv, instanceName: string): NodeJS.ProcessEnv {
   const env = { ...baseEnv };
   loadDotEnv(instancePaths(repoDir, instanceName, env).envPath, env);
@@ -1307,12 +1336,18 @@ export async function rootcellMain(args: readonly string[], importMetaPath: stri
       return runEditCommand(repoDir, process.env, parsed.instanceName, parsed.rest[0]);
     }
     if (parsed.subcommand === "extension") {
-      return runExtensionCommand({
+      return await runExtensionCommand({
         repoDir,
         env: process.env,
         instanceName: parsed.instanceName,
         rest: parsed.rest,
         log,
+        createContext: ({ extensionConfig }) => extensionHostCommandContext(
+          repoDir,
+          process.env,
+          parsed.instanceName,
+          extensionConfig,
+        ),
       });
     }
 

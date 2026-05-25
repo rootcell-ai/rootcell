@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import { parseRootcellArgs } from "./args.ts";
+import { completeExtensionCommand, runExtensionCommand } from "./extensions/commands.ts";
 import {
   ensureExtensionsConfig,
   formatExtensionsList,
@@ -13,6 +14,10 @@ import {
   renderExtensionNixAggregator,
   writeExtensionNixAggregators,
 } from "./extensions/nix.ts";
+import {
+  RootcellExtensionDefinitionSchema,
+  type RootcellExtensionDefinition,
+} from "./extensions/registry.ts";
 import { ROOTCELL_SUBCOMMANDS } from "./metadata.ts";
 import { loadDotEnv, parseSecretMappings } from "./env.ts";
 import { resolveHostTool } from "./host-tools.ts";
@@ -29,7 +34,7 @@ import {
   type TerraformRunner,
 } from "./providers/aws-ec2-terraform.ts";
 import type { AwsEc2Api, AwsS3ObjectRef } from "./providers/aws-ec2-aws.ts";
-import type { ProviderBundle, VmNetworkAttachment } from "./providers/types.ts";
+import type { LocalPortForwardOptions, ProviderBundle, VmNetworkAttachment, VmRole } from "./providers/types.ts";
 import { createProviderBundle } from "./providers/factory.ts";
 import {
   limaNetworkListIncludes,
@@ -84,6 +89,35 @@ const ignoreLog = (): void => undefined;
 function expectRunArgs(value: ParsedRootcellRunArgs): void {
   expect(value).toEqual(expect.schemaMatching(ParsedRootcellRunArgsSchema));
 }
+
+describe("rootcell extension registry", () => {
+  test("validates host command definitions", () => {
+    const valid = {
+      id: "plannotator",
+      description: "test extension",
+      requiresProvision: true,
+      guestHooks: {
+        agentNixos: [],
+        firewallNixos: [],
+        homeManager: [],
+      },
+      hostCommands: [
+        {
+          name: "check-status",
+          description: "check status",
+          complete: () => [],
+          run: () => 0,
+        },
+      ],
+    };
+
+    expect(RootcellExtensionDefinitionSchema.safeParse(valid).success).toBe(true);
+    expect(RootcellExtensionDefinitionSchema.safeParse({
+      ...valid,
+      hostCommands: [{ ...valid.hostCommands[0], name: "CheckStatus" }],
+    }).success).toBe(false);
+  });
+});
 
 describe("rootcell argument parsing", () => {
   test("parses known subcommands", () => {
@@ -2091,6 +2125,132 @@ describe("rootcell extension command", () => {
       rmSync(repo, { recursive: true, force: true });
     }
   });
+
+  test("dispatches enabled extension host commands through a narrow context", async () => {
+    const repo = makeInstanceRepo();
+    try {
+      const env = { ...process.env, ROOTCELL_STATE_DIR: join(repo, ".state") };
+      mkdirSync(join(repo, ".state", "dev"), { recursive: true });
+      writeFileSync(join(repo, ".state", "dev", "extensions.txt"), "plannotator=true\nsubagent=false\n", "utf8");
+      const calls: string[] = [];
+      const extensions = testHostCommandExtensions(async (context, args) => {
+        calls.push(`run:${context.instanceName}:${args.join(",")}:${context.extensionConfig.enabled.has("plannotator") ? "enabled" : "disabled"}`);
+        const status = await context.vmStatus("agent");
+        calls.push(`status:${status.state}`);
+        const tunnel = await context.forwardLocalPort("firewall", {
+          localHost: "127.0.0.1",
+          localPort: 1234,
+          remoteHost: "127.0.0.1",
+          remotePort: 5678,
+        });
+        calls.push(`forward:${tunnel.localHost}:${String(tunnel.localPort)}:${String(tunnel.remotePort)}`);
+        return 0;
+      });
+
+      const status = await runExtensionCommand({
+        repoDir: repo,
+        env,
+        instanceName: "dev",
+        rest: ["plannotator", "check", "one", "two"],
+        log: (message) => calls.push(`log:${message}`),
+        extensions,
+        createContext: ({ extension, command, extensionConfig }) => {
+          calls.push(`context:${extension.id}:${command.name}`);
+          return {
+            repoDir: repo,
+            instanceName: "dev",
+            extensionConfig,
+            config: buildConfig(repo, env, fakeInstance("dev", repo, env)),
+            log: (message) => calls.push(`ctx-log:${message}`),
+            vmStatus: (role) => {
+              calls.push(`vmStatus:${role}`);
+              return Promise.resolve({ state: "running" });
+            },
+            forwardLocalPort: (role, options) => {
+              calls.push(`forwardLocalPort:${role}`);
+              return Promise.resolve({
+                ...options,
+                closed: Promise.resolve(0),
+                close: () => Promise.resolve(),
+              });
+            },
+          };
+        },
+      });
+
+      expect(status).toBe(0);
+      expect(calls).toEqual([
+        "context:plannotator:check",
+        "run:dev:one,two:enabled",
+        "vmStatus:agent",
+        "status:running",
+        "forwardLocalPort:firewall",
+        "forward:127.0.0.1:1234:5678",
+      ]);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects disabled, unknown, and missing extension host command paths", async () => {
+    const repo = makeInstanceRepo();
+    try {
+      const env = { ...process.env, ROOTCELL_STATE_DIR: join(repo, ".state") };
+      const logs: string[] = [];
+      let contexts = 0;
+      const input = {
+        repoDir: repo,
+        env,
+        instanceName: "dev",
+        log: (message: string) => logs.push(message),
+        extensions: testHostCommandExtensions(),
+        createContext: () => {
+          contexts += 1;
+          return {
+            repoDir: repo,
+            instanceName: "dev",
+            extensionConfig: parseExtensionsConfig("plannotator=true\n"),
+            config: buildConfig(repo, env, fakeInstance("dev", repo, env)),
+            log: ignoreLog,
+            vmStatus: (role: VmRole) => {
+              void role;
+              return Promise.resolve({ state: "running" as const });
+            },
+            forwardLocalPort: (role: VmRole, options: LocalPortForwardOptions) => {
+              void role;
+              return Promise.resolve({
+                ...options,
+                closed: Promise.resolve(0),
+                close: () => Promise.resolve(),
+              });
+            },
+          };
+        },
+      };
+
+      expect(await runExtensionCommand({ ...input, rest: ["plannotator", "check"] })).toBe(1);
+      expect(logs.join("\n")).toContain("extension 'plannotator' is disabled");
+      expect(existsSync(join(repo, ".state", "dev", "extensions.txt"))).toBe(false);
+      expect(contexts).toBe(0);
+
+      mkdirSync(join(repo, ".state", "dev"), { recursive: true });
+      writeFileSync(join(repo, ".state", "dev", "extensions.txt"), "plannotator=true\nsubagent=false\n", "utf8");
+      logs.length = 0;
+      expect(await runExtensionCommand({ ...input, rest: ["missing", "check"] })).toBe(2);
+      expect(logs.join("\n")).toContain("unknown extension command or id 'missing'");
+
+      logs.length = 0;
+      expect(await runExtensionCommand({ ...input, rest: ["plannotator"] })).toBe(2);
+      expect(logs.join("\n")).toContain("usage: rootcell extension plannotator <command>");
+
+      logs.length = 0;
+      expect(await runExtensionCommand({ ...input, rest: ["plannotator", "missing"] })).toBe(2);
+      expect(logs.join("\n")).toContain("unknown command for extension 'plannotator': 'missing'");
+      expect(contexts).toBe(0);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("rootcell edit env command", () => {
@@ -2189,6 +2349,73 @@ describe("shell completions", () => {
       rmSync(repo, { recursive: true, force: true });
     }
   });
+
+  test("extension completions expose enabled host command groups", () => {
+    const repo = makeInstanceRepo();
+    try {
+      const stateDir = join(repo, ".state");
+      const instanceDir = join(stateDir, "dev");
+      const env = { ...completionEnv("/bin/bash"), ROOTCELL_STATE_DIR: stateDir };
+      const extensions = testHostCommandExtensions();
+      mkdirSync(instanceDir, { recursive: true });
+      writeFileSync(join(instanceDir, "extensions.txt"), "plannotator=true\nsubagent=false\n", "utf8");
+
+      const root = completeExtensionCommand({
+        repoDir: repo,
+        env,
+        instanceName: "dev",
+        words: ["extension", ""],
+        current: "",
+        extensions,
+      });
+      expect(root).toContain("list");
+      expect(root).toContain("plannotator");
+
+      const commands = completeExtensionCommand({
+        repoDir: repo,
+        env,
+        instanceName: "dev",
+        words: ["extension", "plannotator", ""],
+        current: "",
+        extensions,
+      });
+      expect(commands).toEqual(["check"]);
+
+      const commandArgs = completeExtensionCommand({
+        repoDir: repo,
+        env,
+        instanceName: "dev",
+        words: ["extension", "plannotator", "check", ""],
+        current: "",
+        extensions,
+      });
+      expect(commandArgs).toEqual(["alpha"]);
+
+      writeFileSync(join(instanceDir, "extensions.txt"), "plannotator=false\nsubagent=false\n", "utf8");
+      const disabledRoot = completeExtensionCommand({
+        repoDir: repo,
+        env,
+        instanceName: "dev",
+        words: ["extension", ""],
+        current: "",
+        extensions,
+      });
+      expect(disabledRoot).not.toContain("plannotator");
+
+      const missing = completeExtensionCommand({
+        repoDir: repo,
+        env,
+        instanceName: "new",
+        words: ["extension", ""],
+        current: "",
+        extensions,
+      });
+      expect(missing).not.toContain("plannotator");
+      expect(existsSync(join(stateDir, "new", "extensions.txt"))).toBe(false);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
 });
 
 function runArgs(args: readonly string[]): ParsedRootcellRunArgs {
@@ -2201,6 +2428,42 @@ function runArgs(args: readonly string[]): ParsedRootcellRunArgs {
 
 function generatedCompletion(shell: string): string {
   return stripTrailingBlankLine(runCapture("./rootcell", ["completion"], { env: completionEnv(shell) }).stdout);
+}
+
+function testHostCommandExtensions(
+  run: RootcellExtensionDefinition["hostCommands"][number]["run"] = () => 0,
+): readonly RootcellExtensionDefinition[] {
+  return [
+    {
+      id: "plannotator",
+      description: "test host command extension",
+      requiresProvision: true,
+      guestHooks: {
+        agentNixos: [],
+        firewallNixos: [],
+        homeManager: [],
+      },
+      hostCommands: [
+        {
+          name: "check",
+          description: "test host command",
+          complete: ({ current }) => ["alpha"].filter((value) => value.startsWith(current)),
+          run,
+        },
+      ],
+    },
+    {
+      id: "subagent",
+      description: "test extension without host commands",
+      requiresProvision: true,
+      guestHooks: {
+        agentNixos: [],
+        firewallNixos: [],
+        homeManager: [],
+      },
+      hostCommands: [],
+    },
+  ];
 }
 
 function completionEnv(shell: string): NodeJS.ProcessEnv {
