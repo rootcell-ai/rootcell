@@ -120,13 +120,13 @@ describe("rootcell extension registry", () => {
     }).success).toBe(false);
   });
 
-  test("registers Plannotator package install hook without host commands", () => {
+  test("registers Plannotator package install hook and tunnel command", () => {
     const plannotator = ROOTCELL_EXTENSIONS.find((extension) => extension.id === "plannotator");
 
     expect(plannotator?.guestHooks.homeManager).toEqual(["extensions/plannotator/home-manager.nix"]);
     expect(plannotator?.guestHooks.agentNixos).toEqual(expect.schemaMatching(EmptyStringArraySchema));
     expect(plannotator?.guestHooks.firewallNixos).toEqual(expect.schemaMatching(EmptyStringArraySchema));
-    expect(plannotator?.hostCommands).toEqual(expect.schemaMatching(EmptyStringArraySchema));
+    expect(plannotator?.hostCommands.map((command) => command.name)).toEqual(["tunnel"]);
   });
 });
 

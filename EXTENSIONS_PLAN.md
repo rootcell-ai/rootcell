@@ -1,6 +1,6 @@
 # Rootcell Extensions Implementation Plan
 
-Status: Phase 3 Plannotator package/install is implemented; the Plannotator extension command remains in a later phase.
+Status: Phase 4 Plannotator host tunnel command is implemented; documentation and migration notes remain in Phase 5.
 
 ## Goal
 
@@ -249,16 +249,18 @@ Implementation update: the Phase 3 slice added a Nix package for `@plannotator/p
 
 ### Phase 4: Plannotator host command
 
-- Add a host command to open/hold the SSH tunnel through the firewall ProxyJump to the agent VM, forwarding host `127.0.0.1:<local>` to the Plannotator service on the agent (`127.0.0.1:19432` or agent private IP if binding requires it).
-- Require `plannotator=true` before `rootcell extension plannotator tunnel` runs; if disabled, fail with guidance to enable and provision. Dynamic completions should not offer this command path for instances where Plannotator is disabled.
-- Require an existing instance and the agent VM to already be running; do not seed, start, or provision from the tunnel command. Fail with guidance to enable/provision/start as appropriate.
-- Do not require or perform a Plannotator service health check before opening the tunnel; the expected workflow often starts the tunnel before Pi opens a Plannotator review server.
-- Keep the tunnel in the foreground until Ctrl-C; do not add background mode until Rootcell has an intentional process supervision/story for stopping background tunnels.
-- Print the host URL; do not automatically open a browser and do not add `--open` in the first iteration.
-- Print a concise message that the command is forwarding a localhost URL to the Plannotator server in the agent VM and that Ctrl-C stops the tunnel.
-- Prefer local port `19432`, but if it is busy choose another free localhost port and print the actual URL. The remote agent-side port remains `19432`.
-- Provide clear readiness/error messages.
-- Add Plannotator host-command tests for enabled-state gating, existing/running agent VM requirements, local port selection, `forwardLocalPort("agent", ...)` wiring, URL output, no browser launch, and no service health check.
+Implementation update: the Phase 4 slice added `rootcell extension plannotator tunnel` as an extension-owned host command in `src/rootcell/extensions/plannotator.ts` and registered it from the built-in extension registry. The command requires `plannotator=true` and a running agent VM, forwards host `127.0.0.1:<local>` to agent `127.0.0.1:19432` with local port fallback, prints the URL, and keeps the SSH tunnel in the foreground until Ctrl-C. It intentionally does not start/provision VMs, health-check Plannotator, launch a browser, or add background supervision. Tests in `src/rootcell/extensions/plannotator.test.ts` cover enabled-state gating, completions, argument validation, VM-state failures, tunnel wiring, URL output, and foreground close behavior. Verification passed with `bun run typecheck`, `bun run lint`, `bun run test:unit:vitest`, and `git diff --check`.
+
+- [X] Add a host command to open/hold the SSH tunnel through the firewall ProxyJump to the agent VM, forwarding host `127.0.0.1:<local>` to the Plannotator service on the agent (`127.0.0.1:19432` or agent private IP if binding requires it).
+- [X] Require `plannotator=true` before `rootcell extension plannotator tunnel` runs; if disabled, fail with guidance to enable and provision. Dynamic completions should not offer this command path for instances where Plannotator is disabled.
+- [X] Require an existing instance and the agent VM to already be running; do not seed, start, or provision from the tunnel command. Fail with guidance to enable/provision/start as appropriate.
+- [X] Do not require or perform a Plannotator service health check before opening the tunnel; the expected workflow often starts the tunnel before Pi opens a Plannotator review server.
+- [X] Keep the tunnel in the foreground until Ctrl-C; do not add background mode until Rootcell has an intentional process supervision/story for stopping background tunnels.
+- [X] Print the host URL; do not automatically open a browser and do not add `--open` in the first iteration.
+- [X] Print a concise message that the command is forwarding a localhost URL to the Plannotator server in the agent VM and that Ctrl-C stops the tunnel.
+- [X] Prefer local port `19432`, but if it is busy choose another free localhost port and print the actual URL. The remote agent-side port remains `19432`.
+- [X] Provide clear readiness/error messages.
+- [X] Add Plannotator host-command tests for enabled-state gating, existing/running agent VM requirements, local port selection, `forwardLocalPort("agent", ...)` wiring, URL output, no browser launch, and no service health check.
 
 ### Phase 5: Documentation and migration
 

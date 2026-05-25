@@ -3,6 +3,7 @@ import type { LocalPortForwardHandle, LocalPortForwardOptions, VmRole, VmStatus 
 import { NonEmptyStringSchema, parseSchema } from "../schema.ts";
 import type { RootcellConfig } from "../types.ts";
 import type { ParsedExtensionsConfig } from "./config.ts";
+import { PLANNOTATOR_TUNNEL_COMMAND } from "./plannotator.ts";
 
 export const RootcellExtensionIdSchema = z.enum(["plannotator", "subagent"]);
 
@@ -114,7 +115,7 @@ export const ROOTCELL_EXTENSIONS: readonly RootcellExtensionDefinition[] = parse
       firewallNixos: [],
       homeManager: ["extensions/plannotator/home-manager.nix"],
     },
-    hostCommands: NO_HOST_COMMANDS,
+    hostCommands: [PLANNOTATOR_TUNNEL_COMMAND],
   },
   {
     id: "subagent",
