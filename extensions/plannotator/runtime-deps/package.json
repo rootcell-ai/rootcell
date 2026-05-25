@@ -1,6 +1,6 @@
 {
   "name": "plannotator-runtime-deps",
-  "version": "0.19.16",
+  "version": "0.19.22",
   "private": true,
   "type": "module",
   "dependencies": {

@@ -11,11 +11,11 @@ let
 in
 pkgs.stdenvNoCC.mkDerivation rec {
   pname = "plannotator-pi-extension";
-  version = "0.19.16";
+  version = "0.19.22";
 
   src = pkgs.fetchurl {
     url = "https://registry.npmjs.org/@plannotator/pi-extension/-/pi-extension-${version}.tgz";
-    hash = "sha256-b7jxuG6FNhN3PT8yDLOMnmf3PqdO4tuwZM4o8nJMNto=";
+    hash = "sha256-X9JB3e5mgvWylLTtaFgysOnUy7QoCJ7t1MDog23SAoo=";
   };
 
   nativeBuildInputs = [
