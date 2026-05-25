@@ -1,6 +1,6 @@
 # Rootcell Extensions Implementation Plan
 
-Status: Phase 4 Plannotator host tunnel command is implemented; documentation and migration notes remain in Phase 5.
+Status: Phase 5 documentation and migration notes are implemented; the V1 Rootcell extensions plan is complete.
 
 ## Goal
 
@@ -264,6 +264,8 @@ Implementation update: the Phase 4 slice added `rootcell extension plannotator t
 
 ### Phase 5: Documentation and migration
 
-- Document the extension concept, commands, and Plannotator workflow.
-- Document the subagent migration clearly: existing VMs keep current files until explicit provision, but after provisioning with `subagent=false`, Home Manager removes the previously managed subagent extension/example agents. Users who rely on it must run `./rootcell extension enable subagent && ./rootcell provision`.
-- Add README examples.
+Implementation update: the Phase 5 documentation slice added a README Extensions section explaining per-instance opt-ins in `instances/<name>/extensions.txt`, management commands, explicit provision requirements, the Plannotator tunnel workflow, and the subagent migration. Related README examples were refreshed in Daily Workflow, Common Changes, Customize Pi, and Project Layout. Verification passed with a docs-focused `rg` check for the new extension terms and `git diff --check`.
+
+- [X] Document the extension concept, commands, and Plannotator workflow.
+- [X] Document the subagent migration clearly: existing VMs keep current files until explicit provision, but after provisioning with `subagent=false`, Home Manager removes the previously managed subagent extension/example agents. Users who rely on it must run `./rootcell extension enable subagent && ./rootcell provision`.
+- [X] Add README examples.
