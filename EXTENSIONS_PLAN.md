@@ -1,6 +1,6 @@
 # Rootcell Extensions Implementation Plan
 
-Status: Phase 2 host tunnel primitive is implemented; Plannotator package/install and the Plannotator extension command remain in later phases.
+Status: Phase 3 Plannotator package/install is implemented; the Plannotator extension command remains in a later phase.
 
 ## Goal
 
@@ -232,18 +232,20 @@ Implementation update: the Phase 2 slice added shared tunnel helpers for local-p
 
 ### Phase 3: Plannotator extension package/install
 
-- Package Plannotator through Nix/Home Manager, not runtime `pi install` inside the agent VM.
-- Fetch the published npm package `@plannotator/pi-extension`, pinned by version/hash, if it contains the needed source-like files and built HTML/generated assets.
-- Follow the existing Pi/subagent provisioning pattern: pinned Nix fetch/build inside VM provisioning, through the firewall-controlled network path, rather than a Rootcell host-side source cache.
-- Preserve a source-like package layout in the VM so Pi and the agent can inspect JS/TS extension code, similar to an npm-installed package, rather than only seeing an opaque bundled output.
-- Install/configure Plannotator using Pi's normal package model and package identity (`@plannotator/pi-extension`) rather than renaming it to the Rootcell extension id.
-- Let Nix control the pinned package content, while Pi loads it through normal package mechanisms.
-- Do not have Home Manager own/clobber `~/.pi/agent/settings.json`, because that is a user-editable Pi settings file.
-- Based on Pi code inspection, Pi loads settings only from `~/.pi/agent/settings.json` and `.pi/settings.json`; no separate Rootcell-managed settings fragment/include was found.
-- Use Pi auto-discovery/package-compatible filesystem locations instead. Pi auto-discovers `~/.pi/agent/extensions`, `skills`, `prompts`, and `themes`; for an extension directory, `package.json` with a `pi` manifest is honored before falling back to `index.ts`/`index.js`.
-- It is acceptable for Home Manager to manage specific Rootcell-owned files/subdirectories under these auto-discovery roots while leaving the parent directories user-writable.
-- Leave the exact package-compatible filesystem layout for Plannotator to the implementing agent, subject to the constraints above: do not own `settings.json`, preserve Pi's normal loading semantics, and keep package/source files inspectable.
-- Ensure Pi sessions receive `PLANNOTATOR_REMOTE=true` and `PLANNOTATOR_PORT=19432` when the Rootcell Plannotator extension is enabled by setting them in the Plannotator Home Manager module/user environment, not via one-off host session injection.
+Implementation update: the Phase 3 slice added a Nix package for `@plannotator/pi-extension@0.19.16`, pinned by npm tarball hash plus committed runtime dependency lock; installs a source-like package root with manifest, TypeScript files, browser HTML assets, skills, and `node_modules`; links it into Pi's extension auto-discovery tree through the enabled Home Manager hook; and sets/wraps Pi with `PLANNOTATOR_REMOTE=true` and `PLANNOTATOR_PORT=19432` without managing Pi settings. Verification passed with `bun run typecheck`, `bun run lint`, `bun run test:unit:vitest`, host-system Nix package build, and Home Manager module evals.
+
+- [X] Package Plannotator through Nix/Home Manager, not runtime `pi install` inside the agent VM.
+- [X] Fetch the published npm package `@plannotator/pi-extension`, pinned by version/hash, if it contains the needed source-like files and built HTML/generated assets.
+- [X] Follow the existing Pi/subagent provisioning pattern: pinned Nix fetch/build inside VM provisioning, through the firewall-controlled network path, rather than a Rootcell host-side source cache.
+- [X] Preserve a source-like package layout in the VM so Pi and the agent can inspect JS/TS extension code, similar to an npm-installed package, rather than only seeing an opaque bundled output.
+- [X] Install/configure Plannotator using Pi's normal package model and package identity (`@plannotator/pi-extension`) rather than renaming it to the Rootcell extension id.
+- [X] Let Nix control the pinned package content, while Pi loads it through normal package mechanisms.
+- [X] Do not have Home Manager own/clobber `~/.pi/agent/settings.json`, because that is a user-editable Pi settings file.
+- [X] Based on Pi code inspection, Pi loads settings only from `~/.pi/agent/settings.json` and `.pi/settings.json`; no separate Rootcell-managed settings fragment/include was found.
+- [X] Use Pi auto-discovery/package-compatible filesystem locations instead. Pi auto-discovers `~/.pi/agent/extensions`, `skills`, `prompts`, and `themes`; for an extension directory, `package.json` with a `pi` manifest is honored before falling back to `index.ts`/`index.js`.
+- [X] It is acceptable for Home Manager to manage specific Rootcell-owned files/subdirectories under these auto-discovery roots while leaving the parent directories user-writable.
+- [X] Leave the exact package-compatible filesystem layout for Plannotator to the implementing agent, subject to the constraints above: do not own `settings.json`, preserve Pi's normal loading semantics, and keep package/source files inspectable.
+- [X] Ensure Pi sessions receive `PLANNOTATOR_REMOTE=true` and `PLANNOTATOR_PORT=19432` when the Rootcell Plannotator extension is enabled by setting them in the Plannotator Home Manager module/user environment, not via one-off host session injection.
 
 ### Phase 4: Plannotator host command
 

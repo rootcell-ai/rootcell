@@ -98,12 +98,6 @@ export type RootcellExtensionDefinition = Readonly<
 
 const RootcellExtensionDefinitionsSchema = z.array(RootcellExtensionDefinitionSchema);
 
-const NO_GUEST_HOOKS: RootcellExtensionGuestHooks = parseSchema(RootcellExtensionGuestHooksSchema, {
-  agentNixos: [],
-  firewallNixos: [],
-  homeManager: [],
-}, "invalid empty rootcell extension guest hooks");
-
 const NO_HOST_COMMANDS: readonly RootcellExtensionHostCommand[] = parseSchema(
   RootcellExtensionHostCommandsSchema,
   [],
@@ -113,9 +107,13 @@ const NO_HOST_COMMANDS: readonly RootcellExtensionHostCommand[] = parseSchema(
 export const ROOTCELL_EXTENSIONS: readonly RootcellExtensionDefinition[] = parseSchema(RootcellExtensionDefinitionsSchema, [
   {
     id: "plannotator",
-    description: "Pi Plannotator integration metadata placeholder",
+    description: "Pi Plannotator integration package and remote-session configuration",
     requiresProvision: true,
-    guestHooks: NO_GUEST_HOOKS,
+    guestHooks: {
+      agentNixos: [],
+      firewallNixos: [],
+      homeManager: ["extensions/plannotator/home-manager.nix"],
+    },
     hostCommands: NO_HOST_COMMANDS,
   },
   {

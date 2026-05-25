@@ -15,6 +15,7 @@ import {
   writeExtensionNixAggregators,
 } from "./extensions/nix.ts";
 import {
+  ROOTCELL_EXTENSIONS,
   RootcellExtensionDefinitionSchema,
   type RootcellExtensionDefinition,
 } from "./extensions/registry.ts";
@@ -117,6 +118,15 @@ describe("rootcell extension registry", () => {
       ...valid,
       hostCommands: [{ ...valid.hostCommands[0], name: "CheckStatus" }],
     }).success).toBe(false);
+  });
+
+  test("registers Plannotator package install hook without host commands", () => {
+    const plannotator = ROOTCELL_EXTENSIONS.find((extension) => extension.id === "plannotator");
+
+    expect(plannotator?.guestHooks.homeManager).toEqual(["extensions/plannotator/home-manager.nix"]);
+    expect(plannotator?.guestHooks.agentNixos).toEqual(expect.schemaMatching(EmptyStringArraySchema));
+    expect(plannotator?.guestHooks.firewallNixos).toEqual(expect.schemaMatching(EmptyStringArraySchema));
+    expect(plannotator?.hostCommands).toEqual(expect.schemaMatching(EmptyStringArraySchema));
   });
 });
 
@@ -605,9 +615,11 @@ describe("rootcell extension Nix hooks", () => {
   });
 
   test("renders enabled Home Manager extension imports", () => {
-    const rendered = renderExtensionNixAggregator(parseExtensionsConfig("subagent=true\n"), "homeManager");
+    const rendered = renderExtensionNixAggregator(parseExtensionsConfig("subagent=true\nplannotator=true\n"), "homeManager");
     expect(rendered).toContain("../extensions/subagent/home-manager.nix");
+    expect(rendered).toContain("../extensions/plannotator/home-manager.nix");
     expect(renderExtensionNixAggregator(parseExtensionsConfig("subagent=true\n"), "agentNixos")).not.toContain("../extensions/subagent");
+    expect(renderExtensionNixAggregator(parseExtensionsConfig("plannotator=false\n"), "homeManager")).not.toContain("../extensions/plannotator/home-manager.nix");
   });
 
   test("writes the explicit generated hook files", () => {

@@ -1,0 +1,11 @@
+{
+  "name": "plannotator-runtime-deps",
+  "version": "0.19.16",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@joplin/turndown-plugin-gfm": "^1.0.64",
+    "@pierre/diffs": "^1.1.12",
+    "turndown": "^7.2.4"
+  }
+}
