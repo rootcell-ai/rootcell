@@ -216,7 +216,6 @@ Implementation update: the host-command registry slice added `RootcellExtensionD
 - [X] Change `home.nix` so `subagent` is no longer unconditional and is provided by its extension's Home Manager hook module.
 - [X] The `subagent` Rootcell extension should preserve current behavior behind opt-in: install the Pi subagent extension and the bundled example agents (`planner.md`, `reviewer.md`, `scout.md`, `worker.md`).
 - [X] Add tests around the Rootcell extension framework itself: parsing, boolean handling, comment preservation, unknown-key preservation, config generation, explicit-provision workflow checks, dynamic completions based on `extensions.txt` plus selected `--instance`, and extension-owned command dispatch.
-- [ ] Add tunnel setup tests with the tunnel implementation. Open: tunnel setup behavior depends on the Phase 2 tunnel primitive and Phase 4 Plannotator host command.
 - [X] Do not add integration tests for actual Plannotator product usage in Rootcell; that belongs with the Plannotator extension when it moves out.
 - [X] Extension management commands, including `extension list`, seed/create instance config files when needed, so users can discover/enable extensions before first VM boot.
 - [X] Add `extensions` to the existing `rootcell edit` targets so users can run `rootcell edit extensions`.
@@ -227,7 +226,7 @@ Implementation update: the host-command registry slice added `RootcellExtensionD
 
 - Reuse the generic `VmProvider.forwardLocalPort` / SSH local-forwarding components from the spy browser branch, assuming they are likely merged before implementation.
 - Model tunnel metadata with target VM role (`agent` or `firewall`) plus remote host/port, so Plannotator can target the agent and future spy-like extensions can target the firewall.
-- Add tests for SSH config/forward command construction and tunnel lifecycle.
+- Add generic tunnel primitive tests for SSH config/local-forward command construction, target role mapping, bind/remote host-port wiring, and tunnel lifecycle/close behavior.
 
 ### Phase 3: Plannotator extension package/install
 
@@ -255,6 +254,7 @@ Implementation update: the host-command registry slice added `RootcellExtensionD
 - Print a concise message that the command is forwarding a localhost URL to the Plannotator server in the agent VM and that Ctrl-C stops the tunnel.
 - Prefer local port `19432`, but if it is busy choose another free localhost port and print the actual URL. The remote agent-side port remains `19432`.
 - Provide clear readiness/error messages.
+- Add Plannotator host-command tests for enabled-state gating, existing/running agent VM requirements, local port selection, `forwardLocalPort("agent", ...)` wiring, URL output, no browser launch, and no service health check.
 
 ### Phase 5: Documentation and migration
 
