@@ -52,7 +52,7 @@ multi-conversation support straightforward, but those are not v1 scope.
 - Desktop-only UI. Do not spend v1 scope on mobile support.
 - No keyboard shortcut requirement. Design the browser UX on its own terms, not
   as a TUI clone.
-- Token counting for highlighted text and per-block token estimates are v1.5,
+- Token counting for highlighted text and per-block provider counts are v1.5,
   not v1.
 - Automated compaction detection is v1.5, not v1.
 - Broader charts/visual regression screenshots are v1.5 or later.
@@ -158,13 +158,23 @@ The first screen should be a live conversation-analysis surface:
 Performance requirements:
 
 - Virtualize the live timeline.
+- Virtualize every large or repeated content surface by viewport, not just the
+  timeline. The inspector, block lists, raw payloads, stream payloads, diffs,
+  and any future conversation/context views must remain responsive when a single
+  provider request contains a one million token context window.
+- Do not silently truncate normalized request/response bodies as a performance
+  strategy. If a body is too large to mount eagerly, render a virtualized or
+  lazily mounted full-content view with explicit preview/expand affordances.
+  Token counts, byte counts, hashes, diffs, and search must always be based on
+  the full captured content, not the preview.
 - Fetch summaries first and details on demand.
 - Paginate historical queries.
 - Keep stream events and raw payload details collapsed and loaded only on
   request.
 - Use semantic highlighting instead of editor-style highlighting as the primary
   visual language.
-- Avoid rendering giant JSON/code blocks into the DOM.
+- Avoid rendering giant JSON/code blocks into the DOM outside a viewport-bounded
+  virtualized/lazy surface.
 
 Semantic highlighting should distinguish:
 
@@ -194,6 +204,7 @@ ROOTCELL_SPY_ENABLED=false
 # ROOTCELL_SPY_MAX_BYTES=6442450944
 # ROOTCELL_SPY_SPOOL_MAX_BYTES=1073741824
 # ROOTCELL_SPY_STORE_RAW=false
+# ROOTCELL_SPY_TOKEN_COUNT_MODE=provider
 # ROOTCELL_SPY_BIND=127.0.0.1
 # ROOTCELL_SPY_PORT=6174
 ```
@@ -205,6 +216,7 @@ Defaults:
 - Total spy store budget: 6 GiB.
 - Spool budget: 1 GiB.
 - Raw exact payload storage disabled.
+- Token count mode defaults to Bedrock CountTokens provider counting.
 - Firewall service binds `127.0.0.1:6174`.
 
 `./rootcell spy` should choose host-local port `6174` when available and fall
@@ -671,6 +683,89 @@ V1 excludes:
     `./rootcell spy --no-open` refuses to launch while disabled, the
     `rootcell-spy.service` is inactive, the SQLite store is preserved, the spool
     is empty, and a disabled-state Pi/Bedrock call writes no spool files.
+- Completed the V1.5 provider-only token accounting foundation:
+  - Added shared token-count API contracts for `call`, `section`, `block`, and
+    transient/cached `selection` subjects with `provider_reported`,
+    `provider_counted`, and `unavailable` provenance only.
+  - Removed local token estimates and the `estimated` provenance path. All
+    displayed token counts now come from provider-reported usage, Bedrock
+    CountTokens, or an explicit unavailable record.
+  - Added provider-routed `POST /api/token-count`; the browser asks the
+    firewall-hosted spy service, and the browser never calls Bedrock directly.
+  - Added Bedrock Runtime CountTokens support with model-id normalization for
+    Anthropic inference-profile ids such as `us.` and `global.` prefixed Haiku
+    model ids.
+  - Extended `GET /api/calls/:id` so call details backfill missing request,
+    section, and block counts through the provider and return cached/stored
+    token records.
+  - Added SQLite schema v4 and token-count cache persistence keyed by subject
+    identity, source hash, and model id, with cascade deletion through retention
+    and clear-data.
+  - Updated the inspector with token/provenance chips on block rows, token
+    columns in request composition, explicit provider-count controls, and
+    highlighted selection counting that stores provider results.
+  - Updated generated spy env defaults and docs so
+    `ROOTCELL_SPY_TOKEN_COUNT_MODE=provider` is the only supported mode, and
+    forwarded Bedrock credential env when token counting is enabled.
+  - Fixed live Bedrock CountTokens payload issues found during validation:
+    Anthropic inference-profile ids are converted to base model ids for
+    CountTokens, and isolated system-context block text uses a valid Converse
+    message wrapper instead of a system-only payload that Bedrock rejects.
+  - Rebuilt and provisioned the default firewall/agent VMs with the corrected
+    spy service and UI assets.
+  - Verified `bun run typecheck`, `bun run lint`, `bun run test:spy`,
+    `bun run test:spy-ui:unit`, `bun run test:spy-ui:e2e`,
+    `bun run build:spy`, and `git diff --check`; service tests that bind local
+    ports were run with localhost permissions when required.
+- Completed V1.5 automated compaction candidate detection:
+  - Added shared compaction assessment API contracts with candidate source,
+    confidence, reasons, and request-transition evidence.
+  - Added a pure request-context compaction detector with Pi-specific request
+    profile signals and generic structural fallback heuristics.
+  - Wired call detail responses to compare each request against the previous
+    comparable request and return computed compaction assessment data without a
+    new persistence migration.
+  - Added a browser inspector summary label for candidate calls, distinguishing
+    Pi-pattern candidates from lower-confidence heuristic candidates.
+  - Added fixture-backed and synthetic coverage for Pi candidates, generic
+    candidates, and false positives where existing Pi/Bedrock fixtures should
+    not be flagged.
+  - Validated against the default Lima agent/firewall/spy setup with
+    `ROOTCELL_SPY_ENABLED=true`: provisioned the updated service/UI, launched
+    `./rootcell spy --no-open`, ran a real Pi/Bedrock session, triggered manual
+    `/compact`, sent a post-compaction prompt, and inspected the live spy API
+    and browser UI.
+  - Confirmed raw storage was not required for inspection. The live
+    post-compaction call was labeled `Pi compaction candidate` with low
+    confidence because Pi emitted a summary-like history block while still
+    carrying the earlier large history in the assembled request.
+  - Verified `bun run typecheck`, `bun run lint`, `bun run test:spy`,
+    `bun run test:spy-ui:unit`, `bun run build:spy`,
+    `bun run test:spy-ui:e2e`, and `git diff --check`; localhost-bound tests
+    and live VM work were run outside the sandbox where required.
+- Completed V1.5 P0 large-content handling:
+  - Virtualized large request and response block lists in the inspector so
+    repeated block rows do not create runaway DOM size.
+  - Replaced silent block body clipping with an explicit preview/full-text flow.
+    Large block previews are labeled, and expanded block bodies mount the full
+    captured text in a bounded readonly textarea.
+  - Preserved long-range text selection inside expanded block bodies so the
+    existing selected-text provider token counter can measure large spans such
+    as the first half of a compaction request.
+  - Kept full captured content as the source of truth for token counts, byte
+    counts, hashes, search, and diffing. No service API, SQLite schema,
+    provider adapter, or persistence changes were needed.
+  - Made raw payload and stream payload bodies collapsed by default, with
+    bounded preview/full-text expansion instead of silent truncation.
+  - Added Playwright coverage for large synthetic request blocks, bounded DOM
+    row counts, exact selected-substring submission to `POST /api/token-count`,
+    and large raw/stream payload expansion.
+  - Fixed the expanded full-text control styling so preview and full text use
+    the same monospace font, size, line height, and letter spacing.
+  - Verified `bun run typecheck`, `bun run lint`, `bun run test:spy-ui:unit`,
+    `bun run test:spy-ui:e2e`, `bun run build:spy`, and `git diff --check`;
+    localhost-bound Playwright tests were run outside the sandbox where
+    required.
 
 ### V1
 
@@ -759,18 +854,48 @@ notes, and follow-up verification baseline were moved to
 
 Add analysis depth:
 
-- Exact/estimated token counting for highlighted text, blocks, sections, and
+- [x] P0 viewport virtualization for all large content surfaces.
+  - The UI must handle a provider request with a one million token context
+    window without freezing, scroll jumps, runaway DOM size, or silent body
+    truncation.
+  - Timeline virtualization is not sufficient. Inspector block lists, block
+    bodies, raw payload bodies, stream payload previews, diff views, and future
+    conversation/context views must render only the visible viewport or
+    intentionally expanded local content.
+  - Full captured content remains the source of truth for token counts, byte
+    counts, hashes, search, and diffing. Preview text is only a presentation
+    optimization and must be labeled or expandable when it is not the full body.
+  - Replace `clipped(...)` body rendering with explicit viewport/lazy rendering
+    behavior and add regression coverage using very large synthetic blocks.
+  - Large block bodies are not line-virtualized because selected-text token
+    counting must support selecting large spans of text. Expanded blocks use a
+    bounded readonly textarea that mounts the full block text and preserves
+    native selection behavior.
+- [x] Shared token-count contracts for `call`, `section`, `block`, and
+  `selection` subjects.
+- [x] Provider-only token-count mode. Local estimates and `estimated`
+  provenance were removed.
+- [x] Provider-reported request totals are used when available.
+- [x] Provider-counted token counting for highlighted text, blocks, sections, and
   whole requests.
-- Provider-routed token-count backend; browser never calls LLM providers
+- [x] Provider-routed token-count backend; browser never calls LLM providers
   directly.
-- Per-block token provenance: `provider_reported`, `provider_counted`,
-  `estimated`, or `unavailable`.
-- Automated compaction candidate detection:
+- [x] Bedrock CountTokens support through the firewall spy service, including
+  Anthropic inference-profile model-id normalization.
+- [x] SQLite cache for provider-counted call, section, block, and selection
+  results with retention and clear-data deletion.
+- [x] Per-block token provenance: `provider_reported`, `provider_counted`, or
+  `unavailable`.
+- [x] Request composition token columns and block-row token/provenance chips.
+- [x] Explicit provider-count and highlighted-selection count UI actions.
+- [x] Automated compaction candidate detection:
   - Pi-specific request patterns from fixtures.
   - Generic fallback heuristics.
   - Labels that distinguish Pi-specific candidates from heuristic candidates.
-- Dedicated compaction investigation view.
-- Visual regression/screenshot checks.
+- [x] Dedicated compaction investigation view closed as not needed for V1.5:
+  the existing summary label plus visible request/response blocks make real
+  harness compaction calls obvious enough for the current operator workflow.
+- [x] Visual regression/screenshot checks for stable desktop UI states.
 
 ### V2
 

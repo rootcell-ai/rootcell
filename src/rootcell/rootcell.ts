@@ -69,10 +69,18 @@ const SPY_ENV_DEFAULTS = {
   ROOTCELL_SPY_MAX_BYTES: "6442450944",
   ROOTCELL_SPY_SPOOL_MAX_BYTES: "1073741824",
   ROOTCELL_SPY_STORE_RAW: "false",
+  ROOTCELL_SPY_TOKEN_COUNT_MODE: "provider",
   ROOTCELL_SPY_BIND: SPY_REMOTE_HOST,
   ROOTCELL_SPY_PORT: String(SPY_DEFAULT_PORT),
 } as const;
 const SPY_ENV_KEYS = Object.keys(SPY_ENV_DEFAULTS) as (keyof typeof SPY_ENV_DEFAULTS)[];
+const SPY_BEDROCK_SECRET_ENV_NAMES = new Set([
+  "AWS_ACCESS_KEY_ID",
+  "AWS_SECRET_ACCESS_KEY",
+  "AWS_SESSION_TOKEN",
+  "AWS_SECURITY_TOKEN",
+  "AWS_BEARER_TOKEN_BEDROCK",
+]);
 
 export interface VmListEntry {
   readonly instance: string;
@@ -560,6 +568,7 @@ exit 1
     await this.providers.vm.exec(this.config.firewallVm, [
       "sudo",
       "install",
+      "-D",
       "-m",
       "0600",
       "-o",
@@ -574,6 +583,10 @@ exit 1
 
   private nixosConfiguration(role: "agent" | "firewall"): string {
     return role === "agent" ? "agent-vm" : "firewall-vm";
+  }
+
+  private guestFlakeRef(attribute: string): string {
+    return `path:${this.config.guestRepoDir}#${attribute}`;
   }
 
   private async runSpy(options: SpyOptions): Promise<number> {
@@ -616,11 +629,11 @@ exit 1
     const remotePort = this.spyRemotePort();
     const script = `
 set -e
-if [ ! -f /etc/agent-vm/spy.env ]; then
+if ! sudo test -f /etc/agent-vm/spy.env; then
   echo missing-env
   exit 10
 fi
-if ! grep -Eq '^ROOTCELL_SPY_ENABLED=(1|true|yes|on)$' /etc/agent-vm/spy.env; then
+if ! sudo grep -Eq '^ROOTCELL_SPY_ENABLED=(1|true|yes|on)$' /etc/agent-vm/spy.env; then
   echo disabled
   exit 11
 fi
@@ -728,6 +741,10 @@ fi
     return envBoolean(process.env.ROOTCELL_SPY_ENABLED, false);
   }
 
+  private isSpyProviderTokenCountingEnabled(): boolean {
+    return true;
+  }
+
   private buildSpyArtifacts(): void {
     log("building spy service and browser assets...");
     runInherited("bun", ["run", "build:spy"], {
@@ -736,7 +753,7 @@ fi
   }
 
   private async configureFirewallSpyService(): Promise<void> {
-    this.writeSpyEnv();
+    await this.writeSpyEnv();
     const hostPath = join(this.config.generatedDir, "spy.env");
     const stagedPath = "/tmp/.rootcell-spy.env.staged";
     await this.providers.vm.copyToGuest(this.config.firewallVm, hostPath, stagedPath);
@@ -744,11 +761,11 @@ fi
       "sudo",
       "install",
       "-m",
-      "0644",
+      "0640",
       "-o",
       "root",
       "-g",
-      "root",
+      "rootcell-spy",
       stagedPath,
       "/etc/agent-vm/spy.env",
     ]);
@@ -789,8 +806,17 @@ fi
     });
   }
 
-  private writeSpyEnv(): void {
-    writeFileSync(join(this.config.generatedDir, "spy.env"), renderSpyEnv(process.env), "utf8");
+  private async writeSpyEnv(): Promise<void> {
+    const extraEnv = this.isSpyProviderTokenCountingEnabled()
+      ? [
+        ...await this.readSecretEnv(SPY_BEDROCK_SECRET_ENV_NAMES),
+        `AWS_REGION=${this.config.awsEc2?.region ?? process.env.AWS_REGION ?? "us-east-1"}`,
+        `AWS_DEFAULT_REGION=${this.config.awsEc2?.region ?? process.env.AWS_DEFAULT_REGION ?? process.env.AWS_REGION ?? "us-east-1"}`,
+      ]
+      : [];
+    const spyEnvPath = join(this.config.generatedDir, "spy.env");
+    writeFileSync(spyEnvPath, renderSpyEnv(process.env, extraEnv), "utf8");
+    chmodSync(spyEnvPath, 0o600);
   }
 
   private async ensureFirewall(force: boolean, options: { readonly allowProvision: boolean } = { allowProvision: true }): Promise<boolean> {
@@ -844,8 +870,7 @@ systemctl is-active mitmproxy-explicit >/dev/null 2>&1 \\
     await this.bootstrapFirewallDns();
     await this.runNixosSwitch("firewall", `
 set -e
-cd '${this.config.guestRepoDir}'
-sudo nixos-rebuild switch --flake .#${this.nixosConfiguration("firewall")}
+sudo nixos-rebuild switch --flake ${shellQuote(this.guestFlakeRef(this.nixosConfiguration("firewall")))}
 `);
     await this.syncFirewallCa();
     await this.providers.vm.exec(this.config.firewallVm, [
@@ -897,7 +922,6 @@ sudo nixos-rebuild switch --flake .#${this.nixosConfiguration("firewall")}
     await this.bootstrapAgentFirewallTrust();
     await this.runNixosSwitch("agent", `
 set -e
-cd '${this.config.guestRepoDir}'
 export NIX_SSL_CERT_FILE=/tmp/agent-vm-bootstrap-ca-bundle.crt
 export SSL_CERT_FILE=/tmp/agent-vm-bootstrap-ca-bundle.crt
 export GIT_SSL_CAINFO=/tmp/agent-vm-bootstrap-ca-bundle.crt
@@ -907,7 +931,7 @@ sudo env \\
   SSL_CERT_FILE="$SSL_CERT_FILE" \\
   GIT_SSL_CAINFO="$GIT_SSL_CAINFO" \\
   REQUESTS_CA_BUNDLE="$REQUESTS_CA_BUNDLE" \\
-  nixos-rebuild switch --flake .#${this.nixosConfiguration("agent")}
+  nixos-rebuild switch --flake ${shellQuote(this.guestFlakeRef(this.nixosConfiguration("agent")))}
 `);
     await this.runAgentHomeManager();
     log("agent provisioning complete.");
@@ -965,12 +989,11 @@ fi
   private async runAgentHomeManager(): Promise<void> {
     const script = `
 set -e
-cd '${this.config.guestRepoDir}'
 export NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 export GIT_SSL_CAINFO=/etc/ssl/certs/ca-certificates.crt
 export REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
-nix run .#home-manager -- switch --flake .#${this.config.guestUser}
+nix run ${shellQuote(this.guestFlakeRef("home-manager"))} -- switch --flake ${shellQuote(this.guestFlakeRef(this.config.guestUser))}
 `;
     const attempts = 4;
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -991,7 +1014,7 @@ nix run .#home-manager -- switch --flake .#${this.config.guestUser}
     }
   }
 
-  private async readSecretEnv(): Promise<string[]> {
+  private async readSecretEnv(allowedEnvNames?: ReadonlySet<string>): Promise<string[]> {
     const path = this.config.secretsPath;
     if (!existsSync(path)) {
       return [];
@@ -1000,6 +1023,9 @@ nix run .#home-manager -- switch --flake .#${this.config.guestUser}
 
     const injected: string[] = [];
     for (const mapping of mappings) {
+      if (allowedEnvNames !== undefined && !allowedEnvNames.has(mapping.envName)) {
+        continue;
+      }
       let value;
       try {
         value = await this.providers.secrets.read(mapping.secret);
@@ -1133,7 +1159,7 @@ function editPath(paths: ReturnType<typeof instancePaths>, target: (typeof EDIT_
   return join(paths.proxyDir, EDIT_PROXY_FILES[target]);
 }
 
-export function renderSpyEnv(env: NodeJS.ProcessEnv = process.env): string {
+export function renderSpyEnv(env: NodeJS.ProcessEnv = process.env, extraEnv: readonly string[] = []): string {
   return [
     "# Generated by ./rootcell provision. DO NOT EDIT.",
     ...SPY_ENV_KEYS.map((key) => {
@@ -1141,6 +1167,18 @@ export function renderSpyEnv(env: NodeJS.ProcessEnv = process.env): string {
       const value = key === "ROOTCELL_SPY_ENABLED"
         ? (envBoolean(raw, false) ? "true" : "false")
         : raw === undefined || raw.trim().length === 0 ? SPY_ENV_DEFAULTS[key] : raw.trim();
+      return `${key}=${envFileValue(value)}`;
+    }),
+    ...extraEnv.map((entry) => {
+      const separator = entry.indexOf("=");
+      if (separator <= 0) {
+        throw new Error("spy environment extra entries must be NAME=value");
+      }
+      const key = entry.slice(0, separator);
+      const value = entry.slice(separator + 1);
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+        throw new Error(`invalid spy environment variable name: ${key}`);
+      }
       return `${key}=${envFileValue(value)}`;
     }),
     "",

@@ -9,12 +9,15 @@ import {
   SpyCallDiffSchema,
   SpyCallSummaryPageSchema,
   SpyServiceHealthSchema,
+  SpyTokenCountResponseSchema,
   StreamEventPageSchema,
   SseEventNameSchema,
   SseEventPayloadSchemas,
+  type SpyCallDetail,
 } from "./api-contracts.ts";
 import { SpoolEventSchema, type SpoolEvent } from "./schemas.ts";
 import { spyServiceConfigFromEnv, startSpyService, type SpyServiceHandle } from "./service.ts";
+import type { BedrockTokenCounter, BedrockTokenCountInput } from "./bedrock-token-count.ts";
 
 const FIXTURE_PATH = new URL("./fixtures/bedrock-pi-us-sonnet-4-6.ndjson", import.meta.url);
 
@@ -31,6 +34,29 @@ interface SseReader {
     | { readonly done: true; readonly value?: undefined }
     | { readonly done: false; readonly value: Uint8Array }
   >;
+}
+
+class FakeTokenCounter implements BedrockTokenCounter {
+  readonly inputs: BedrockTokenCountInput[] = [];
+
+  constructor(
+    private readonly result: number,
+    private readonly failure?: Error | undefined,
+    private readonly delayMs = 0,
+  ) {}
+
+  async count(input: BedrockTokenCountInput): Promise<number> {
+    if (this.delayMs > 0) {
+      await sleep(this.delayMs);
+    } else {
+      await Promise.resolve();
+    }
+    this.inputs.push(input);
+    if (this.failure !== undefined) {
+      throw this.failure;
+    }
+    return this.result;
+  }
 }
 
 const tempRoots: string[] = [];
@@ -56,6 +82,8 @@ function fixtureEvents(): SpoolEvent[] {
 function createTestService(options: {
   readonly storeRaw?: boolean | undefined;
   readonly startIngestion?: boolean | undefined;
+  readonly tokenCounter?: BedrockTokenCounter | undefined;
+  readonly tokenCountMode?: "provider" | undefined;
 } = {}): TestService {
   const root = mkdtempSync(join(tmpdir(), "rootcell-spy-service-"));
   tempRoots.push(root);
@@ -75,10 +103,12 @@ function createTestService(options: {
       spoolDir,
       staticDir,
       storeRaw: options.storeRaw === true,
+      ...(options.tokenCountMode === undefined ? {} : { tokenCountMode: options.tokenCountMode }),
       ingestIntervalMs: 60_000,
       retentionIntervalMs: 60_000,
     },
     startIngestion: options.startIngestion ?? false,
+    tokenCounter: options.tokenCounter,
   });
   serviceHandles.push(handle);
   return { root, dbPath, spoolDir, staticDir, handle };
@@ -104,6 +134,10 @@ describe("spy web service", () => {
     expect(spyServiceConfigFromEnv({}).enabled).toBe(true);
     expect(spyServiceConfigFromEnv({ ROOTCELL_SPY_ENABLED: "false" }).enabled).toBe(false);
     expect(spyServiceConfigFromEnv({ ROOTCELL_SPY_ENABLED: "true" }).enabled).toBe(true);
+    expect(spyServiceConfigFromEnv({}).tokenCountMode).toBe("provider");
+    expect(spyServiceConfigFromEnv({ ROOTCELL_SPY_TOKEN_COUNT_MODE: "estimate" }).tokenCountMode).toBe("provider");
+    expect(spyServiceConfigFromEnv({ ROOTCELL_SPY_TOKEN_COUNT_MODE: "provider" }).tokenCountMode).toBe("provider");
+    expect(spyServiceConfigFromEnv({ AWS_REGION: "us-west-2" }).bedrockRegion).toBe("us-west-2");
   });
 
   test("serves health, paginated calls, details, diff, stream events, and search", async () => {
@@ -122,6 +156,7 @@ describe("spy web service", () => {
     const health = await jsonAs(healthResponse, SpyServiceHealthSchema);
     expect(health.service.enabled).toBe(true);
     expect(health.service.storeRaw).toBe(false);
+    expect(health.service.tokenCountMode).toBe("provider");
     expect(health.store.providerCallCount).toBe(5);
     expect(health.store.droppedCaptureCount).toBe(0);
     expect(health.store.lastIngestAt).not.toBeNull();
@@ -150,6 +185,7 @@ describe("spy web service", () => {
     expect(detail.requestComposition.totalMessageCount).toBeGreaterThan(0);
     expect(detail.requestComposition.sections.some((section) => section.present)).toBe(true);
     expect(detail.requestComposition.usage).toEqual(detail.summary.usage);
+    expect(detail.compaction.status).toBe("none");
     expect(detail.httpEvents).toHaveLength(2);
     expect(detail.blocks.length).toBeGreaterThan(0);
     expect(detail.usageRecords.length).toBeGreaterThan(0);
@@ -219,6 +255,141 @@ describe("spy web service", () => {
 
     const missingResponse = await fetch(`${handle.url}/api/calls/missing-call`);
     expect(missingResponse.status).toBe(404);
+  });
+
+  test("returns call details immediately and streams provider token counts over SSE", async () => {
+    const counter = new FakeTokenCounter(77, undefined, 250);
+    const { handle, spoolDir } = createTestService({ tokenCounter: counter, tokenCountMode: "provider" });
+    writeSpoolEvents(spoolDir, fixtureEvents());
+    expect(handle.ingestOnce()).toMatchObject({ ingested: 10 });
+
+    const response = await fetch(`${handle.url}/api/events`);
+    expect(response.status).toBe(200);
+    if (response.body === null) {
+      throw new Error("missing SSE body");
+    }
+    const reader = response.body.getReader();
+    try {
+      await readSseUntil(reader, "event: hello");
+
+      const page = await jsonAs(await fetch(`${handle.url}/api/calls?limit=1`), SpyCallSummaryPageSchema);
+      const callId = page.items[0]?.call.id;
+      if (callId === undefined) {
+        throw new Error("missing call id");
+      }
+      const detail = await jsonAs(await fetch(`${handle.url}/api/calls/${encodeURIComponent(callId)}`), SpyCallDetailSchema);
+      const block = detail.blocks.find((candidate) => candidate.direction === "request" && candidate.text !== undefined);
+      if (block === undefined) {
+        throw new Error("missing text block");
+      }
+      const responseBlock = detail.blocks.find((candidate) => candidate.direction === "response" && candidate.text !== undefined);
+      if (responseBlock === undefined) {
+        throw new Error("missing response text block");
+      }
+
+      expect(detail.tokenCounts.find((record) => record.subjectType === "block" && record.blockId === block.id))
+        .toBeUndefined();
+      expect(counter.inputs).toHaveLength(0);
+
+      const tokenEvents = await readSseUntil(reader, "event: token-counts-changed");
+      expect(tokenEvents).toContain(`"callId":"${callId}"`);
+      expect(tokenEvents).toContain("\"provenance\":\"provider_counted\"");
+      expectValidSsePayloads(tokenEvents);
+      await waitUntil(() => counter.inputs.length >= expectedBackgroundProviderCount(detail));
+
+      const refreshed = await jsonAs(await fetch(`${handle.url}/api/calls/${encodeURIComponent(callId)}`), SpyCallDetailSchema);
+      expect(refreshed.tokenCounts.find((record) => record.subjectType === "block" && record.blockId === responseBlock.id))
+        .toMatchObject({ subjectType: "block", direction: "response", provenance: "provider_counted", tokens: 77 });
+    } finally {
+      await reader.cancel();
+    }
+  });
+
+  test("counts tokens through explicit provider calls and cached provider counts", async () => {
+    const counter = new FakeTokenCounter(77);
+    const { handle, spoolDir } = createTestService({ tokenCounter: counter, tokenCountMode: "provider" });
+    writeSpoolEvents(spoolDir, fixtureEvents());
+    expect(handle.ingestOnce()).toMatchObject({ ingested: 10 });
+
+    const page = await jsonAs(await fetch(`${handle.url}/api/calls?limit=1`), SpyCallSummaryPageSchema);
+    const callId = page.items[0]?.call.id;
+    if (callId === undefined) {
+      throw new Error("missing call id");
+    }
+    const detail = handle.store.getCallDetail(callId);
+    if (detail === null) {
+      throw new Error("missing call detail");
+    }
+    const block = detail.blocks.find((candidate) => candidate.direction === "request" && candidate.text !== undefined);
+    if (block === undefined) {
+      throw new Error("missing text block");
+    }
+
+    const countedBlock = await jsonAs(await fetch(`${handle.url}/api/token-count`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "provider", subjects: [{ type: "block", callId, blockId: block.id }] }),
+    }), SpyTokenCountResponseSchema);
+    expect(countedBlock.records[0]).toMatchObject({ subjectType: "block", provenance: "provider_counted", tokens: 77 });
+    expect(counter.inputs).toHaveLength(1);
+
+    const cachedBlock = await jsonAs(await fetch(`${handle.url}/api/token-count`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "provider", subjects: [{ type: "block", callId, blockId: block.id }] }),
+    }), SpyTokenCountResponseSchema);
+    expect(cachedBlock.records[0]).toMatchObject({ subjectType: "block", provenance: "provider_counted", tokens: 77 });
+    expect(counter.inputs).toHaveLength(1);
+
+    const selection = await jsonAs(await fetch(`${handle.url}/api/token-count`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "provider", subjects: [{ type: "selection", callId, text: "selected text" }] }),
+    }), SpyTokenCountResponseSchema);
+    expect(selection.records[0]).toMatchObject({ provenance: "provider_counted", tokens: 77 });
+    expect(counter.inputs).toHaveLength(2);
+
+    const cachedSelection = await jsonAs(await fetch(`${handle.url}/api/token-count`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "provider", subjects: [{ type: "selection", callId, text: "selected text" }] }),
+    }), SpyTokenCountResponseSchema);
+    expect(cachedSelection.records[0]).toMatchObject({ provenance: "provider_counted", tokens: 77 });
+    expect(counter.inputs).toHaveLength(2);
+
+    const reported = await jsonAs(await fetch(`${handle.url}/api/token-count`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "provider", subjects: [{ type: "call", callId, direction: "request" }] }),
+    }), SpyTokenCountResponseSchema);
+    expect(reported.records[0]).toMatchObject({ subjectType: "call", provenance: "provider_counted", tokens: 77 });
+    expect(counter.inputs).toHaveLength(3);
+  });
+
+  test("returns unavailable token records when provider counting fails", async () => {
+    const { handle, spoolDir } = createTestService({
+      tokenCounter: new FakeTokenCounter(0, new Error("provider offline")),
+      tokenCountMode: "provider",
+    });
+    writeSpoolEvents(spoolDir, fixtureEvents());
+    expect(handle.ingestOnce()).toMatchObject({ ingested: 10 });
+
+    const page = await jsonAs(await fetch(`${handle.url}/api/calls?limit=1`), SpyCallSummaryPageSchema);
+    const callId = page.items[0]?.call.id;
+    if (callId === undefined) {
+      throw new Error("missing call id");
+    }
+    const response = await jsonAs(await fetch(`${handle.url}/api/token-count`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "provider", subjects: [{ type: "selection", callId, text: "selected text" }] }),
+    }), SpyTokenCountResponseSchema);
+    expect(response.records[0]).toMatchObject({
+      subjectType: "selection",
+      provenance: "unavailable",
+      tokens: null,
+      error: "provider offline",
+    });
   });
 
   test("returns raw payloads only when raw storage is enabled", async () => {
@@ -346,6 +517,49 @@ async function readSseUntil(
 
 async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitUntil(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) {
+      throw new Error("timed out waiting for condition");
+    }
+    await sleep(10);
+  }
+}
+
+function expectedBackgroundProviderCount(detail: SpyCallDetail): number {
+  const present = new Set(detail.tokenCounts
+    .filter((record) => record.provenance !== "unavailable")
+    .map((record) => {
+      if (record.subjectType === "call") {
+        return ["call", record.callId ?? "", record.direction ?? "", "", "", ""].join(":");
+      }
+      if (record.subjectType === "section") {
+        return ["section", record.callId ?? "", record.direction ?? "", "", record.kind ?? "", ""].join(":");
+      }
+      if (record.subjectType === "block") {
+        return ["block", record.callId ?? "", "", record.blockId ?? "", ""].join(":");
+      }
+      return ["selection", record.callId ?? "", "", "", "", record.label ?? record.sourceHash].join(":");
+    }));
+  const missing = new Set<string>();
+  const callKey = ["call", detail.summary.call.id, "request", "", "", ""].join(":");
+  if (!present.has(callKey)) {
+    missing.add(callKey);
+  }
+  for (const block of detail.blocks) {
+    const sectionKey = ["section", detail.summary.call.id, block.direction, "", block.kind, ""].join(":");
+    if (!present.has(sectionKey)) {
+      missing.add(sectionKey);
+    }
+    const blockKey = ["block", detail.summary.call.id, "", block.id, "", ""].join(":");
+    if (!present.has(blockKey)) {
+      missing.add(blockKey);
+    }
+  }
+  return missing.size;
 }
 
 function expectValidSsePayloads(text: string): void {

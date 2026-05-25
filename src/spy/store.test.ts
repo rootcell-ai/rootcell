@@ -141,6 +141,23 @@ function requestVariant(
   return SpoolRequestEventSchema.parse({ ...event, ...overrides });
 }
 
+function syntheticBedrockRequest(flowId: string, ts: number, body: Record<string, unknown>): SpoolRequestEvent {
+  return SpoolRequestEventSchema.parse({
+    version: 1,
+    ts,
+    direction: "request",
+    flow_id: flowId,
+    provider: "bedrock",
+    operation: "converse-stream",
+    model_id: "us.anthropic.claude-sonnet-4-6",
+    host: "bedrock-runtime.us-east-1.amazonaws.com",
+    method: "POST",
+    path: "/model/us.anthropic.claude-sonnet-4-6/converse-stream",
+    headers: [["content-type", "application/json"]],
+    body_text: JSON.stringify(body),
+  });
+}
+
 function responseVariant(
   event: SpoolResponseEvent,
   overrides: Partial<Pick<SpoolResponseEvent, "flow_id" | "ts" | "model_id" | "operation" | "status_code">>,
@@ -357,6 +374,7 @@ describe("spy SQLite store", () => {
 
       const simple = requiredDetail(store, "call-fixture-flow-simple");
       expect(simple.requestComposition.totalBlockCount).toBe(simple.summary.requestBlockCount);
+      expect(simple.compaction.status).toBe("none");
       expect(simple.requestComposition.totalByteSize).toBe(simple.summary.requestByteSize);
       expect(simple.requestComposition.totalMessageCount).toBe(1);
       expect(simple.requestComposition.usage).toEqual(simple.summary.usage);
@@ -384,6 +402,110 @@ describe("spy SQLite store", () => {
       expect(toolResult.requestComposition.totalMessageCount).toBe(3);
       expect(compositionSection(toolResult, "tool-call")).toMatchObject({ present: true, blockCount: 1 });
       expect(compositionSection(toolResult, "tool-result")).toMatchObject({ present: true, blockCount: 1 });
+    } finally {
+      store.close();
+    }
+  });
+
+  test("computes Pi compaction assessments from request context transitions", () => {
+    const { store } = createTestStore();
+    try {
+      store.persistRequest(syntheticBedrockRequest("fixture-flow-pre-compaction", 1, {
+        messages: [
+          { role: "user", content: [{ text: "First historical user turn. ".repeat(180) }] },
+          { role: "assistant", content: [{ text: "First historical assistant turn. ".repeat(180) }] },
+          { role: "user", content: [{ text: "Second historical user turn. ".repeat(180) }] },
+          { role: "assistant", content: [{ text: "Second historical assistant turn. ".repeat(180) }] },
+          { role: "user", content: [{ text: "continue before compaction" }] },
+        ],
+        system: [{ text: "You are an expert coding assistant operating inside pi, a coding agent harness." }],
+        inferenceConfig: { maxTokens: 32_000 },
+      }));
+      store.persistRequest(syntheticBedrockRequest("fixture-flow-post-compaction", 2, {
+        messages: [
+          { role: "user", content: [{ text: "Summary of the conversation so far: the user asked for a multi-file refactor and the agent edited the store layer." }] },
+          { role: "user", content: [{ text: "continue after compaction" }] },
+        ],
+        system: [{ text: "You are an expert coding assistant operating inside pi, a coding agent harness." }],
+        inferenceConfig: { maxTokens: 32_000 },
+      }));
+
+      const detail = requiredDetail(store, bedrockCallIdForFlow("fixture-flow-post-compaction"));
+      expect(detail.compaction).toMatchObject({
+        status: "candidate",
+        source: "pi_pattern",
+        label: "Pi compaction candidate",
+      });
+      expect(detail.compaction.reasons).toContain("summary_like_history_block");
+      expect(detail.compaction.reasons).toContain("prior_history_byte_drop");
+      expect(detail.compaction.evidence.previousCallId).toBe(bedrockCallIdForFlow("fixture-flow-pre-compaction"));
+    } finally {
+      store.close();
+    }
+  });
+
+  test("prepares, caches, and cascades token count records", () => {
+    let now = 1_000;
+    const { dbPath, spoolDir, store } = createTestStore({ now: () => now });
+    try {
+      writeSpoolEvents(spoolDir, fixturePair());
+      expect(store.ingestSpoolBatch()).toMatchObject({ ingested: 2 });
+
+      const callId = bedrockCallIdForFlow("fixture-flow-simple");
+      let detail = requiredDetail(store, callId);
+      const requestTokenCount = detail.tokenCounts.find((record) =>
+        record.subjectType === "call" && record.direction === "request"
+      );
+      expect(requestTokenCount).toBeUndefined();
+
+      const block = detail.blocks.find((candidate) => candidate.direction === "request" && candidate.text !== undefined);
+      if (block === undefined) {
+        throw new Error("missing request text block");
+      }
+      const prepared = store.prepareTokenCountSubject({ type: "block", callId, blockId: block.id });
+      expect(prepared).not.toBeNull();
+      expect(prepared?.base).toMatchObject({
+        subjectType: "block",
+        blockId: block.id,
+      });
+
+      now = 1_100;
+      store.saveProviderTokenCount({
+        subjectType: "block",
+        callId,
+        blockId: block.id,
+        direction: block.direction,
+        kind: block.kind,
+        sourceHash: block.content_hash,
+        modelId: detail.summary.call.model_id,
+        tokens: 42,
+        provenance: "provider_counted",
+        countedAt: now,
+      });
+      detail = requiredDetail(store, callId);
+      expect(detail.tokenCounts.find((record) => record.subjectType === "block" && record.blockId === block.id))
+        .toMatchObject({ provenance: "provider_counted", tokens: 42 });
+      expect(countRows(dbPath, "token_count")).toBe(1);
+
+      const selection = store.prepareTokenCountSubject({ type: "selection", callId, text: "selected text", label: "selection" });
+      expect(selection?.cacheKey).toBeDefined();
+      now = 1_200;
+      store.saveProviderTokenCount({
+        subjectType: "selection",
+        callId,
+        label: "selection",
+        sourceHash: selection?.base.sourceHash ?? "",
+        modelId: detail.summary.call.model_id,
+        tokens: 7,
+        provenance: "provider_counted",
+        countedAt: now,
+      });
+      expect(store.getCachedProviderTokenCount(selection?.cacheKey ?? "missing"))
+        .toMatchObject({ subjectType: "selection", label: "selection", provenance: "provider_counted", tokens: 7 });
+      expect(countRows(dbPath, "token_count")).toBe(2);
+
+      store.clearData();
+      expect(countRows(dbPath, "token_count")).toBe(0);
     } finally {
       store.close();
     }

@@ -252,6 +252,7 @@ describe("rootcell argument parsing", () => {
       "ROOTCELL_SPY_MAX_BYTES=6442450944",
       "ROOTCELL_SPY_SPOOL_MAX_BYTES=1073741824",
       "ROOTCELL_SPY_STORE_RAW=false",
+      "ROOTCELL_SPY_TOKEN_COUNT_MODE=provider",
       "ROOTCELL_SPY_BIND=127.0.0.1",
       "ROOTCELL_SPY_PORT=6174",
       "",
@@ -259,10 +260,13 @@ describe("rootcell argument parsing", () => {
     expect(renderSpyEnv({
       ROOTCELL_SPY_ENABLED: "yes",
       ROOTCELL_SPY_RETENTION_DAYS: "14",
+      ROOTCELL_SPY_TOKEN_COUNT_MODE: "provider",
       ROOTCELL_SPY_BIND: "127.0.0.1",
       ROOTCELL_SPY_PORT: "7000",
     })).toContain("ROOTCELL_SPY_ENABLED=true\n");
+    expect(renderSpyEnv({}, ["AWS_BEARER_TOKEN_BEDROCK=secret value"])).toContain("AWS_BEARER_TOKEN_BEDROCK=\"secret value\"\n");
     expect(() => renderSpyEnv({ ROOTCELL_SPY_BIND: "bad\nvalue" })).toThrow("must not contain newlines");
+    expect(() => renderSpyEnv({}, ["bad-name=value"])).toThrow("invalid spy environment variable name");
   });
 
   test("chooses a fallback spy port when the preferred port is occupied", async () => {
@@ -1091,6 +1095,14 @@ describe("VM and network providers", () => {
     expect(firewallModule).not.toContain(legacyTuiShim);
     expect(firewallModule).not.toContain(legacySpyRunDir);
     expect(firewallModule).not.toContain("ps.textual");
+
+    const rootcellSource = readFileSync("src/rootcell/rootcell.ts", "utf8");
+    expect(rootcellSource).toContain("\"dist/spy-service.js\"");
+    expect(rootcellSource).toContain("\"dist/spy-ui\"");
+    expect(rootcellSource).toContain("private guestFlakeRef");
+    expect(rootcellSource).toContain("path:${this.config.guestRepoDir}#");
+    expect(rootcellSource).toContain("sudo grep -Eq '^ROOTCELL_SPY_ENABLED=");
+    expect(rootcellSource).not.toContain("private async installFirewallSpyAssets");
 
     const agentModule = readFileSync("agent-vm.nix", "utf8");
     expect(agentModule).toContain('DHCP = "ipv4";');

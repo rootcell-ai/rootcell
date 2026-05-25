@@ -24,7 +24,6 @@ V1 does not include:
 
 - OpenAI, direct Anthropic, Codex, Claude Code, Cursor, or multi-provider UI.
 - Multi-conversation grouping.
-- Token estimates or provider token-count calls.
 - Automated compaction detection.
 - Public exposure, authentication, or collaboration features.
 - The old terminal/TUI spy or old NDJSON format.
@@ -118,6 +117,7 @@ ROOTCELL_SPY_ENABLED=false
 # ROOTCELL_SPY_MAX_BYTES=6442450944
 # ROOTCELL_SPY_SPOOL_MAX_BYTES=1073741824
 # ROOTCELL_SPY_STORE_RAW=false
+# ROOTCELL_SPY_TOKEN_COUNT_MODE=provider
 # ROOTCELL_SPY_BIND=127.0.0.1
 # ROOTCELL_SPY_PORT=6174
 ```
@@ -129,6 +129,7 @@ Defaults:
 - Limit the SQLite store to 6 GiB.
 - Limit pending spool files to 1 GiB.
 - Do not persist exact raw payload records by default.
+- Count tokens through Bedrock CountTokens; no local token estimates are shown.
 - Bind the firewall-local service to `127.0.0.1:6174`.
 
 `./rootcell spy` tries host-local port `6174` first and falls back to the next
@@ -138,7 +139,31 @@ Additional service-only environment variables exist for tests and development:
 `ROOTCELL_SPY_DB_PATH`, `ROOTCELL_SPY_SPOOL_DIR`,
 `ROOTCELL_SPY_STATIC_DIR`, `ROOTCELL_SPY_INGEST_INTERVAL_MS`,
 `ROOTCELL_SPY_RETENTION_INTERVAL_MS`, and
-`ROOTCELL_SPY_INGEST_BATCH_LIMIT`.
+`ROOTCELL_SPY_INGEST_BATCH_LIMIT`. `ROOTCELL_SPY_BEDROCK_REGION` can override
+the AWS region used for provider token counting.
+
+## Token Counting
+
+The API and browser expose token counts for whole requests, request sections,
+blocks, and selected text. Each count is labeled with provenance:
+`provider_reported`, `provider_counted`, or `unavailable`.
+
+Default behavior uses Bedrock CountTokens for whole-request, section, block,
+and selected-text counts. Whole-request counts use the captured provider request
+body when available so they preserve the real request context: messages, system
+prompt, tool config, cache hints, and provider overhead. Standalone block,
+section, and selection counts are wrapped as a minimal user message regardless
+of the original block role or kind. That keeps per-fragment attribution
+consistent and avoids provider validation rules for incomplete assistant turns.
+
+The browser never calls Bedrock directly. Bedrock CountTokens is called with the
+base Anthropic model ID because Bedrock inference-profile IDs such as
+`us.anthropic.*` can be valid for inference but rejected for token counting.
+
+Provider token counting can send captured prompt text back to Bedrock. When
+provider mode is enabled, `./rootcell provision` forwards only Bedrock-relevant
+credential environment variables into `/etc/agent-vm/spy.env`, and installs that
+file as `0640 root:rootcell-spy`.
 
 ## Capacity Defaults
 
@@ -272,7 +297,12 @@ bun run test:spy-ui:unit
 bun run test:spy-ui:e2e
 ```
 
-During provisioning, `./rootcell` runs `bun run build:spy` before copying the
-bundled service and static UI assets into the firewall VM. Do not copy host
-`node_modules` into the VM; the service bundle is architecture-neutral
-TypeScript/JavaScript and uses the firewall VM's Bun runtime.
+During provisioning, `./rootcell` runs `bun run build:spy`, copies the generated
+`dist/spy-service.js` and `dist/spy-ui` artifacts into the firewall VM's guest
+flake source, and lets Nix install them into `/etc/agent-vm`. Guest rebuilds use
+an explicit `path:` flake reference so copied generated assets remain visible
+even if the guest source directory has stale Git metadata. Clean flake evals
+still tolerate missing local `dist/` output because `dist/` is ignored by git.
+Do not copy host `node_modules` into the VM; the service bundle is
+architecture-neutral TypeScript/JavaScript and uses the firewall VM's Bun
+runtime.

@@ -8,6 +8,7 @@ import {
   Clock,
   Database,
   Filter,
+  Hash,
   Loader2,
   RefreshCcw,
   Search,
@@ -25,7 +26,6 @@ import { Select } from "./components/ui/select.tsx";
 import {
   blockKindLabel,
   blockText,
-  clipped,
   formatBytes,
   formatCount,
   formatDateTime,
@@ -47,7 +47,10 @@ import type {
   SpyCallDiff,
   SpyRequestComposition,
   SpyCallSummary,
+  SpyCompactionAssessment,
+  SpyCompactionReason,
   SpyServiceHealth,
+  SpyTokenCountRecord,
   StreamEvent,
   TimePreset,
   UiFilters,
@@ -58,8 +61,13 @@ const api = new SpyApiClient();
 const CALL_LIMIT = 100;
 const ALL_FILTER = "all";
 const TIMELINE_ROW_ESTIMATE = 138;
+const BLOCK_LIST_VIRTUALIZE_MIN_ITEMS = 24;
+const BLOCK_ROW_ESTIMATE = 230;
+const BLOCK_LIST_VIEWPORT_HEIGHT = 680;
 const BLOCK_SECTION_AUTO_OPEN_MAX_BLOCKS = 6;
 const BLOCK_SECTION_AUTO_OPEN_MAX_BYTES = 24 * 1024;
+const BLOCK_BODY_PREVIEW_CHARS = 6_000;
+const RAW_PAYLOAD_PREVIEW_CHARS = 4_000;
 const STREAM_EVENT_WINDOW_SIZE = 25;
 const STREAM_EVENT_PAYLOAD_PREVIEW_CHARS = 4_000;
 const BLOCK_KIND_OPTIONS: readonly NormalizedBlock["kind"][] = [
@@ -141,6 +149,7 @@ export function App(): React.ReactElement {
   const initialRange = React.useMemo(() => initialTimelineRangeFromLocation(window.location), []);
   const [preset, setPreset] = React.useState<TimePreset>(initialRange.preset);
   const [since, setSince] = React.useState(initialRange.since);
+  const [displaySince, setDisplaySince] = React.useState(initialRange.since);
   const [customStart, setCustomStart] = React.useState(() => datetimeLocalValue(initialRange.since));
   const [searchDraft, setSearchDraft] = React.useState("");
   const [search, setSearch] = React.useState("");
@@ -283,6 +292,30 @@ export function App(): React.ReactElement {
         setSseError(sseErrorMessage(error));
       }
     };
+    const onTokenCountsChanged = (event: MessageEvent<string>): void => {
+      try {
+        const payload = parseSseEventData("token-counts-changed", event.data);
+        setSseError(undefined);
+        setDetailState((current) => {
+          if (current?.detail == null) {
+            return current;
+          }
+          if (current.detail.summary.call.id !== payload.callId) {
+            return current;
+          }
+          return {
+            ...current,
+            detail: {
+              ...current.detail,
+              tokenCounts: mergeTokenCountRecords(current.detail.tokenCounts, payload.records),
+            },
+          };
+        });
+      } catch (error) {
+        setSseConnected(false);
+        setSseError(sseErrorMessage(error));
+      }
+    };
     const onCleared = (event: MessageEvent<string>): void => {
       try {
         parseSseEventData("cleared", event.data);
@@ -305,6 +338,7 @@ export function App(): React.ReactElement {
     source.addEventListener("hello", onHello as EventListener);
     source.addEventListener("health", onHealth as EventListener);
     source.addEventListener("calls-changed", onCallsChanged as EventListener);
+    source.addEventListener("token-counts-changed", onTokenCountsChanged as EventListener);
     source.addEventListener("cleared", onCleared as EventListener);
 
     return () => {
@@ -313,6 +347,7 @@ export function App(): React.ReactElement {
       source.removeEventListener("hello", onHello as EventListener);
       source.removeEventListener("health", onHealth as EventListener);
       source.removeEventListener("calls-changed", onCallsChanged as EventListener);
+      source.removeEventListener("token-counts-changed", onTokenCountsChanged as EventListener);
       source.removeEventListener("cleared", onCleared as EventListener);
       source.close();
     };
@@ -401,20 +436,17 @@ export function App(): React.ReactElement {
   function setTimelineRange(nextPreset: TimePreset, nextSince: number): void {
     setPreset(nextPreset);
     setSince(nextSince);
+    setDisplaySince(nextSince);
     setCustomStart(datetimeLocalValue(nextSince));
     replaceTimelineRangeUrl(nextPreset, nextSince);
   }
 
   function sinceForCallLoad(append: boolean): number {
-    if (append || !isRollingPreset(preset)) {
+    if (append || preset === "live" || !isRollingPreset(preset)) {
       return since;
     }
     const nextSince = resolveTimelineSince(preset, since);
-    if (nextSince !== since) {
-      setSince(nextSince);
-      setCustomStart(datetimeLocalValue(nextSince));
-      replaceTimelineRangeUrl(preset, nextSince);
-    }
+    setDisplaySince((current) => current === nextSince ? current : nextSince);
     return nextSince;
   }
 
@@ -535,7 +567,7 @@ export function App(): React.ReactElement {
             <div className="min-w-0">
               <h1 className="truncate text-base font-semibold">Rootcell Spy</h1>
               <p className="truncate text-xs text-stone-500">
-                {preset === "live" ? "Live from now" : `Since ${formatDateTime(since)}`}
+                {preset === "live" ? "Live from now" : `Since ${formatDateTime(displaySince)}`}
               </p>
             </div>
           </div>
@@ -618,7 +650,7 @@ export function App(): React.ReactElement {
             resetKey={inspectorResetKey}
             pinned={selectedCallIsPinned}
             preset={preset}
-            since={since}
+            since={displaySince}
             filters={filters}
             health={health}
             onFilters={setFilters}
@@ -975,9 +1007,9 @@ function timelineUsageMetricData(usage: SpyCallSummary["usage"]): UsageMetricPro
 function usageMetricMarker(label: string): React.ReactNode {
   switch (label) {
     case "read":
-      return <ArrowDown aria-hidden="true" size={13} strokeWidth={2.4} />;
-    case "write":
       return <ArrowUp aria-hidden="true" size={13} strokeWidth={2.4} />;
+    case "write":
+      return <ArrowDown aria-hidden="true" size={13} strokeWidth={2.4} />;
     case "cache read":
       return "R";
     case "cache write":
@@ -1094,8 +1126,14 @@ function InspectorContent(props: {
   readonly onStreamWindowStart: (windowStart: number) => void;
   readonly onToggleStreamPayload: (eventId: string) => void;
 }): React.ReactElement {
-  const requestBlocks = props.detail.blocks.filter((block) => block.direction === "request");
-  const responseBlocks = props.detail.blocks.filter((block) => block.direction === "response");
+  const requestBlocks = React.useMemo(
+    () => props.detail.blocks.filter((block) => block.direction === "request"),
+    [props.detail.blocks],
+  );
+  const responseBlocks = React.useMemo(
+    () => props.detail.blocks.filter((block) => block.direction === "response"),
+    [props.detail.blocks],
+  );
   const blockSectionsDefaultOpen = shouldAutoOpenBlockSections(requestBlocks, responseBlocks);
   const diffByBlockId = React.useMemo(() => {
     return new Map(props.diff.blocks.map((entry) => [entry.block.id, entry.classification]));
@@ -1107,7 +1145,7 @@ function InspectorContent(props: {
         <SummaryPanel detail={props.detail} />
       </InspectorAnchor>
       <InspectorAnchor id="composition">
-        <RequestCompositionPanel composition={props.detail.requestComposition} />
+        <RequestCompositionPanel composition={props.detail.requestComposition} tokenCounts={props.detail.tokenCounts} />
       </InspectorAnchor>
       <BlockToolbar filters={props.filters} onFilters={props.onFilters} />
       <Section
@@ -1116,7 +1154,7 @@ function InspectorContent(props: {
         meta={blockListMeta(requestBlocks)}
         defaultOpen={blockSectionsDefaultOpen}
       >
-        <BlockList blocks={requestBlocks} filterKind={props.filters.blockKind} diffByBlockId={diffByBlockId} />
+        <BlockList blocks={requestBlocks} filterKind={props.filters.blockKind} diffByBlockId={diffByBlockId} tokenCounts={props.detail.tokenCounts} />
       </Section>
       <Section
         id="response-blocks"
@@ -1124,7 +1162,7 @@ function InspectorContent(props: {
         meta={blockListMeta(responseBlocks)}
         defaultOpen={blockSectionsDefaultOpen}
       >
-        <BlockList blocks={responseBlocks} filterKind={props.filters.blockKind} diffByBlockId={diffByBlockId} />
+        <BlockList blocks={responseBlocks} filterKind={props.filters.blockKind} diffByBlockId={diffByBlockId} tokenCounts={props.detail.tokenCounts} />
       </Section>
       <Section id="diff" title="Diff Against Previous Request">
         <DiffPanel diff={props.diff} preset={props.preset} since={props.since} />
@@ -1246,8 +1284,57 @@ function SummaryPanel(props: { readonly detail: SpyCallDetail }): React.ReactEle
         <PanelMetric icon={<Database aria-hidden="true" size={16} />} label="Request" value={formatBytes(summary.requestByteSize)} />
         <PanelMetric icon={<BadgeInfo aria-hidden="true" size={16} />} label="Total Usage" value={formatUsageTotal(summary.usage)} />
       </div>
+      <CompactionSummary assessment={props.detail.compaction} />
     </div>
   );
+}
+
+function CompactionSummary(props: { readonly assessment: SpyCompactionAssessment }): React.ReactElement | null {
+  const { assessment } = props;
+  if (assessment.status !== "candidate") {
+    return null;
+  }
+  return (
+    <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3" data-testid="compaction-candidate">
+      <div className="flex flex-wrap items-center gap-2">
+        <AlertTriangle aria-hidden="true" size={16} className="text-amber-700" />
+        <span className="text-sm font-semibold text-stone-950">{assessment.label}</span>
+        <Badge tone="amber">{assessment.confidence} confidence</Badge>
+      </div>
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        {assessment.reasons.map((reason) => (
+          <Badge key={reason} tone="neutral">{compactionReasonLabel(reason)}</Badge>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function compactionReasonLabel(reason: SpyCompactionReason): string {
+  switch (reason) {
+    case "no_previous_comparable_call":
+      return "no previous request";
+    case "pi_request_context_profile":
+      return "Pi request profile";
+    case "summarization_system_prompt":
+      return "summary system prompt";
+    case "conversation_wrapper_input":
+      return "conversation wrapper";
+    case "large_current_user_input":
+      return "large current input";
+    case "stable_request_context":
+      return "stable context";
+    case "summary_like_history_block":
+      return "summary-like history";
+    case "prior_history_byte_drop":
+      return "history bytes dropped";
+    case "prior_history_block_drop":
+      return "history blocks dropped";
+    case "request_byte_drop":
+      return "request bytes dropped";
+    case "input_token_drop":
+      return "input tokens dropped";
+  }
 }
 
 function PanelMetric(props: {
@@ -1270,8 +1357,10 @@ function PanelMetric(props: {
 
 function RequestCompositionPanel(props: {
   readonly composition: SpyRequestComposition;
+  readonly tokenCounts: readonly SpyTokenCountRecord[];
 }): React.ReactElement {
   const { composition } = props;
+  const requestTokens = tokenCountForCall(props.tokenCounts, "request");
   return (
     <div className="rounded-md border border-stone-300 bg-white p-4 shadow-sm" data-testid="request-composition">
       <div className="flex items-center justify-between gap-3">
@@ -1305,29 +1394,40 @@ function RequestCompositionPanel(props: {
           detail={formatCompositionUsageDetail(composition.usage)}
           detailTestId="composition-provider-usage-detail"
         />
+        <CompositionMetric
+          label="Request tokens"
+          value={formatTokenRecord(requestTokens)}
+          detail={tokenProvenanceLabel(requestTokens)}
+          detailTestId="composition-request-token-detail"
+        />
       </div>
 
       <div className="spy-scrollbar mt-3 overflow-x-auto rounded-md border border-stone-200 text-xs" data-testid="composition-section-table">
-        <div className="grid grid-cols-[minmax(116px,1fr)_54px_58px_52px_64px_64px] items-center gap-2 bg-stone-100 px-3 py-2 font-medium text-stone-600">
+        <div className="grid grid-cols-[minmax(92px,1fr)_42px_46px_42px_48px_52px_54px] items-center gap-1 bg-stone-100 px-3 py-2 font-medium text-stone-600">
           <span>Section</span>
           <span>State</span>
-          <span className="text-right">Messages</span>
+          <span className="text-right">Msgs</span>
           <span className="text-right">Blocks</span>
           <span className="text-right">Chars</span>
           <span className="text-right">Bytes</span>
+          <span className="text-right">Tokens</span>
         </div>
-        {composition.sections.map((section) => (
-          <div key={section.kind} className="grid grid-cols-[minmax(116px,1fr)_54px_58px_52px_64px_64px] items-center gap-2 border-t border-stone-200 px-3 py-2">
-            <span className="font-medium leading-4 text-stone-800">{blockKindLabel(section.kind)}</span>
-            <span className={section.present ? "text-emerald-700" : "text-stone-400"}>
-              {section.present ? "present" : "absent"}
-            </span>
-            <span className="text-right text-stone-600">{formatNumber(section.messageCount)}</span>
-            <span className="text-right text-stone-600">{formatNumber(section.blockCount)}</span>
-            <span className="text-right text-stone-600">{formatNumber(section.charSize)}</span>
-            <span className="text-right text-stone-600">{formatBytes(section.byteSize)}</span>
-          </div>
-        ))}
+        {composition.sections.map((section) => {
+          const tokenCount = tokenCountForSection(props.tokenCounts, "request", section.kind);
+          return (
+            <div key={section.kind} className="grid grid-cols-[minmax(92px,1fr)_42px_46px_42px_48px_52px_54px] items-center gap-1 border-t border-stone-200 px-3 py-2">
+              <span className="font-medium leading-4 text-stone-800">{blockKindLabel(section.kind)}</span>
+              <span className={section.present ? "text-emerald-700" : "text-stone-400"}>
+                {section.present ? "present" : "absent"}
+              </span>
+              <span className="text-right text-stone-600">{formatNumber(section.messageCount)}</span>
+              <span className="text-right text-stone-600">{formatNumber(section.blockCount)}</span>
+              <span className="text-right text-stone-600">{formatNumber(section.charSize)}</span>
+              <span className="text-right text-stone-600">{formatBytes(section.byteSize)}</span>
+              <span className="text-right text-stone-600" title={tokenProvenanceLabel(tokenCount)}>{formatTokenRecord(tokenCount)}</span>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -1356,6 +1456,114 @@ function formatCompositionUsageDetail(usage: SpyRequestComposition["usage"]): st
     `out ${formatNumber(usage.outputTokens)}`,
     `cache ${formatNumber(usage.cacheReadTokens)}/${formatNumber(usage.cacheWriteTokens)}`,
   ].join(" · ");
+}
+
+function tokenCountForCall(
+  records: readonly SpyTokenCountRecord[],
+  direction: NormalizedBlock["direction"],
+): SpyTokenCountRecord | undefined {
+  return bestTokenRecord(records.filter((record) => record.subjectType === "call" && record.direction === direction));
+}
+
+function tokenCountForSection(
+  records: readonly SpyTokenCountRecord[],
+  direction: NormalizedBlock["direction"],
+  kind: NormalizedBlock["kind"],
+): SpyTokenCountRecord | undefined {
+  return bestTokenRecord(records.filter((record) =>
+    record.subjectType === "section" && record.direction === direction && record.kind === kind
+  ));
+}
+
+function tokenCountForBlock(records: readonly SpyTokenCountRecord[], blockId: string): SpyTokenCountRecord | undefined {
+  return bestTokenRecord(records.filter((record) => record.subjectType === "block" && record.blockId === blockId));
+}
+
+function bestTokenRecord(records: readonly SpyTokenCountRecord[]): SpyTokenCountRecord | undefined {
+  return [...records].sort((left, right) => tokenRecordPriority(right) - tokenRecordPriority(left))[0];
+}
+
+function tokenRecordPriority(record: SpyTokenCountRecord): number {
+  if (record.provenance === "provider_counted") {
+    return 4;
+  }
+  if (record.provenance === "provider_reported") {
+    return 3;
+  }
+  return 1;
+}
+
+function mergeTokenCountRecords(
+  existing: readonly SpyTokenCountRecord[],
+  incoming: readonly SpyTokenCountRecord[],
+): SpyTokenCountRecord[] {
+  const records = new Map(existing.map((record) => [tokenRecordKey(record), record]));
+  for (const record of incoming) {
+    const key = tokenRecordKey(record);
+    const current = records.get(key);
+    if (current === undefined || tokenRecordPriority(record) >= tokenRecordPriority(current)) {
+      records.set(key, record);
+    }
+  }
+  return [...records.values()];
+}
+
+function tokenRecordKey(record: SpyTokenCountRecord): string {
+  if (record.subjectType === "call") {
+    return ["call", record.callId ?? "", record.direction ?? "", "", "", ""].join(":");
+  }
+  if (record.subjectType === "section") {
+    return ["section", record.callId ?? "", record.direction ?? "", "", record.kind ?? "", ""].join(":");
+  }
+  if (record.subjectType === "block") {
+    return ["block", record.callId ?? "", "", record.blockId ?? "", ""].join(":");
+  }
+  return ["selection", record.callId ?? "", "", "", "", record.label ?? record.sourceHash].join(":");
+}
+
+function formatTokenRecord(record: SpyTokenCountRecord | undefined): string {
+  if (record === undefined) {
+    return "pending";
+  }
+  return record.tokens === null ? "-" : `${formatNumber(record.tokens)} tok`;
+}
+
+function tokenProvenanceLabel(record: SpyTokenCountRecord | undefined): string {
+  if (record === undefined) {
+    return "count pending";
+  }
+  const label = record.provenance.replaceAll("_", " ");
+  return record.error === undefined ? label : `${label}: ${record.error}`;
+}
+
+function tokenTone(record: SpyTokenCountRecord | undefined): "neutral" | "green" | "amber" | "red" | "blue" | "teal" {
+  if (record?.provenance === "provider_counted") {
+    return "blue";
+  }
+  if (record?.provenance === "provider_reported") {
+    return "green";
+  }
+  return record === undefined ? "neutral" : "red";
+}
+
+function unavailableUiTokenCount(
+  block: NormalizedBlock,
+  error: string,
+  label?: string,
+): SpyTokenCountRecord {
+  return {
+    subjectType: label === undefined ? "block" : "selection",
+    callId: block.call_id,
+    direction: block.direction,
+    kind: block.kind,
+    ...(label === undefined ? { blockId: block.id } : { label }),
+    sourceHash: block.content_hash,
+    modelId: "unknown",
+    tokens: null,
+    provenance: "unavailable",
+    countedAt: Date.now() / 1000,
+    error,
+  };
 }
 
 function BlockToolbar(props: {
@@ -1393,21 +1601,90 @@ function BlockList(props: {
   readonly blocks: readonly NormalizedBlock[];
   readonly filterKind: string;
   readonly diffByBlockId: ReadonlyMap<string, DiffClassification>;
+  readonly tokenCounts: readonly SpyTokenCountRecord[];
 }): React.ReactElement {
-  const blocks = props.filterKind === ALL_FILTER
+  const blocks = React.useMemo(() => props.filterKind === ALL_FILTER
     ? props.blocks
-    : props.blocks.filter((block) => block.kind === props.filterKind);
+    : props.blocks.filter((block) => block.kind === props.filterKind), [props.blocks, props.filterKind]);
   if (blocks.length === 0) {
     const emptyMessage = props.filterKind === ALL_FILTER
       ? "No blocks captured in this section."
       : `No ${blockFilterLabel(props.filterKind)} blocks in this section.`;
     return <div className="rounded-md border border-stone-200 bg-stone-50 p-3 text-sm text-stone-500">{emptyMessage}</div>;
   }
+  if (blocks.length >= BLOCK_LIST_VIRTUALIZE_MIN_ITEMS) {
+    return (
+      <VirtualizedBlockList
+        blocks={blocks}
+        diffByBlockId={props.diffByBlockId}
+        tokenCounts={props.tokenCounts}
+      />
+    );
+  }
   return (
     <div className="space-y-2">
       {blocks.map((block) => (
-        <BlockRow key={block.id} block={block} diff={props.diffByBlockId.get(block.id)} />
+        <BlockRow
+          key={block.id}
+          block={block}
+          diff={props.diffByBlockId.get(block.id)}
+          tokenCount={tokenCountForBlock(props.tokenCounts, block.id)}
+        />
       ))}
+    </div>
+  );
+}
+
+function VirtualizedBlockList(props: {
+  readonly blocks: readonly NormalizedBlock[];
+  readonly diffByBlockId: ReadonlyMap<string, DiffClassification>;
+  readonly tokenCounts: readonly SpyTokenCountRecord[];
+}): React.ReactElement {
+  const parentRef = React.useRef<HTMLDivElement | null>(null);
+  const rowVirtualizer = useVirtualizer({
+    count: props.blocks.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => BLOCK_ROW_ESTIMATE,
+    getItemKey: (index) => props.blocks[index]?.id ?? index,
+    overscan: 5,
+  });
+  const virtualItems = rowVirtualizer.getVirtualItems();
+
+  React.useEffect(() => {
+    parentRef.current?.scrollTo({ top: 0 });
+    rowVirtualizer.measure();
+  }, [props.blocks]);
+
+  return (
+    <div
+      ref={parentRef}
+      className="spy-scrollbar overflow-auto rounded-md border border-stone-200 bg-stone-100 p-2"
+      data-testid="virtual-block-list"
+      style={{ maxHeight: `${String(BLOCK_LIST_VIEWPORT_HEIGHT)}px` }}
+    >
+      <div className="relative w-full" style={{ height: `${String(rowVirtualizer.getTotalSize())}px` }}>
+        {virtualItems.map((virtualRow) => {
+          const block = props.blocks[virtualRow.index];
+          if (block === undefined) {
+            return null;
+          }
+          return (
+            <div
+              key={virtualRow.key}
+              ref={rowVirtualizer.measureElement}
+              data-index={virtualRow.index}
+              className="absolute left-0 top-0 w-full pb-2"
+              style={{ transform: `translateY(${String(virtualRow.start)}px)` }}
+            >
+              <BlockRow
+                block={block}
+                diff={props.diffByBlockId.get(block.id)}
+                tokenCount={tokenCountForBlock(props.tokenCounts, block.id)}
+              />
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -1421,25 +1698,153 @@ function blockFilterLabel(kind: string): string {
 function BlockRow(props: {
   readonly block: NormalizedBlock;
   readonly diff: DiffClassification | undefined;
+  readonly tokenCount: SpyTokenCountRecord | undefined;
 }): React.ReactElement {
   const text = blockText(props.block);
+  const fullTextRef = React.useRef<HTMLTextAreaElement | null>(null);
+  const [selectionCount, setSelectionCount] = React.useState<SpyTokenCountRecord | null>(null);
+  const countSelection = (): void => {
+    const textareaSelectedText = selectedTextFromTextarea(fullTextRef.current, text);
+    const browserSelectedText = window.getSelection()?.toString() ?? "";
+    const selectedText = textareaSelectedText.length > 0 ? textareaSelectedText : browserSelectedText;
+    if (selectedText.length === 0) {
+      setSelectionCount(unavailableUiTokenCount(props.block, "select text inside a block first"));
+      return;
+    }
+    void api.tokenCount({
+      mode: "provider",
+      subjects: [{ type: "selection", callId: props.block.call_id, text: selectedText, label: "selection" }],
+    }).then((response) => {
+      setSelectionCount(response.records[0] ?? null);
+    }).catch((error: unknown) => {
+      setSelectionCount(unavailableUiTokenCount(props.block, errorMessage(error), "selection"));
+    });
+  };
   return (
-    <div className={cn("rounded-md border bg-white p-3", blockBorderClass(props.block.kind))}>
-      <div className="flex items-center gap-2">
+    <div className={cn("rounded-md border bg-white p-3", blockBorderClass(props.block.kind))} data-testid={`block-row-${props.block.id}`}>
+      <div className="flex flex-wrap items-center gap-2">
         <Badge tone={blockTone(props.block.kind)}>{blockKindLabel(props.block.kind)}</Badge>
         {props.block.role === undefined ? null : <Badge>{props.block.role}</Badge>}
         {props.block.cache_marker ? <Badge tone="blue">cache marker</Badge> : null}
         {props.diff === undefined ? null : <Badge tone={diffTone(props.diff)}>{props.diff}</Badge>}
-        <span className="ml-auto text-xs text-stone-500">{formatBytes(props.block.byte_size)}</span>
+        <Badge tone={tokenTone(props.tokenCount)} title={tokenProvenanceLabel(props.tokenCount)}>
+          {formatTokenRecord(props.tokenCount)}
+        </Badge>
+        <div className="ml-auto flex items-center gap-1">
+          <Button type="button" variant="secondary" size="sm" onClick={countSelection} title="Count selected text" data-testid={`selection-count-${props.block.id}`}>
+            <Hash aria-hidden="true" size={14} />
+            Selection
+          </Button>
+          <span className="text-xs text-stone-500">{formatBytes(props.block.byte_size)}</span>
+        </div>
       </div>
+      {selectionCount === null ? null : (
+        <div className="mt-2 text-xs text-stone-600" data-testid="selection-token-count">
+          Selection tokens: <span className="font-semibold">{formatTokenRecord(selectionCount)}</span> · {tokenProvenanceLabel(selectionCount)}
+        </div>
+      )}
       {text.length === 0 ? null : (
-        <pre className="spy-scrollbar mt-3 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-stone-950 p-3 text-xs leading-5 text-stone-50">
-          {clipped(text, 6_000)}
-        </pre>
+        <SelectableTextViewer
+          text={text}
+          previewChars={BLOCK_BODY_PREVIEW_CHARS}
+          fullTextRef={fullTextRef}
+          fullLabel={`${blockKindLabel(props.block.kind)} block body`}
+          testId="block-body"
+          variant="dark"
+        />
       )}
       <div className="mt-2 truncate text-xs text-stone-500">{props.block.provider_path ?? props.block.source}</div>
     </div>
   );
+}
+
+function selectedTextFromTextarea(textarea: HTMLTextAreaElement | null, text: string): string {
+  if (textarea === null) {
+    return "";
+  }
+  const start = Math.min(textarea.selectionStart, textarea.selectionEnd);
+  const end = Math.max(textarea.selectionStart, textarea.selectionEnd);
+  if (end <= start) {
+    return "";
+  }
+  return text.slice(start, end);
+}
+
+function SelectableTextViewer(props: {
+  readonly text: string;
+  readonly previewChars: number;
+  readonly fullLabel: string;
+  readonly testId: string;
+  readonly variant?: "dark" | "light" | undefined;
+  readonly fullTextRef?: React.RefObject<HTMLTextAreaElement | null> | undefined;
+}): React.ReactElement {
+  const [expanded, setExpanded] = React.useState(false);
+  const isLarge = props.text.length > props.previewChars;
+  const variant = props.variant ?? "light";
+  if (!isLarge) {
+    return (
+      <pre className={textViewerClassName(variant)} data-testid={`${props.testId}-full`}>
+        {props.text}
+      </pre>
+    );
+  }
+  const previewText = textPreview(props.text, props.previewChars);
+  return (
+    <div className="mt-3 rounded-md border border-stone-700/20 bg-white/5 p-2" data-testid={`${props.testId}-viewer`}>
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge tone="amber">Preview</Badge>
+        <span className={cn("text-xs", variant === "dark" ? "text-stone-300" : "text-stone-500")}>
+          Showing {formatNumber(previewText.length)} of {formatNumber(props.text.length)} chars
+        </span>
+        <Button
+          type="button"
+          className="ml-auto"
+          variant="secondary"
+          size="sm"
+          onClick={() => {
+            setExpanded((current) => !current);
+          }}
+        >
+          {expanded ? "Hide Full Text" : "Show Full Text"}
+        </Button>
+      </div>
+      {expanded ? (
+        <textarea
+          ref={props.fullTextRef}
+          aria-label={props.fullLabel}
+          className={cn(
+            "spy-scrollbar spy-text-font mt-2 h-80 w-full resize-y overflow-auto rounded-md border p-3 text-xs leading-5 outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 focus-visible:ring-offset-2",
+            variant === "dark"
+              ? "border-stone-700 bg-stone-950 text-stone-50"
+              : "border-stone-200 bg-white text-stone-700",
+          )}
+          data-testid={`${props.testId}-full`}
+          readOnly
+          spellCheck={false}
+          value={props.text}
+        />
+      ) : (
+        <pre className={textViewerClassName(variant)} data-testid={`${props.testId}-preview`}>
+          {previewText}
+          {"\n..."}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+function textViewerClassName(variant: "dark" | "light"): string {
+  return cn(
+    "spy-scrollbar mt-3 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md p-3 text-xs leading-5",
+    "spy-text-font",
+    variant === "dark"
+      ? "bg-stone-950 text-stone-50"
+      : "bg-white text-stone-700",
+  );
+}
+
+function textPreview(text: string, maxChars: number): string {
+  return text.slice(0, maxChars).trimEnd();
 }
 
 function DiffPanel(props: {
@@ -1675,9 +2080,14 @@ function StreamEventRow(props: {
         </Button>
       </div>
       {props.expanded ? (
-        <pre className="mt-2 whitespace-pre-wrap break-words rounded-md bg-white p-3 text-xs text-stone-700" data-testid="stream-event-payload">
-          {clipped(payloadText, STREAM_EVENT_PAYLOAD_PREVIEW_CHARS)}
-        </pre>
+        <div data-testid="stream-event-payload">
+          <SelectableTextViewer
+            text={payloadText}
+            previewChars={STREAM_EVENT_PAYLOAD_PREVIEW_CHARS}
+            fullLabel="Stream event payload"
+            testId="stream-event-payload-body"
+          />
+        </div>
       ) : null}
     </div>
   );
@@ -1697,21 +2107,48 @@ function RawPayloadPanel(props: {
   return (
     <div className="space-y-2">
       {props.rawPayloads.map((payload) => (
-        <div key={payload.id} className="rounded-md border border-stone-200 bg-stone-50 p-3">
-          <div className="flex items-center gap-2">
-            <Badge tone={payload.direction === "request" ? "teal" : "green"}>{payload.direction}</Badge>
-            <span className="text-xs text-stone-500">{payload.content_type ?? payload.body_encoding ?? "payload"} · {payload.body_sha256 ?? "no hash"}</span>
-          </div>
-          {payload.body_text === undefined ? (
-            <div className="mt-2 text-xs text-stone-500">base64 payload · {payload.body_b64 === undefined ? "not available" : `${formatNumber(payload.body_b64.length)} encoded chars`}</div>
-          ) : (
-            <pre className="spy-scrollbar mt-2 max-h-52 overflow-auto whitespace-pre-wrap break-words rounded-md bg-white p-3 text-xs text-stone-700">
-              {clipped(payload.body_text, 4_000)}
-            </pre>
-          )}
-        </div>
+        <RawPayloadRow key={payload.id} payload={payload} />
       ))}
       <div className="text-xs text-stone-500">Stored payload records: {formatNumber(props.rawPayloadCount)}</div>
+    </div>
+  );
+}
+
+function RawPayloadRow(props: { readonly payload: RawPayloadRecord }): React.ReactElement {
+  const [expanded, setExpanded] = React.useState(false);
+  const payload = props.payload;
+  return (
+    <div className="rounded-md border border-stone-200 bg-stone-50 p-3" data-testid="raw-payload-card">
+      <div className="flex items-center gap-2">
+        <Badge tone={payload.direction === "request" ? "teal" : "green"}>{payload.direction}</Badge>
+        <span className="min-w-0 truncate text-xs text-stone-500">{payload.content_type ?? payload.body_encoding ?? "payload"} · {payload.body_sha256 ?? "no hash"}</span>
+        {payload.body_text === undefined ? null : (
+          <Button
+            type="button"
+            className="ml-auto"
+            size="sm"
+            onClick={() => {
+              setExpanded((current) => !current);
+            }}
+          >
+            {expanded ? "Hide Payload" : "Show Payload"}
+          </Button>
+        )}
+      </div>
+      {payload.body_text === undefined ? (
+        <div className="mt-2 text-xs text-stone-500">base64 payload · {payload.body_b64 === undefined ? "not available" : `${formatNumber(payload.body_b64.length)} encoded chars`}</div>
+      ) : expanded ? (
+        <div data-testid="raw-payload-body">
+          <SelectableTextViewer
+            text={payload.body_text}
+            previewChars={RAW_PAYLOAD_PREVIEW_CHARS}
+            fullLabel="Raw provider payload"
+            testId="raw-payload-text"
+          />
+        </div>
+      ) : (
+        <div className="mt-2 text-xs text-stone-500">Payload body collapsed.</div>
+      )}
     </div>
   );
 }
@@ -1729,6 +2166,7 @@ function HealthPanel(props: { readonly health: SpyServiceHealth | null }): React
       <HealthCell label="Store cap" value={formatBytes(service.maxBytes)} />
       <HealthCell label="Spool cap" value={formatBytes(service.spoolMaxBytes)} />
       <HealthCell label="Retention" value={`${formatNumber(service.retentionDays)} days`} />
+      <HealthCell label="Token mode" value={service.tokenCountMode} />
       <HealthCell label="Dropped captures" value={formatNumber(store.droppedCaptureCount)} />
       <HealthCell label="Last ingest" value={store.lastIngestAt === null ? "-" : formatDateTime(store.lastIngestAt)} />
       <HealthCell label="Calls" value={formatNumber(store.providerCallCount)} />
@@ -1986,4 +2424,8 @@ function timelineEmptyStateFor(search: string, filters: UiFilters): TimelineEmpt
 function sseErrorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return `SSE validation failed: ${message}`;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

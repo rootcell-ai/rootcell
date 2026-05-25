@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { SpyCallDetailSchema, SpyServiceHealthSchema } from "../../api-contracts.ts";
+import { SpyCallDetailSchema, SpyServiceHealthSchema, SpyTokenCountResponseSchema } from "../../api-contracts.ts";
 import {
   SpyApiClient,
   callsUrl,
@@ -129,6 +129,15 @@ describe("spy UI API helpers", () => {
         run: () => client.streamEvents("call/one"),
       },
       {
+        name: "token count",
+        endpoint: "/api/token-count",
+        valid: sampleTokenCountResponse,
+        run: () => client.tokenCount({
+          mode: "provider",
+          subjects: [{ type: "block", callId: "call-one", blockId: "block-one" }],
+        }),
+      },
+      {
         name: "clear data",
         endpoint: "/api/clear",
         valid: sampleClearResult,
@@ -149,6 +158,17 @@ describe("spy UI API helpers", () => {
     const missingComposition: Record<string, unknown> = { ...sampleDetail };
     delete missingComposition.requestComposition;
     expect(SpyCallDetailSchema.safeParse(missingComposition).success).toBe(false);
+  });
+
+  test("requires compaction assessment in call details", () => {
+    const missingCompaction: Record<string, unknown> = { ...sampleDetail };
+    delete missingCompaction.compaction;
+    expect(SpyCallDetailSchema.safeParse(missingCompaction).success).toBe(false);
+  });
+
+  test("validates token count responses", () => {
+    expect(SpyTokenCountResponseSchema.safeParse(sampleTokenCountResponse).success).toBe(true);
+    expect(SpyTokenCountResponseSchema.safeParse({ mode: "provider", records: [{ tokens: 1 }] }).success).toBe(false);
   });
 
   test("requires explicit V1 health fields", () => {
@@ -179,6 +199,8 @@ describe("spy UI API helpers", () => {
     expect(parseSseEventData("health", JSON.stringify(sampleHealth))).toEqual(sampleHealth);
     expect(parseSseEventData("calls-changed", JSON.stringify({ result: sampleIngestResult }))).toEqual({ result: sampleIngestResult });
     expect(parseSseEventData("calls-changed", JSON.stringify({ retention: sampleRetentionResult }))).toEqual({ retention: sampleRetentionResult });
+    expect(parseSseEventData("token-counts-changed", JSON.stringify({ callId: "call-one", records: sampleTokenCountResponse.records })))
+      .toEqual({ callId: "call-one", records: [...sampleTokenCountResponse.records] });
     expect(parseSseEventData("cleared", JSON.stringify(sampleClearResult))).toEqual(sampleClearResult);
   });
 
@@ -186,6 +208,7 @@ describe("spy UI API helpers", () => {
     expect(() => parseSseEventData("health", "{")).toThrow("invalid SSE health JSON");
     expect(() => parseSseEventData("health", JSON.stringify({ ok: true }))).toThrow("invalid response from SSE health payload");
     expect(() => parseSseEventData("calls-changed", JSON.stringify({ unknown: true }))).toThrow("invalid response from SSE calls-changed payload");
+    expect(() => parseSseEventData("token-counts-changed", JSON.stringify({ callId: "call-one", records: [] }))).toThrow("invalid response from SSE token-counts-changed payload");
   });
 });
 
@@ -280,6 +303,7 @@ const sampleHealth = {
     maxBytes: 6_442_450_944,
     spoolMaxBytes: 1_073_741_824,
     storeRaw: false,
+    tokenCountMode: "provider",
     staticAssets: true,
   },
   store: {
@@ -315,6 +339,44 @@ const sampleBlock = {
 const sampleDetail = {
   summary: sampleSummary,
   requestComposition: sampleRequestComposition,
+  compaction: {
+    status: "none",
+    source: "none",
+    confidence: "none",
+    label: "No compaction candidate",
+    reasons: ["no_previous_comparable_call"],
+    evidence: {
+      currentCallId: "call-one",
+      previousCallId: null,
+      currentRequestByteSize: 25,
+      previousRequestByteSize: null,
+      currentInputTokens: 10,
+      previousInputTokens: null,
+      currentContextTokens: 13,
+      previousContextTokens: null,
+      currentPriorHistoryByteSize: 0,
+      previousPriorHistoryByteSize: null,
+      currentPriorHistoryBlockCount: 0,
+      previousPriorHistoryBlockCount: null,
+      summaryLikeBlockIds: [],
+      newHistoryBlockIds: [],
+      changedHistoryBlockIds: [],
+      repeatedContextBlockCount: 0,
+      changedContextBlockCount: 0,
+    },
+  },
+  tokenCounts: [{
+    subjectType: "block",
+    callId: "call-one",
+    blockId: "block-one",
+    direction: "request",
+    kind: "current-user-input",
+    sourceHash: "block-hash",
+    modelId: "us.anthropic.claude-sonnet-4-6",
+    tokens: 2,
+    provenance: "provider_counted",
+    countedAt: 1,
+  }],
   httpEvents: [{
     id: "http-call-one-request",
     call_id: "call-one",
@@ -337,6 +399,22 @@ const sampleDetail = {
     total_tokens: 18,
   }],
   rawPayloads: [],
+} as const;
+
+const sampleTokenCountResponse = {
+  mode: "provider",
+  records: [{
+    subjectType: "block",
+    callId: "call-one",
+    blockId: "block-one",
+    direction: "request",
+    kind: "current-user-input",
+    sourceHash: "block-hash",
+    modelId: "us.anthropic.claude-sonnet-4-6",
+    tokens: 2,
+    provenance: "provider_counted",
+    countedAt: 2,
+  }],
 } as const;
 
 const sampleDiff = {

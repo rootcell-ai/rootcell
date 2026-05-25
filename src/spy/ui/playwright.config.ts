@@ -1,7 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 import { resolve } from "node:path";
 
-const port = 4674;
+const port = Number(process.env.SPY_UI_E2E_PORT ?? "4674");
 const uiRoot = import.meta.dirname;
 const staticDir = resolve(uiRoot, "../../../dist/spy-ui");
 const testServer = resolve(uiRoot, "test-server.ts");

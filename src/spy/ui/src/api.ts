@@ -5,6 +5,7 @@ import {
   SpyCallDiffSchema,
   SpyCallSummaryPageSchema,
   SpyServiceHealthSchema,
+  SpyTokenCountResponseSchema,
   StreamEventPageSchema,
   SseEventPayloadSchemas,
 } from "../../api-contracts.ts";
@@ -16,10 +17,13 @@ import type {
   SpyCallSummary,
   SpyPaginatedResult,
   SpyServiceHealth,
+  SpyTokenCountRequest,
+  SpyTokenCountResponse,
   StreamEvent,
   SseCallsChangedPayload,
   SseEventName,
   SseHelloPayload,
+  SseTokenCountsChangedPayload,
   TimePreset,
 } from "./types.ts";
 
@@ -188,6 +192,16 @@ export class SpyApiClient {
     return fetchJson(streamEventsUrl(callId, cursor), StreamEventPageSchema);
   }
 
+  tokenCount(request: SpyTokenCountRequest): Promise<SpyTokenCountResponse> {
+    return fetchJson("/api/token-count", SpyTokenCountResponseSchema, {
+      method: "POST",
+      body: JSON.stringify(request),
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
+  }
+
   clearData(): Promise<ClearDataResult> {
     return fetchJson("/api/clear", ClearDataResultSchema, {
       method: "POST",
@@ -202,8 +216,9 @@ export class SpyApiClient {
 export function parseSseEventData(eventName: "hello", data: string): SseHelloPayload;
 export function parseSseEventData(eventName: "health", data: string): SpyServiceHealth;
 export function parseSseEventData(eventName: "calls-changed", data: string): SseCallsChangedPayload;
+export function parseSseEventData(eventName: "token-counts-changed", data: string): SseTokenCountsChangedPayload;
 export function parseSseEventData(eventName: "cleared", data: string): ClearDataResult;
-export function parseSseEventData(eventName: SseEventName, data: string): SseHelloPayload | SpyServiceHealth | SseCallsChangedPayload | ClearDataResult {
+export function parseSseEventData(eventName: SseEventName, data: string): SseHelloPayload | SpyServiceHealth | SseCallsChangedPayload | SseTokenCountsChangedPayload | ClearDataResult {
   let payload: unknown;
   try {
     payload = JSON.parse(data) as unknown;
@@ -218,6 +233,9 @@ export function parseSseEventData(eventName: SseEventName, data: string): SseHel
   }
   if (eventName === "calls-changed") {
     return parseWithSchema("SSE calls-changed payload", SseEventPayloadSchemas["calls-changed"], payload);
+  }
+  if (eventName === "token-counts-changed") {
+    return parseWithSchema("SSE token-counts-changed payload", SseEventPayloadSchemas["token-counts-changed"], payload);
   }
   return parseWithSchema("SSE cleared payload", SseEventPayloadSchemas.cleared, payload);
 }
