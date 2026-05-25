@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { z } from "zod";
 import { parseRootcellArgs } from "./args.ts";
 import { completeExtensionCommand, runExtensionCommand } from "./extensions/commands.ts";
@@ -22,7 +22,7 @@ import { ROOTCELL_SUBCOMMANDS } from "./metadata.ts";
 import { loadDotEnv, parseSecretMappings } from "./env.ts";
 import { resolveHostTool } from "./host-tools.ts";
 import { initRootcellInstanceEnv } from "./init-env.ts";
-import { buildConfig, chooseSpyLocalPort, formatVmList, renderSpyEnv, rootcellMain, RootcellApp } from "./rootcell.ts";
+import { buildConfig, formatVmList, renderSpyEnv, rootcellMain, RootcellApp } from "./rootcell.ts";
 import { deriveVmNames, instancePaths, listRootcellVmInstanceNames, loadRootcellInstance, seedRootcellInstanceFiles } from "./instance.ts";
 import { runCapture } from "./process.ts";
 import { parseAwsEc2Config } from "./providers/aws-ec2-config.ts";
@@ -57,7 +57,8 @@ import {
   ROOTCELL_IMAGE_SCHEMA_VERSION,
   RootcellImageManifestSchema,
 } from "./images.ts";
-import { forgetKnownHost, sshConfig } from "./transports/proxyjump-ssh.ts";
+import { chooseLocalPort } from "./tunnels.ts";
+import { forgetKnownHost, ProxyJumpSshTransport, sshConfig } from "./transports/proxyjump-ssh.ts";
 import { dnsmasqAllowlistConfig, generatedLineCount } from "../bin/reload.ts";
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -357,8 +358,8 @@ describe("rootcell argument parsing", () => {
     expect(() => renderSpyEnv({}, ["bad-name=value"])).toThrow("invalid spy environment variable name");
   });
 
-  test("chooses a fallback spy port when the preferred port is occupied", async () => {
-    const chosen = await chooseSpyLocalPort(6174, "127.0.0.1", (port) => Promise.resolve(port !== 6174));
+  test("chooses a fallback local tunnel port when the preferred port is occupied", async () => {
+    const chosen = await chooseLocalPort(6174, "127.0.0.1", 100, (port) => Promise.resolve(port !== 6174));
     expect(chosen).toBe(6175);
   });
 
@@ -1052,6 +1053,111 @@ describe("VM and network providers", () => {
     ]);
   });
 
+  test("spy uses the shared tunnel fallback and foreground close path", async () => {
+    const repo = makeInstanceRepo();
+    const oldSpyEnabled = process.env.ROOTCELL_SPY_ENABLED;
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      process.env.ROOTCELL_SPY_ENABLED = "true";
+      const env = instanceEnv(repo);
+      const config = buildConfig(repo, env, fakeInstance("dev", repo, env));
+      mkdirSync(config.instanceDir, { recursive: true });
+      mkdirSync(config.generatedDir, { recursive: true });
+      mkdirSync(config.proxyDir, { recursive: true });
+      mkdirSync(config.pkiDir, { recursive: true, mode: 0o700 });
+      for (const file of ["agent-vm-ca.key", "agent-vm-ca-cert.pem", "agent-vm-ca.pem"]) {
+        writeFileSync(join(config.pkiDir, file), "test\n", "utf8");
+      }
+      for (const file of ["allowed-https.txt", "allowed-ssh.txt", "allowed-dns.txt"]) {
+        writeFileSync(join(config.proxyDir, file), "\n", "utf8");
+      }
+
+      const attachment: VmNetworkAttachment = { kind: "fake" };
+      const calls: string[] = [];
+      let forwarded: { name: string; options: LocalPortForwardOptions } | undefined;
+      let closeCalls = 0;
+      const providers: ProviderBundle = {
+        network: {
+          id: "fake-network",
+          plan: () => ({
+            provider: "fake-network",
+            guest: {
+              firewallIp: config.firewallIp,
+              agentIp: config.agentIp,
+              networkPrefix: 24,
+              agentPrivateInterface: "agent0",
+              firewallPrivateInterface: "firewall0",
+              firewallEgressInterface: "egress0",
+            },
+            vms: {
+              agent: attachment,
+              firewall: attachment,
+            },
+          }),
+          preflight: () => Promise.resolve(),
+          stop: () => Promise.resolve(),
+          remove: () => Promise.resolve(),
+          ensureReady: () => Promise.resolve(),
+        },
+        vm: {
+          id: "fake-vm",
+          status: (name) => {
+            calls.push(`status:${name}`);
+            return Promise.resolve({ state: "running" });
+          },
+          stopIfRunning: () => Promise.resolve(),
+          forceStopIfRunning: () => Promise.resolve(),
+          remove: () => Promise.resolve(),
+          assertCompatible: (name) => {
+            calls.push(`assert:${name}`);
+            return Promise.resolve();
+          },
+          ensureRunning: (input) => {
+            calls.push(`ensure:${input.role}:${input.name}`);
+            return Promise.resolve({ created: false });
+          },
+          exec: () => Promise.resolve({ status: 0 }),
+          execCapture: () => Promise.resolve({ status: 0, stdout: "", stderr: "" }),
+          execInteractive: () => Promise.resolve(0),
+          copyToGuest: () => Promise.resolve(),
+          forwardLocalPort: (name, options) => {
+            forwarded = { name, options };
+            return Promise.resolve({
+              ...options,
+              closed: Promise.resolve(0),
+              close: () => {
+                closeCalls += 1;
+                return Promise.resolve();
+              },
+            });
+          },
+        },
+        secrets: new StaticSecretProviderRegistry([]),
+      };
+
+      const status = await new RootcellApp(config, providers, {
+        tunnelPortAvailable: (port) => Promise.resolve(port !== 6174),
+      }).runAfterEnvironment("spy", [], { open: false });
+
+      expect(status).toBe(0);
+      expect(forwarded?.name).toBe(config.firewallVm);
+      expect(forwarded?.options.localHost).toBe("127.0.0.1");
+      expect(typeof forwarded?.options.localPort).toBe("number");
+      expect(forwarded?.options.remoteHost).toBe("127.0.0.1");
+      expect(forwarded?.options.remotePort).toBe(6174);
+      expect(forwarded?.options.localPort).toBe(6175);
+      expect(closeCalls).toBe(1);
+      expect(stdout.mock.calls.map((call) => String(call[0])).join("")).toContain(
+        `http://127.0.0.1:${String(forwarded?.options.localPort)}/?since=`,
+      );
+      expect(calls).toContain(`ensure:firewall:${config.firewallVm}`);
+    } finally {
+      stdout.mockRestore();
+      restoreEnv("ROOTCELL_SPY_ENABLED", oldSpyEnabled);
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   test("macOS Lima user-v2 provider exposes egress firewall and private-only agent attachments", () => {
     const config = buildConfig("/repo", {}, fakeInstance("dev"));
     const plan = new MacOsLimaUserV2NetworkProvider(config, ignoreLog).plan();
@@ -1640,6 +1746,88 @@ describe("VM and network providers", () => {
       expect(content).not.toContain("old-firewall");
       expect(content).toContain("other-vm");
     } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("proxyjump local port forwarding builds SSH local-forward args and closes the process", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rootcell-forward-"));
+    const oldPath = process.env.PATH;
+    const oldArgsPath = process.env.ROOTCELL_FAKE_SSH_ARGS;
+    try {
+      const bin = join(dir, "bin");
+      mkdirSync(bin, { recursive: true });
+      const ssh = join(bin, "ssh");
+      writeFileSync(ssh, fakeForwardingSshScript(), "utf8");
+      chmodSync(ssh, 0o755);
+      const argsPath = join(dir, "ssh-args.txt");
+      process.env.PATH = `${bin}:${oldPath ?? ""}`;
+      process.env.ROOTCELL_FAKE_SSH_ARGS = argsPath;
+
+      const config = buildConfig(dir, {}, fakeInstance("dev", dir));
+      const transport = new ProxyJumpSshTransport(config, () => ({
+        firewallHost: "127.0.0.1",
+        firewallPort: 60_022,
+        agentHost: "192.168.109.11",
+        identityPath: join(dir, "rootcell_control_ed25519"),
+        knownHostsPath: join(dir, "known_hosts"),
+      }));
+
+      const tunnel = await transport.forwardLocalPort(config.agentVm, {
+        localHost: "127.0.0.1",
+        localPort: 19_432,
+        remoteHost: "127.0.0.1",
+        remotePort: 6174,
+      });
+      await tunnel.close();
+
+      const args = readLines(argsPath);
+      const forwardArgIndex = args.indexOf("-L");
+      expect(forwardArgIndex).toBeGreaterThanOrEqual(0);
+      expect(args[forwardArgIndex + 1]).toBe("127.0.0.1:19432:127.0.0.1:6174");
+      expect(args).toContain("ExitOnForwardFailure=yes");
+      expect(args.at(-1)).toBe("rootcell-agent");
+    } finally {
+      process.env.PATH = oldPath;
+      restoreEnv("ROOTCELL_FAKE_SSH_ARGS", oldArgsPath);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("proxyjump local port forwarding reports SSH startup failure", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rootcell-forward-failure-"));
+    const oldPath = process.env.PATH;
+    const oldArgsPath = process.env.ROOTCELL_FAKE_SSH_ARGS;
+    const oldFail = process.env.ROOTCELL_FAKE_SSH_FAIL;
+    try {
+      const bin = join(dir, "bin");
+      mkdirSync(bin, { recursive: true });
+      const ssh = join(bin, "ssh");
+      writeFileSync(ssh, fakeForwardingSshScript(), "utf8");
+      chmodSync(ssh, 0o755);
+      process.env.PATH = `${bin}:${oldPath ?? ""}`;
+      process.env.ROOTCELL_FAKE_SSH_ARGS = join(dir, "ssh-args.txt");
+      process.env.ROOTCELL_FAKE_SSH_FAIL = "1";
+
+      const config = buildConfig(dir, {}, fakeInstance("dev", dir));
+      const transport = new ProxyJumpSshTransport(config, () => ({
+        firewallHost: "127.0.0.1",
+        firewallPort: 60_022,
+        agentHost: "192.168.109.11",
+        identityPath: join(dir, "rootcell_control_ed25519"),
+        knownHostsPath: join(dir, "known_hosts"),
+      }));
+
+      await expect(transport.forwardLocalPort(config.firewallVm, {
+        localHost: "127.0.0.1",
+        localPort: 19_432,
+        remoteHost: "127.0.0.1",
+        remotePort: 6174,
+      })).rejects.toThrow("SSH local port forward failed with exit 255: fake ssh failed");
+    } finally {
+      process.env.PATH = oldPath;
+      restoreEnv("ROOTCELL_FAKE_SSH_ARGS", oldArgsPath);
+      restoreEnv("ROOTCELL_FAKE_SSH_FAIL", oldFail);
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -2502,6 +2690,20 @@ function fakeLimactlStopScript(input: { readonly gracefulStatus: number }): stri
 
 function readLines(path: string): readonly string[] {
   return readFileSync(path, "utf8").trim().split("\n");
+}
+
+function fakeForwardingSshScript(): string {
+  return [
+    "#!/bin/sh",
+    "printf '%s\\n' \"$@\" > \"$ROOTCELL_FAKE_SSH_ARGS\"",
+    "if [ \"${ROOTCELL_FAKE_SSH_FAIL:-}\" = \"1\" ]; then",
+    "  echo fake ssh failed >&2",
+    "  exit 255",
+    "fi",
+    "trap 'exit 0' TERM INT",
+    "while true; do sleep 1; done",
+    "",
+  ].join("\n");
 }
 
 function fakeInstance(name: string, repo = "/repo", env: NodeJS.ProcessEnv = {}): RootcellInstance {

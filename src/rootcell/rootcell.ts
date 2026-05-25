@@ -5,7 +5,6 @@ import {
   readFileSync,
   writeFileSync,
 } from "node:fs";
-import { createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { parseRootcellArgs } from "./args.ts";
 import { loadDotEnv, nixString, parseSecretMappings } from "./env.ts";
@@ -29,6 +28,7 @@ import { createProviderBundle } from "./providers/factory.ts";
 import type { NetworkPlan, ProviderBundle, VmNetworkAttachment, VmRole, VmStatus } from "./providers/types.ts";
 import { parseSchema } from "./schema.ts";
 import { parseAwsSecretsManagerProviderConfigs } from "./secrets/aws-secrets-manager-config.ts";
+import { openRoleTargetTunnel, waitForForegroundTunnel, type PortAvailabilityCheck } from "./tunnels.ts";
 import { RootcellConfigSchema, type RootcellConfig, type RootcellInstance, type SpyOptions, type VmFileSet } from "./types.ts";
 
 const GUEST_USER = "luser";
@@ -92,6 +92,10 @@ export interface VmListEntry {
   readonly instance: string;
   readonly vm: string;
   readonly state: string;
+}
+
+export interface RootcellAppOptions {
+  readonly tunnelPortAvailable?: PortAvailabilityCheck;
 }
 
 function log(message: string): void {
@@ -173,6 +177,7 @@ export class RootcellApp<TAttachment extends VmNetworkAttachment> {
   constructor(
     private readonly config: RootcellConfig,
     private readonly providers: ProviderBundle<TAttachment>,
+    private readonly options: RootcellAppOptions = {},
   ) {
     this.networkPlan = this.providers.network.plan();
   }
@@ -629,15 +634,23 @@ exit 1
     }
 
     const remotePort = this.spyRemotePort();
-    const localPort = await chooseSpyLocalPort(SPY_DEFAULT_PORT);
     const launchTs = Math.floor(Date.now() / 1000);
-    const tunnel = await this.providers.vm.forwardLocalPort(this.config.firewallVm, {
-      localHost: "127.0.0.1",
-      localPort,
-      remoteHost: SPY_REMOTE_HOST,
-      remotePort,
-    });
+    const tunnelOptions = this.options.tunnelPortAvailable === undefined
+      ? {}
+      : { portAvailable: this.options.tunnelPortAvailable };
+    const tunnel = await openRoleTargetTunnel(
+      (role, forwardOptions) => this.providers.vm.forwardLocalPort(vmNameForRole(this.config, role), forwardOptions),
+      {
+        role: "firewall",
+        preferredLocalPort: SPY_DEFAULT_PORT,
+        localHost: "127.0.0.1",
+        remoteHost: SPY_REMOTE_HOST,
+        remotePort,
+      },
+      tunnelOptions,
+    );
 
+    const localPort = tunnel.localPort;
     const url = `http://127.0.0.1:${String(localPort)}/?since=${String(launchTs)}`;
     process.stdout.write(`${url}\n`);
     log(`rootcell spy available at ${url} (Ctrl-C closes the tunnel)`);
@@ -645,11 +658,7 @@ exit 1
       this.openBrowser(url);
     }
 
-    try {
-      return await this.waitForSpyTunnel(tunnel.closed);
-    } finally {
-      await tunnel.close();
-    }
+    return await waitForForegroundTunnel(tunnel, { log });
   }
 
   private async checkFirewallSpyReadiness(): Promise<"ready" | "disabled" | "missing" | "inactive" | "unhealthy"> {
@@ -718,29 +727,6 @@ fi
     }
     log("spy service files or assets are missing on the firewall VM.");
     log("run ./rootcell provision, then try ./rootcell spy again.");
-  }
-
-  private async waitForSpyTunnel(tunnelClosed: Promise<number>): Promise<number> {
-    let signalStatus: number | undefined;
-    const signalPromise = new Promise<number>((resolve) => {
-      const onSignal = (signal: NodeJS.Signals): void => {
-        signalStatus = signal === "SIGINT" ? 130 : 143;
-        resolve(signalStatus);
-      };
-      process.once("SIGINT", onSignal);
-      process.once("SIGTERM", onSignal);
-      void tunnelClosed.finally(() => {
-        process.removeListener("SIGINT", onSignal);
-        process.removeListener("SIGTERM", onSignal);
-      });
-    });
-    const tunnelPromise = tunnelClosed.then((status) => {
-      if (signalStatus === undefined) {
-        log("SSH tunnel closed.");
-      }
-      return status === 0 ? 0 : 1;
-    });
-    return await Promise.race([signalPromise, tunnelPromise]);
   }
 
   private openBrowser(url: string): void {
@@ -1245,20 +1231,6 @@ export function renderSpyEnv(env: NodeJS.ProcessEnv = process.env, extraEnv: rea
   ].join("\n");
 }
 
-export async function chooseSpyLocalPort(
-  preferredPort = SPY_DEFAULT_PORT,
-  host = "127.0.0.1",
-  portAvailable: (port: number, host: string) => Promise<boolean> = isLocalPortAvailable,
-): Promise<number> {
-  for (let offset = 0; offset < 100; offset += 1) {
-    const candidate = preferredPort + offset;
-    if (await portAvailable(candidate, host)) {
-      return candidate;
-    }
-  }
-  throw new Error(`no available local port found starting at ${String(preferredPort)}`);
-}
-
 function envFileValue(value: string): string {
   if (/[\r\n]/.test(value)) {
     throw new Error("spy environment values must not contain newlines");
@@ -1282,21 +1254,6 @@ function envBoolean(value: string | undefined, fallback: boolean): boolean {
     return fallback;
   }
   return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
-}
-
-async function isLocalPortAvailable(port: number, host: string): Promise<boolean> {
-  return await new Promise<boolean>((resolveAvailable) => {
-    const server = createServer();
-    server.unref();
-    server.once("error", () => {
-      resolveAvailable(false);
-    });
-    server.listen({ host, port }, () => {
-      server.close(() => {
-        resolveAvailable(true);
-      });
-    });
-  });
 }
 
 function missingVmEntries(instanceName: string): readonly VmListEntry[] {

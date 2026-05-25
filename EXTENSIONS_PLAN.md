@@ -1,6 +1,6 @@
 # Rootcell Extensions Implementation Plan
 
-Status: Phase 1 core extension framework is implemented through extension-owned host-command dispatch; tunnel-specific work remains in later phases.
+Status: Phase 2 host tunnel primitive is implemented; Plannotator package/install and the Plannotator extension command remain in later phases.
 
 ## Goal
 
@@ -224,9 +224,11 @@ Implementation update: the host-command registry slice added `RootcellExtensionD
 
 ### Phase 2: Host tunnel primitive
 
-- Reuse the generic `VmProvider.forwardLocalPort` / SSH local-forwarding components from the spy browser branch, assuming they are likely merged before implementation.
-- Model tunnel metadata with target VM role (`agent` or `firewall`) plus remote host/port, so Plannotator can target the agent and future spy-like extensions can target the firewall.
-- Add generic tunnel primitive tests for SSH config/local-forward command construction, target role mapping, bind/remote host-port wiring, and tunnel lifecycle/close behavior.
+Implementation update: the Phase 2 slice added shared tunnel helpers for local-port selection, role-target tunnel specs, and foreground tunnel lifecycle/close behavior; refactored `rootcell spy` to use those helpers while preserving its URL/output behavior; and added unit coverage for port fallback/exhaustion, role-target forwarding, SSH local-forward command construction/failure, and spy fallback/lifecycle wiring. Verification passed with `bun run typecheck`, `bun run lint`, `bun run test:unit:vitest`, and `git diff --check`.
+
+- [X] Reuse the generic `VmProvider.forwardLocalPort` / SSH local-forwarding components from the spy browser branch, assuming they are likely merged before implementation.
+- [X] Model tunnel metadata with target VM role (`agent` or `firewall`) plus remote host/port, so Plannotator can target the agent and future spy-like extensions can target the firewall.
+- [X] Add generic tunnel primitive tests for SSH config/local-forward command construction, target role mapping, bind/remote host-port wiring, and tunnel lifecycle/close behavior.
 
 ### Phase 3: Plannotator extension package/install
 
