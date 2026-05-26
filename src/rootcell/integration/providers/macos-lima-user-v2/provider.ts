@@ -133,6 +133,7 @@ function limaCleanupConfig(repoDir: string, instance: string, env: NodeJS.Proces
     instanceDir: paths.dir,
     envPath: paths.envPath,
     secretsPath: paths.secretsPath,
+    extensionsPath: paths.extensionsPath,
     proxyDir: paths.proxyDir,
     pkiDir: join(paths.dir, "pki"),
     generatedDir: join(paths.dir, "generated"),

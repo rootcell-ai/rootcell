@@ -10,7 +10,10 @@ let
   privateMatch = { Name = net.agentPrivateInterface; };
 in
 {
-  imports = [ ./common.nix ];
+  imports =
+    [ ./common.nix ]
+    ++ lib.optional (builtins.pathExists ./generated/extensions-agent-vm.nix)
+      ./generated/extensions-agent-vm.nix;
 
   networking.hostName = "agent-vm";
 

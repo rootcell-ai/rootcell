@@ -76,6 +76,7 @@ export const RootcellConfigSchema = z.object({
   instanceDir: NonEmptyStringSchema,
   envPath: NonEmptyStringSchema,
   secretsPath: NonEmptyStringSchema,
+  extensionsPath: NonEmptyStringSchema,
   proxyDir: NonEmptyStringSchema,
   pkiDir: NonEmptyStringSchema,
   generatedDir: NonEmptyStringSchema,
@@ -138,13 +139,21 @@ export const ParsedRootcellInitEnvArgsSchema = z.object({
 
 export type ParsedRootcellInitEnvArgs = Readonly<z.infer<typeof ParsedRootcellInitEnvArgsSchema>>;
 
+export const ParsedRootcellSelectArgsSchema = z.object({
+  kind: z.literal("select"),
+  selectedInstanceName: NonEmptyStringSchema,
+});
+
+export type ParsedRootcellSelectArgs = Readonly<z.infer<typeof ParsedRootcellSelectArgsSchema>>;
+
 export const ParsedRootcellArgsSchema = z.discriminatedUnion("kind", [
   ParsedRootcellRunArgsSchema,
   ParsedRootcellHandledArgsSchema,
   ParsedRootcellInitEnvArgsSchema,
+  ParsedRootcellSelectArgsSchema,
 ]);
 
-export type ParsedRootcellArgs = ParsedRootcellRunArgs | ParsedRootcellHandledArgs | ParsedRootcellInitEnvArgs;
+export type ParsedRootcellArgs = ParsedRootcellRunArgs | ParsedRootcellHandledArgs | ParsedRootcellInitEnvArgs | ParsedRootcellSelectArgs;
 
 export const InstanceStateSchema = z.object({
   schemaVersion: z.literal(1),
@@ -161,6 +170,7 @@ export const RootcellInstanceSchema = z.object({
   dir: NonEmptyStringSchema,
   envPath: NonEmptyStringSchema,
   secretsPath: NonEmptyStringSchema,
+  extensionsPath: NonEmptyStringSchema,
   proxyDir: NonEmptyStringSchema,
   pkiDir: NonEmptyStringSchema,
   generatedDir: NonEmptyStringSchema,

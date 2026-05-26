@@ -1,12 +1,39 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { z } from "zod";
 import { parseRootcellArgs } from "./args.ts";
+import { completeExtensionCommand, runExtensionCommand } from "./extensions/commands.ts";
+import {
+  ensureExtensionsConfig,
+  formatExtensionsList,
+  parseExtensionsConfig,
+  renderExtensionsConfig,
+  setExtensionEnabled,
+} from "./extensions/config.ts";
+import {
+  GENERATED_EXTENSION_HOOK_FILES,
+  renderExtensionNixAggregator,
+  writeExtensionNixAggregators,
+} from "./extensions/nix.ts";
+import {
+  ROOTCELL_EXTENSIONS,
+  RootcellExtensionDefinitionSchema,
+  type RootcellExtensionDefinition,
+} from "./extensions/registry.ts";
 import { ROOTCELL_SUBCOMMANDS } from "./metadata.ts";
 import { loadDotEnv, parseSecretMappings } from "./env.ts";
 import { resolveHostTool } from "./host-tools.ts";
 import { initRootcellInstanceEnv } from "./init-env.ts";
-import { buildConfig, chooseSpyLocalPort, formatVmList, renderSpyEnv, rootcellMain, RootcellApp } from "./rootcell.ts";
-import { deriveVmNames, instancePaths, listRootcellVmInstanceNames, loadRootcellInstance, seedRootcellInstanceFiles } from "./instance.ts";
+import { buildConfig, formatVmList, renderSpyEnv, rootcellMain, RootcellApp } from "./rootcell.ts";
+import {
+  deriveVmNames,
+  instancePaths,
+  listRootcellVmInstanceNames,
+  loadRootcellInstance,
+  readSelectedRootcellInstance,
+  seedRootcellInstanceFiles,
+  selectedRootcellInstancePath,
+  writeSelectedRootcellInstance,
+} from "./instance.ts";
 import { runCapture } from "./process.ts";
 import { parseAwsEc2Config } from "./providers/aws-ec2-config.ts";
 import { AwsEc2NetworkProvider, awsVpcRouterIp } from "./providers/aws-ec2-network.ts";
@@ -17,7 +44,7 @@ import {
   type TerraformRunner,
 } from "./providers/aws-ec2-terraform.ts";
 import type { AwsEc2Api, AwsS3ObjectRef } from "./providers/aws-ec2-aws.ts";
-import type { ProviderBundle, VmNetworkAttachment } from "./providers/types.ts";
+import type { LocalPortForwardOptions, ProviderBundle, VmNetworkAttachment, VmRole } from "./providers/types.ts";
 import { createProviderBundle } from "./providers/factory.ts";
 import {
   limaNetworkListIncludes,
@@ -40,9 +67,10 @@ import {
   ROOTCELL_IMAGE_SCHEMA_VERSION,
   RootcellImageManifestSchema,
 } from "./images.ts";
-import { forgetKnownHost, sshConfig } from "./transports/proxyjump-ssh.ts";
+import { chooseLocalPort } from "./tunnels.ts";
+import { forgetKnownHost, ProxyJumpSshTransport, sshConfig } from "./transports/proxyjump-ssh.ts";
 import { dnsmasqAllowlistConfig, generatedLineCount } from "../bin/reload.ts";
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -72,6 +100,44 @@ const ignoreLog = (): void => undefined;
 function expectRunArgs(value: ParsedRootcellRunArgs): void {
   expect(value).toEqual(expect.schemaMatching(ParsedRootcellRunArgsSchema));
 }
+
+describe("rootcell extension registry", () => {
+  test("validates host command definitions", () => {
+    const valid = {
+      id: "pi-plannotator",
+      description: "test extension",
+      requiresProvision: true,
+      guestHooks: {
+        agentNixos: [],
+        firewallNixos: [],
+        homeManager: [],
+      },
+      hostCommands: [
+        {
+          name: "check-status",
+          description: "check status",
+          complete: () => [],
+          run: () => 0,
+        },
+      ],
+    };
+
+    expect(RootcellExtensionDefinitionSchema.safeParse(valid).success).toBe(true);
+    expect(RootcellExtensionDefinitionSchema.safeParse({
+      ...valid,
+      hostCommands: [{ ...valid.hostCommands[0], name: "CheckStatus" }],
+    }).success).toBe(false);
+  });
+
+  test("registers Plannotator package install hook and tunnel command", () => {
+    const plannotator = ROOTCELL_EXTENSIONS.find((extension) => extension.id === "pi-plannotator");
+
+    expect(plannotator?.guestHooks.homeManager).toEqual(["extensions/pi-plannotator/home-manager.nix"]);
+    expect(plannotator?.guestHooks.agentNixos).toEqual(expect.schemaMatching(EmptyStringArraySchema));
+    expect(plannotator?.guestHooks.firewallNixos).toEqual(expect.schemaMatching(EmptyStringArraySchema));
+    expect(plannotator?.hostCommands.map((command) => command.name)).toEqual(["tunnel"]);
+  });
+});
 
 describe("rootcell argument parsing", () => {
   test("parses known subcommands", () => {
@@ -160,8 +226,50 @@ describe("rootcell argument parsing", () => {
       spyOptions: { open: true },
     });
 
+    const extensions = runArgs(["edit", "extensions"]);
+    expectRunArgs(extensions);
+    expect(extensions).toEqual({
+      kind: "run",
+      instanceName: "default",
+      subcommand: "edit",
+      rest: ["extensions"],
+      spyOptions: { open: true },
+    });
+
     expect(() => parseRootcellArgs(["edit"])).toThrow();
     expect(() => parseRootcellArgs(["edit", "smtp"])).toThrow();
+  });
+
+  test("parses extension subcommands", () => {
+    const list = runArgs(["extension", "list"]);
+    expectRunArgs(list);
+    expect(list).toEqual({
+      kind: "run",
+      instanceName: "default",
+      subcommand: "extension",
+      rest: ["list"],
+      spyOptions: { open: true },
+    });
+
+    const enable = runArgs(["--instance", "dev", "extension", "enable", "pi-subagents"]);
+    expectRunArgs(enable);
+    expect(enable).toEqual({
+      kind: "run",
+      instanceName: "dev",
+      subcommand: "extension",
+      rest: ["enable", "pi-subagents"],
+      spyOptions: { open: true },
+    });
+
+    const missingNestedCommand = runArgs(["extension"]);
+    expectRunArgs(missingNestedCommand);
+    expect(missingNestedCommand).toEqual({
+      kind: "run",
+      instanceName: "default",
+      subcommand: "extension",
+      rest: [],
+      spyOptions: { open: true },
+    });
   });
 
   test("parses pass-through guest commands", () => {
@@ -174,18 +282,12 @@ describe("rootcell argument parsing", () => {
       rest: ["nix", "flake", "update"],
       spyOptions: { open: true },
     });
-    const implicit = runArgs(["pi", "--model", "sonnet"]);
-    expectRunArgs(implicit);
-    expect(implicit).toEqual({
-      kind: "run",
-      instanceName: "default",
-      subcommand: "",
-      rest: ["pi", "--model", "sonnet"],
-      spyOptions: { open: true },
-    });
     const numericOptions = runArgs(["--", "curl", "--connect-timeout", "5", "--max-time", "20", "https://github.com"]);
     expectRunArgs(numericOptions);
     expect(numericOptions.rest).toEqual(["curl", "--connect-timeout", "5", "--max-time", "20", "https://github.com"]);
+
+    expect(() => parseRootcellArgs(["pi", "--model", "sonnet"])).toThrow("unknown rootcell command 'pi'");
+    expect(() => parseRootcellArgs(["nix", "flake", "update"])).toThrow("use 'rootcell -- nix'");
   });
 
   test("parses instance flags in any command position", () => {
@@ -207,7 +309,7 @@ describe("rootcell argument parsing", () => {
       rest: [],
       spyOptions: { open: true },
     });
-    const passThrough = runArgs(["pi", "--instance", "dev", "--model", "sonnet"]);
+    const passThrough = runArgs(["--instance", "dev", "--", "pi", "--model", "sonnet"]);
     expectRunArgs(passThrough);
     expect(passThrough).toEqual({
       kind: "run",
@@ -216,6 +318,23 @@ describe("rootcell argument parsing", () => {
       rest: ["pi", "--model", "sonnet"],
       spyOptions: { open: true },
     });
+    expect(() => parseRootcellArgs(["--instance", "dev", "pi"])).toThrow("use 'rootcell --instance dev -- pi'");
+  });
+
+  test("parses select as a rootcell subcommand", () => {
+    expect(parseRootcellArgs(["select", "dev"])).toEqual({
+      kind: "select",
+      selectedInstanceName: "dev",
+    });
+    expect(parseRootcellArgs(["select", "default"])).toEqual({
+      kind: "select",
+      selectedInstanceName: "default",
+    });
+    expect(() => parseRootcellArgs(["select"])).toThrow();
+    expect(() => parseRootcellArgs(["select", "dev", "extra"])).toThrow();
+    expect(() => parseRootcellArgs(["select", "dev", "--init-env", "macos-lima"])).toThrow("--init-env cannot be combined");
+    expect(() => parseRootcellArgs(["select", "dev", "--instance", "other"])).toThrow("--instance cannot be used with select");
+    expect(() => parseRootcellArgs(["select", "dev", "--", "pi"])).toThrow();
   });
 
   test("rejects invalid instance names", () => {
@@ -269,8 +388,8 @@ describe("rootcell argument parsing", () => {
     expect(() => renderSpyEnv({}, ["bad-name=value"])).toThrow("invalid spy environment variable name");
   });
 
-  test("chooses a fallback spy port when the preferred port is occupied", async () => {
-    const chosen = await chooseSpyLocalPort(6174, "127.0.0.1", (port) => Promise.resolve(port !== 6174));
+  test("chooses a fallback local tunnel port when the preferred port is occupied", async () => {
+    const chosen = await chooseLocalPort(6174, "127.0.0.1", 100, (port) => Promise.resolve(port !== 6174));
     expect(chosen).toBe(6175);
   });
 
@@ -438,6 +557,111 @@ describe("environment parsing", () => {
       ROOTCELL_AWS_REGION: "us-west-2",
       ROOTCELL_AWS_CONTROL_CIDR: "999.51.100.10/32",
     })).toThrow("IPv4 CIDR");
+  });
+});
+
+describe("rootcell extension config", () => {
+  test("parses extension booleans and unknown valid keys", () => {
+    const config = parseExtensionsConfig([
+      "# local extension choices",
+      "pi-subagents=yes",
+      "pi-plannotator",
+      "future-extension=off",
+      "",
+    ].join("\n"));
+
+    expect(config.enabled.has("pi-subagents")).toBe(true);
+    expect(config.enabled.has("pi-plannotator")).toBe(false);
+    expect(config.unknownKeys).toEqual(["future-extension"]);
+  });
+
+  test("rejects invalid extension keys, values, and duplicates", () => {
+    expect(() => parseExtensionsConfig("Bad=true\n")).toThrow("invalid extension key");
+    expect(() => parseExtensionsConfig("pi-subagents=maybe\n")).toThrow("invalid boolean value");
+    expect(() => parseExtensionsConfig("pi-subagents=true\npi-subagents=false\n")).toThrow("duplicate extension key");
+  });
+
+  test("preserves comments, ordering, and unknown keys while appending missing known keys", () => {
+    const rendered = renderExtensionsConfig(parseExtensionsConfig([
+      "# keep this",
+      "future-extension=true",
+      "",
+      "pi-subagents=off",
+      "",
+    ].join("\n")), new Map([["pi-subagents", true]]));
+
+    expect(rendered).toBe([
+      "# keep this",
+      "future-extension=true",
+      "",
+      "pi-subagents=true",
+      "pi-plannotator=false",
+      "",
+    ].join("\n"));
+  });
+
+  test("seeds and rewrites extensions.txt idempotently", () => {
+    const repo = makeInstanceRepo();
+    try {
+      const path = join(repo, "extensions.txt");
+      const seeded = ensureExtensionsConfig(path);
+      expect(formatExtensionsList(seeded)).toContain("pi-plannotator  disabled");
+      expect(readFileSync(path, "utf8")).toBe("pi-plannotator=false\npi-subagents=false\n");
+
+      const enabled = setExtensionEnabled(path, "pi-subagents", true);
+      expect(enabled.changed).toBe(true);
+      expect(readFileSync(path, "utf8")).toBe("pi-plannotator=false\npi-subagents=true\n");
+
+      const enabledAgain = setExtensionEnabled(path, "pi-subagents", true);
+      expect(enabledAgain.changed).toBe(false);
+      expect(readFileSync(path, "utf8")).toBe("pi-plannotator=false\npi-subagents=true\n");
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("migrates legacy Pi extension ids in extensions.txt", () => {
+    const rendered = renderExtensionsConfig(parseExtensionsConfig("plannotator=true\nsubagent=false\n"));
+    expect(rendered).toBe("pi-plannotator=true\npi-subagents=false\n");
+    expect(() => parseExtensionsConfig("plannotator=true\npi-plannotator=false\n")).toThrow("duplicate extension key");
+  });
+});
+
+describe("rootcell extension Nix hooks", () => {
+  test("renders empty aggregators when no extensions are enabled", () => {
+    expect(renderExtensionNixAggregator(parseExtensionsConfig("pi-subagents=false\n"), "homeManager")).toBe([
+      "# Generated by ./rootcell from this instance's extensions.txt. DO NOT EDIT.",
+      "{ ... }:",
+      "{",
+      "  imports = [",
+      "  ];",
+      "}",
+      "",
+    ].join("\n"));
+  });
+
+  test("renders enabled Home Manager extension imports", () => {
+    const rendered = renderExtensionNixAggregator(parseExtensionsConfig("pi-subagents=true\npi-plannotator=true\n"), "homeManager");
+    expect(rendered).toContain("../extensions/pi-subagents/home-manager.nix");
+    expect(rendered).toContain("../extensions/pi-plannotator/home-manager.nix");
+    expect(renderExtensionNixAggregator(parseExtensionsConfig("pi-subagents=true\n"), "agentNixos")).not.toContain("../extensions/pi-subagents");
+    expect(renderExtensionNixAggregator(parseExtensionsConfig("pi-plannotator=false\n"), "homeManager")).not.toContain("../extensions/pi-plannotator/home-manager.nix");
+  });
+
+  test("writes the explicit generated hook files", () => {
+    const repo = makeInstanceRepo();
+    try {
+      const generatedDir = join(repo, "generated");
+      mkdirSync(generatedDir, { recursive: true });
+      writeExtensionNixAggregators(generatedDir, parseExtensionsConfig("pi-subagents=true\n"));
+
+      for (const file of GENERATED_EXTENSION_HOOK_FILES) {
+        expect(readFileSync(join(generatedDir, file), "utf8")).toContain("Generated by ./rootcell");
+      }
+      expect(readFileSync(join(generatedDir, "extensions-home-manager.nix"), "utf8")).toContain("../extensions/pi-subagents/home-manager.nix");
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 });
 
@@ -867,6 +1091,111 @@ describe("VM and network providers", () => {
     ]);
   });
 
+  test("spy uses the shared tunnel fallback and foreground close path", async () => {
+    const repo = makeInstanceRepo();
+    const oldSpyEnabled = process.env.ROOTCELL_SPY_ENABLED;
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      process.env.ROOTCELL_SPY_ENABLED = "true";
+      const env = instanceEnv(repo);
+      const config = buildConfig(repo, env, fakeInstance("dev", repo, env));
+      mkdirSync(config.instanceDir, { recursive: true });
+      mkdirSync(config.generatedDir, { recursive: true });
+      mkdirSync(config.proxyDir, { recursive: true });
+      mkdirSync(config.pkiDir, { recursive: true, mode: 0o700 });
+      for (const file of ["agent-vm-ca.key", "agent-vm-ca-cert.pem", "agent-vm-ca.pem"]) {
+        writeFileSync(join(config.pkiDir, file), "test\n", "utf8");
+      }
+      for (const file of ["allowed-https.txt", "allowed-ssh.txt", "allowed-dns.txt"]) {
+        writeFileSync(join(config.proxyDir, file), "\n", "utf8");
+      }
+
+      const attachment: VmNetworkAttachment = { kind: "fake" };
+      const calls: string[] = [];
+      let forwarded: { name: string; options: LocalPortForwardOptions } | undefined;
+      let closeCalls = 0;
+      const providers: ProviderBundle = {
+        network: {
+          id: "fake-network",
+          plan: () => ({
+            provider: "fake-network",
+            guest: {
+              firewallIp: config.firewallIp,
+              agentIp: config.agentIp,
+              networkPrefix: 24,
+              agentPrivateInterface: "agent0",
+              firewallPrivateInterface: "firewall0",
+              firewallEgressInterface: "egress0",
+            },
+            vms: {
+              agent: attachment,
+              firewall: attachment,
+            },
+          }),
+          preflight: () => Promise.resolve(),
+          stop: () => Promise.resolve(),
+          remove: () => Promise.resolve(),
+          ensureReady: () => Promise.resolve(),
+        },
+        vm: {
+          id: "fake-vm",
+          status: (name) => {
+            calls.push(`status:${name}`);
+            return Promise.resolve({ state: "running" });
+          },
+          stopIfRunning: () => Promise.resolve(),
+          forceStopIfRunning: () => Promise.resolve(),
+          remove: () => Promise.resolve(),
+          assertCompatible: (name) => {
+            calls.push(`assert:${name}`);
+            return Promise.resolve();
+          },
+          ensureRunning: (input) => {
+            calls.push(`ensure:${input.role}:${input.name}`);
+            return Promise.resolve({ created: false });
+          },
+          exec: () => Promise.resolve({ status: 0 }),
+          execCapture: () => Promise.resolve({ status: 0, stdout: "", stderr: "" }),
+          execInteractive: () => Promise.resolve(0),
+          copyToGuest: () => Promise.resolve(),
+          forwardLocalPort: (name, options) => {
+            forwarded = { name, options };
+            return Promise.resolve({
+              ...options,
+              closed: Promise.resolve(0),
+              close: () => {
+                closeCalls += 1;
+                return Promise.resolve();
+              },
+            });
+          },
+        },
+        secrets: new StaticSecretProviderRegistry([]),
+      };
+
+      const status = await new RootcellApp(config, providers, {
+        tunnelPortAvailable: (port) => Promise.resolve(port !== 6174),
+      }).runAfterEnvironment("spy", [], { open: false });
+
+      expect(status).toBe(0);
+      expect(forwarded?.name).toBe(config.firewallVm);
+      expect(forwarded?.options.localHost).toBe("127.0.0.1");
+      expect(typeof forwarded?.options.localPort).toBe("number");
+      expect(forwarded?.options.remoteHost).toBe("127.0.0.1");
+      expect(forwarded?.options.remotePort).toBe(6174);
+      expect(forwarded?.options.localPort).toBe(6175);
+      expect(closeCalls).toBe(1);
+      expect(stdout.mock.calls.map((call) => String(call[0])).join("")).toContain(
+        `http://127.0.0.1:${String(forwarded?.options.localPort)}/?since=`,
+      );
+      expect(calls).toContain(`ensure:firewall:${config.firewallVm}`);
+    } finally {
+      stdout.mockRestore();
+      restoreEnv("ROOTCELL_SPY_ENABLED", oldSpyEnabled);
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   test("macOS Lima user-v2 provider exposes egress firewall and private-only agent attachments", () => {
     const config = buildConfig("/repo", {}, fakeInstance("dev"));
     const plan = new MacOsLimaUserV2NetworkProvider(config, ignoreLog).plan();
@@ -1072,6 +1401,7 @@ describe("VM and network providers", () => {
     expect(commonModule).toContain("networking.nat.enable = lib.mkForce false;");
 
     const firewallModule = readFileSync("firewall-vm.nix", "utf8");
+    expect(firewallModule).toContain("extensions-firewall-vm.nix");
     expect(firewallModule).toContain("systemd.network.wait-online.enable = false;");
     expect(firewallModule).toContain("linkConfig.RequiredForOnline = false;");
     expect(firewallModule).toContain("Rootcell keeps DHCP routes and DNS disabled");
@@ -1099,16 +1429,23 @@ describe("VM and network providers", () => {
     const rootcellSource = readFileSync("src/rootcell/rootcell.ts", "utf8");
     expect(rootcellSource).toContain("\"dist/spy-service.js\"");
     expect(rootcellSource).toContain("\"dist/spy-ui\"");
+    expect(rootcellSource).toContain("GENERATED_EXTENSION_HOOK_FILES");
+    expect(rootcellSource).toContain("copyGeneratedExtensionsIntoVm");
     expect(rootcellSource).toContain("private guestFlakeRef");
     expect(rootcellSource).toContain("path:${this.config.guestRepoDir}#");
     expect(rootcellSource).toContain("sudo grep -Eq '^ROOTCELL_SPY_ENABLED=");
     expect(rootcellSource).not.toContain("private async installFirewallSpyAssets");
 
     const agentModule = readFileSync("agent-vm.nix", "utf8");
+    expect(agentModule).toContain("extensions-agent-vm.nix");
     expect(agentModule).toContain('DHCP = "ipv4";');
     expect(agentModule).toContain("UseDNS = false;");
     expect(agentModule).toContain("UseRoutes = false;");
     expect(agentModule).toContain("PreferredSource = net.agentIp;");
+
+    const homeModule = readFileSync("home.nix", "utf8");
+    expect(homeModule).toContain("extensions-home-manager.nix");
+    expect(homeModule).not.toContain(".pi/agent/extensions/subagent");
   });
 
   test("user-v2 proof gate rejects extra agent interfaces and default-route bypasses", () => {
@@ -1451,6 +1788,88 @@ describe("VM and network providers", () => {
     }
   });
 
+  test("proxyjump local port forwarding builds SSH local-forward args and closes the process", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rootcell-forward-"));
+    const oldPath = process.env.PATH;
+    const oldArgsPath = process.env.ROOTCELL_FAKE_SSH_ARGS;
+    try {
+      const bin = join(dir, "bin");
+      mkdirSync(bin, { recursive: true });
+      const ssh = join(bin, "ssh");
+      writeFileSync(ssh, fakeForwardingSshScript(), "utf8");
+      chmodSync(ssh, 0o755);
+      const argsPath = join(dir, "ssh-args.txt");
+      process.env.PATH = `${bin}:${oldPath ?? ""}`;
+      process.env.ROOTCELL_FAKE_SSH_ARGS = argsPath;
+
+      const config = buildConfig(dir, {}, fakeInstance("dev", dir));
+      const transport = new ProxyJumpSshTransport(config, () => ({
+        firewallHost: "127.0.0.1",
+        firewallPort: 60_022,
+        agentHost: "192.168.109.11",
+        identityPath: join(dir, "rootcell_control_ed25519"),
+        knownHostsPath: join(dir, "known_hosts"),
+      }));
+
+      const tunnel = await transport.forwardLocalPort(config.agentVm, {
+        localHost: "127.0.0.1",
+        localPort: 19_432,
+        remoteHost: "127.0.0.1",
+        remotePort: 6174,
+      });
+      await tunnel.close();
+
+      const args = readLines(argsPath);
+      const forwardArgIndex = args.indexOf("-L");
+      expect(forwardArgIndex).toBeGreaterThanOrEqual(0);
+      expect(args[forwardArgIndex + 1]).toBe("127.0.0.1:19432:127.0.0.1:6174");
+      expect(args).toContain("ExitOnForwardFailure=yes");
+      expect(args.at(-1)).toBe("rootcell-agent");
+    } finally {
+      process.env.PATH = oldPath;
+      restoreEnv("ROOTCELL_FAKE_SSH_ARGS", oldArgsPath);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("proxyjump local port forwarding reports SSH startup failure", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rootcell-forward-failure-"));
+    const oldPath = process.env.PATH;
+    const oldArgsPath = process.env.ROOTCELL_FAKE_SSH_ARGS;
+    const oldFail = process.env.ROOTCELL_FAKE_SSH_FAIL;
+    try {
+      const bin = join(dir, "bin");
+      mkdirSync(bin, { recursive: true });
+      const ssh = join(bin, "ssh");
+      writeFileSync(ssh, fakeForwardingSshScript(), "utf8");
+      chmodSync(ssh, 0o755);
+      process.env.PATH = `${bin}:${oldPath ?? ""}`;
+      process.env.ROOTCELL_FAKE_SSH_ARGS = join(dir, "ssh-args.txt");
+      process.env.ROOTCELL_FAKE_SSH_FAIL = "1";
+
+      const config = buildConfig(dir, {}, fakeInstance("dev", dir));
+      const transport = new ProxyJumpSshTransport(config, () => ({
+        firewallHost: "127.0.0.1",
+        firewallPort: 60_022,
+        agentHost: "192.168.109.11",
+        identityPath: join(dir, "rootcell_control_ed25519"),
+        knownHostsPath: join(dir, "known_hosts"),
+      }));
+
+      await expect(transport.forwardLocalPort(config.firewallVm, {
+        localHost: "127.0.0.1",
+        localPort: 19_432,
+        remoteHost: "127.0.0.1",
+        remotePort: 6174,
+      })).rejects.toThrow("SSH local port forward failed with exit 255: fake ssh failed");
+    } finally {
+      process.env.PATH = oldPath;
+      restoreEnv("ROOTCELL_FAKE_SSH_ARGS", oldArgsPath);
+      restoreEnv("ROOTCELL_FAKE_SSH_FAIL", oldFail);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("Lima state parser validates running state shape", () => {
     const state = parseLimaVmState({
       provider: "lima",
@@ -1626,6 +2045,21 @@ describe("VM and network providers", () => {
       "dev       firewall-dev  stopped",
       "",
     ].join("\n"));
+    expect(formatVmList([
+      { instance: "dev", vm: "agent-dev", state: "missing" },
+      { instance: "dev", vm: "firewall-dev", state: "missing" },
+    ], { selectedInstance: "dev" })).toBe([
+      "INSTANCE        VM            STATE",
+      "dev (selected)  agent-dev     missing",
+      "dev (selected)  firewall-dev  missing",
+      "",
+    ].join("\n"));
+    expect(formatVmList([
+      { instance: "dev", vm: "agent-dev", state: "running" },
+    ], { selectedInstance: "dev", color: true })).toContain("\u001b[1;32mdev (selected)");
+    expect(formatVmList([
+      { instance: "dev", vm: "agent-dev", state: "running" },
+    ], { selectedInstance: "dev", stdoutIsTty: true, env: { NO_COLOR: "1" } })).not.toContain("\u001b[");
     expect(formatVmList([])).toBe("No rootcell VMs found.\n");
   });
 });
@@ -1689,6 +2123,51 @@ describe("instance state", () => {
   test("defaults instance state to cwd instances directory", () => {
     expect(instancePaths("/repo", "default", {}).dir).toBe("/repo/instances/default");
     expect(instancePaths("/repo", "dev", {}).dir).toBe("/repo/instances/dev");
+  });
+
+  test("stores and reads the selected default instance", () => {
+    const repo = makeInstanceRepo();
+    try {
+      const env = instanceEnv(repo);
+      expect(readSelectedRootcellInstance(repo, env)).toBe("default");
+      expect(existsSync(selectedRootcellInstancePath(repo, env))).toBe(false);
+
+      writeSelectedRootcellInstance(repo, "dev", env);
+
+      const selectedPath = selectedRootcellInstancePath(repo, env);
+      expect(readFileSync(selectedPath, "utf8")).toBe("dev\n");
+      expect(readSelectedRootcellInstance(repo, env)).toBe("dev");
+      expect(statSync(env.ROOTCELL_STATE_DIR ?? "").mode & 0o777).toBe(0o700);
+      expect(statSync(selectedPath).mode & 0o777).toBe(0o600);
+
+      writeSelectedRootcellInstance(repo, "default", env);
+      expect(readSelectedRootcellInstance(repo, env)).toBe("default");
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects corrupted selected instance state", () => {
+    const repo = makeInstanceRepo();
+    try {
+      const env = instanceEnv(repo);
+      mkdirSync(env.ROOTCELL_STATE_DIR ?? "", { recursive: true });
+      const path = selectedRootcellInstancePath(repo, env);
+
+      writeFileSync(path, "", "utf8");
+      expect(() => readSelectedRootcellInstance(repo, env)).toThrow("empty content");
+
+      writeFileSync(path, "dev\nother\n", "utf8");
+      expect(() => readSelectedRootcellInstance(repo, env)).toThrow("multiple non-empty lines");
+
+      writeFileSync(path, "dev other\n", "utf8");
+      expect(() => readSelectedRootcellInstance(repo, env)).toThrow("embedded whitespace");
+
+      writeFileSync(path, "Dev\n", "utf8");
+      expect(() => readSelectedRootcellInstance(repo, env)).toThrow("invalid instance name");
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 
   test("allocates stable unique /24 networks", () => {
@@ -1839,6 +2318,37 @@ describe("instance state", () => {
 });
 
 describe("rootcell edit command", () => {
+  test("uses the selected default instance when --instance is omitted", async () => {
+    const repo = makeInstanceRepo();
+    const oldRootcellStateDir = process.env.ROOTCELL_STATE_DIR;
+    const oldEditor = process.env.EDITOR;
+    const oldRecord = process.env.ROOTCELL_EDITOR_RECORD;
+    try {
+      mkdirSync(join(repo, "src", "bin"), { recursive: true });
+      writeFileSync(join(repo, "flake.nix"), "{}\n", "utf8");
+
+      const editor = join(repo, "editor.sh");
+      const record = join(repo, "opened.txt");
+      writeFileSync(editor, "#!/bin/sh\nprintf '%s\\n' \"$1\" > \"$ROOTCELL_EDITOR_RECORD\"\n", "utf8");
+      chmodSync(editor, 0o700);
+
+      process.env.ROOTCELL_STATE_DIR = join(repo, ".state");
+      process.env.EDITOR = editor;
+      process.env.ROOTCELL_EDITOR_RECORD = record;
+      writeSelectedRootcellInstance(repo, "dev", process.env);
+
+      const status = await rootcellMain(["edit", "dns"], join(repo, "src", "bin", "rootcell.ts"));
+
+      expect(status).toBe(0);
+      expect(readFileSync(record, "utf8").trim()).toBe(join(repo, ".state", "dev", "proxy", "allowed-dns.txt"));
+    } finally {
+      restoreEnv("ROOTCELL_STATE_DIR", oldRootcellStateDir);
+      restoreEnv("EDITOR", oldEditor);
+      restoreEnv("ROOTCELL_EDITOR_RECORD", oldRecord);
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   test("opens the selected instance allowlist in EDITOR", async () => {
     const repo = makeInstanceRepo();
     const oldRootcellStateDir = process.env.ROOTCELL_STATE_DIR;
@@ -1871,6 +2381,196 @@ describe("rootcell edit command", () => {
     }
   });
 
+  test("opens the selected instance extensions file in EDITOR", async () => {
+    const repo = makeInstanceRepo();
+    const oldRootcellStateDir = process.env.ROOTCELL_STATE_DIR;
+    const oldEditor = process.env.EDITOR;
+    const oldRecord = process.env.ROOTCELL_EDITOR_RECORD;
+    try {
+      mkdirSync(join(repo, "src", "bin"), { recursive: true });
+      writeFileSync(join(repo, "flake.nix"), "{}\n", "utf8");
+
+      const editor = join(repo, "editor.sh");
+      const record = join(repo, "opened.txt");
+      writeFileSync(editor, "#!/bin/sh\nprintf '%s\\n' \"$1\" > \"$ROOTCELL_EDITOR_RECORD\"\n", "utf8");
+      chmodSync(editor, 0o700);
+
+      process.env.ROOTCELL_STATE_DIR = join(repo, ".state");
+      process.env.EDITOR = editor;
+      process.env.ROOTCELL_EDITOR_RECORD = record;
+
+      const status = await rootcellMain(["--instance", "dev", "edit", "extensions"], join(repo, "src", "bin", "rootcell.ts"));
+
+      expect(status).toBe(0);
+      expect(readFileSync(record, "utf8").trim()).toBe(join(repo, ".state", "dev", "extensions.txt"));
+      expect(readFileSync(join(repo, ".state", "dev", "extensions.txt"), "utf8")).toBe("pi-plannotator=false\npi-subagents=false\n");
+    } finally {
+      restoreEnv("ROOTCELL_STATE_DIR", oldRootcellStateDir);
+      restoreEnv("EDITOR", oldEditor);
+      restoreEnv("ROOTCELL_EDITOR_RECORD", oldRecord);
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("rootcell extension command", () => {
+  test("lists, enables, disables, and rejects unknown extensions", () => {
+    const repo = makeInstanceRepo();
+    try {
+      const env = { ...process.env, ROOTCELL_STATE_DIR: join(repo, ".state") };
+      const list = runCapture("./rootcell", ["--instance", "dev", "extension", "list"], { env });
+      expect(list.stdout).toContain("pi-plannotator  disabled");
+      expect(list.stdout).toContain("pi-subagents    disabled");
+      expect(readFileSync(join(repo, ".state", "dev", "extensions.txt"), "utf8")).toBe("pi-plannotator=false\npi-subagents=false\n");
+
+      const enable = runCapture("./rootcell", ["--instance", "dev", "extension", "enable", "pi-subagents"], { env });
+      expect(enable.stdout).toContain("pi-subagents enabled for instance 'dev'.");
+      expect(enable.stdout).toContain("run ./rootcell --instance dev provision to apply VM changes.");
+      expect(readFileSync(join(repo, ".state", "dev", "extensions.txt"), "utf8")).toBe("pi-plannotator=false\npi-subagents=true\n");
+
+      const enableAgain = runCapture("./rootcell", ["--instance", "dev", "extension", "enable", "pi-subagents"], { env });
+      expect(enableAgain.stdout).toContain("pi-subagents already enabled for instance 'dev'.");
+
+      const disable = runCapture("./rootcell", ["--instance", "dev", "extension", "disable", "pi-subagents"], { env });
+      expect(disable.stdout).toContain("pi-subagents disabled for instance 'dev'.");
+      expect(readFileSync(join(repo, ".state", "dev", "extensions.txt"), "utf8")).toBe("pi-plannotator=false\npi-subagents=false\n");
+
+      const invalid = runCapture("./rootcell", ["--instance", "dev", "extension", "enable", "missing"], { env, allowFailure: true });
+      expect(invalid.status).toBe(2);
+      expect(invalid.stderr).toContain("unknown extension id 'missing'");
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("dispatches enabled extension host commands through a narrow context", async () => {
+    const repo = makeInstanceRepo();
+    try {
+      const env = { ...process.env, ROOTCELL_STATE_DIR: join(repo, ".state") };
+      mkdirSync(join(repo, ".state", "dev"), { recursive: true });
+      writeFileSync(join(repo, ".state", "dev", "extensions.txt"), "pi-plannotator=true\npi-subagents=false\n", "utf8");
+      const calls: string[] = [];
+      const extensions = testHostCommandExtensions(async (context, args) => {
+        calls.push(`run:${context.instanceName}:${args.join(",")}:${context.extensionConfig.enabled.has("pi-plannotator") ? "enabled" : "disabled"}`);
+        const status = await context.vmStatus("agent");
+        calls.push(`status:${status.state}`);
+        const tunnel = await context.forwardLocalPort("firewall", {
+          localHost: "127.0.0.1",
+          localPort: 1234,
+          remoteHost: "127.0.0.1",
+          remotePort: 5678,
+        });
+        calls.push(`forward:${tunnel.localHost}:${String(tunnel.localPort)}:${String(tunnel.remotePort)}`);
+        return 0;
+      });
+
+      const status = await runExtensionCommand({
+        repoDir: repo,
+        env,
+        instanceName: "dev",
+        rest: ["pi-plannotator", "check", "one", "two"],
+        log: (message) => calls.push(`log:${message}`),
+        extensions,
+        createContext: ({ extension, command, extensionConfig }) => {
+          calls.push(`context:${extension.id}:${command.name}`);
+          return {
+            repoDir: repo,
+            instanceName: "dev",
+            extensionConfig,
+            config: buildConfig(repo, env, fakeInstance("dev", repo, env)),
+            log: (message) => calls.push(`ctx-log:${message}`),
+            vmStatus: (role) => {
+              calls.push(`vmStatus:${role}`);
+              return Promise.resolve({ state: "running" });
+            },
+            forwardLocalPort: (role, options) => {
+              calls.push(`forwardLocalPort:${role}`);
+              return Promise.resolve({
+                ...options,
+                closed: Promise.resolve(0),
+                close: () => Promise.resolve(),
+              });
+            },
+          };
+        },
+      });
+
+      expect(status).toBe(0);
+      expect(calls).toEqual([
+        "context:pi-plannotator:check",
+        "run:dev:one,two:enabled",
+        "vmStatus:agent",
+        "status:running",
+        "forwardLocalPort:firewall",
+        "forward:127.0.0.1:1234:5678",
+      ]);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects disabled, unknown, and missing extension host command paths", async () => {
+    const repo = makeInstanceRepo();
+    try {
+      const env = { ...process.env, ROOTCELL_STATE_DIR: join(repo, ".state") };
+      const logs: string[] = [];
+      let contexts = 0;
+      const input = {
+        repoDir: repo,
+        env,
+        instanceName: "dev",
+        log: (message: string) => logs.push(message),
+        extensions: testHostCommandExtensions(),
+        createContext: () => {
+          contexts += 1;
+          return {
+            repoDir: repo,
+            instanceName: "dev",
+            extensionConfig: parseExtensionsConfig("pi-plannotator=true\n"),
+            config: buildConfig(repo, env, fakeInstance("dev", repo, env)),
+            log: ignoreLog,
+            vmStatus: (role: VmRole) => {
+              void role;
+              return Promise.resolve({ state: "running" as const });
+            },
+            forwardLocalPort: (role: VmRole, options: LocalPortForwardOptions) => {
+              void role;
+              return Promise.resolve({
+                ...options,
+                closed: Promise.resolve(0),
+                close: () => Promise.resolve(),
+              });
+            },
+          };
+        },
+      };
+
+      expect(await runExtensionCommand({ ...input, rest: ["pi-plannotator", "check"] })).toBe(1);
+      expect(logs.join("\n")).toContain("extension 'pi-plannotator' is disabled");
+      expect(existsSync(join(repo, ".state", "dev", "extensions.txt"))).toBe(false);
+      expect(contexts).toBe(0);
+
+      mkdirSync(join(repo, ".state", "dev"), { recursive: true });
+      writeFileSync(join(repo, ".state", "dev", "extensions.txt"), "pi-plannotator=true\npi-subagents=false\n", "utf8");
+      logs.length = 0;
+      expect(await runExtensionCommand({ ...input, rest: ["missing", "check"] })).toBe(2);
+      expect(logs.join("\n")).toContain("unknown extension command or id 'missing'");
+
+      logs.length = 0;
+      expect(await runExtensionCommand({ ...input, rest: ["pi-plannotator"] })).toBe(2);
+      expect(logs.join("\n")).toContain("usage: rootcell extension pi-plannotator <command>");
+
+      logs.length = 0;
+      expect(await runExtensionCommand({ ...input, rest: ["pi-plannotator", "missing"] })).toBe(2);
+      expect(logs.join("\n")).toContain("unknown command for extension 'pi-plannotator': 'missing'");
+      expect(contexts).toBe(0);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("rootcell edit env command", () => {
   test("opens the selected instance environment in EDITOR", async () => {
     const repo = makeInstanceRepo();
     const oldRootcellStateDir = process.env.ROOTCELL_STATE_DIR;
@@ -1898,6 +2598,49 @@ describe("rootcell edit command", () => {
       restoreEnv("ROOTCELL_STATE_DIR", oldRootcellStateDir);
       restoreEnv("EDITOR", oldEditor);
       restoreEnv("ROOTCELL_EDITOR_RECORD", oldRecord);
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("rootcell select command", () => {
+  test("persists the selected default without creating instance files", () => {
+    const repo = makeInstanceRepo();
+    try {
+      const env = { ...process.env, ROOTCELL_STATE_DIR: join(repo, ".state") };
+      const result = runCapture("./rootcell", ["select", "dev"], { env });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe("selected rootcell instance 'dev'\n");
+      expect(readFileSync(join(repo, ".state", ".selected-instance"), "utf8")).toBe("dev\n");
+      expect(existsSync(join(repo, ".state", "dev"))).toBe(false);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("list marks the selected instance and tolerates corrupted selection when explicit", () => {
+    const repo = makeInstanceRepo();
+    try {
+      const env = { ...process.env, ROOTCELL_STATE_DIR: join(repo, ".state") };
+      writeSelectedRootcellInstance(repo, "jmp", env);
+
+      const selectedList = runCapture("./rootcell", ["list"], { env });
+      expect(selectedList.status).toBe(0);
+      expect(selectedList.stdout).toContain("jmp (selected)  agent-jmp     missing");
+      expect(selectedList.stdout).toContain("jmp (selected)  firewall-jmp  missing");
+
+      writeFileSync(join(repo, ".state", ".selected-instance"), "bad instance\n", "utf8");
+      const invalidList = runCapture("./rootcell", ["list"], { env, allowFailure: true });
+      expect(invalidList.status).toBe(2);
+      expect(invalidList.stderr).toContain("invalid selected rootcell instance in");
+      expect(invalidList.stderr).toContain("embedded whitespace");
+
+      const explicitList = runCapture("./rootcell", ["list", "--instance", "dev"], { env });
+      expect(explicitList.status).toBe(0);
+      expect(explicitList.stdout).toContain("dev       agent-dev     missing");
+      expect(explicitList.stdout).not.toContain("(selected)");
+    } finally {
       rmSync(repo, { recursive: true, force: true });
     }
   });
@@ -1935,6 +2678,131 @@ describe("shell completions", () => {
       expect(choices).toContain(subcommand.name);
     }
   });
+
+  test("extension completions use selected instance state without seeding", () => {
+    const repo = makeInstanceRepo();
+    try {
+      const stateDir = join(repo, ".state");
+      const instanceDir = join(stateDir, "dev");
+      mkdirSync(instanceDir, { recursive: true });
+      writeFileSync(join(instanceDir, "extensions.txt"), "pi-plannotator=false\npi-subagents=true\n", "utf8");
+      const env = completionEnv("/bin/bash");
+      env.ROOTCELL_STATE_DIR = stateDir;
+      writeSelectedRootcellInstance(repo, "dev", env);
+
+      const root = runCapture("./rootcell", ["--get-yargs-completions", "rootcell", "--instance", "dev", "extension", ""], { env }).stdout;
+      expect(root).toContain("list\n");
+      expect(root).toContain("enable\n");
+      expect(root).toContain("disable\n");
+
+      const selectedRoot = runCapture("./rootcell", ["--get-yargs-completions", "rootcell", "extension", ""], { env }).stdout;
+      expect(selectedRoot).toContain("list\n");
+      expect(selectedRoot).toContain("enable\n");
+      expect(selectedRoot).toContain("disable\n");
+
+      const enable = runCapture("./rootcell", ["--get-yargs-completions", "rootcell", "--instance", "dev", "extension", "enable", ""], { env }).stdout;
+      expect(enable).toContain("pi-plannotator\n");
+      expect(enable).not.toContain("pi-subagents\n");
+
+      const disable = runCapture("./rootcell", ["--get-yargs-completions", "rootcell", "--instance", "dev", "extension", "disable", ""], { env }).stdout;
+      expect(disable).toContain("pi-subagents\n");
+      expect(disable).not.toContain("pi-plannotator\n");
+
+      const missing = runCapture("./rootcell", ["--get-yargs-completions", "rootcell", "--instance", "new", "extension", "disable", ""], { env }).stdout;
+      expect(missing).toBe("");
+      expect(existsSync(join(stateDir, "new", "extensions.txt"))).toBe(false);
+
+      writeFileSync(join(stateDir, ".selected-instance"), "bad instance\n", "utf8");
+      const corruptedSelected = runCapture("./rootcell", ["--get-yargs-completions", "rootcell", "extension", "disable", ""], { env }).stdout;
+      expect(corruptedSelected).toBe("");
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("select completions include known instance names", () => {
+    const repo = makeInstanceRepo();
+    try {
+      const env = completionEnv("/bin/bash");
+      env.ROOTCELL_STATE_DIR = join(repo, ".state");
+      seedRootcellInstanceFiles(repo, "dev", ignoreLog, env);
+      seedRootcellInstanceFiles(repo, "review", ignoreLog, env);
+
+      const choices = runCapture("./rootcell", ["--get-yargs-completions", "rootcell", "select", ""], { env }).stdout;
+
+      expect(choices).toContain("dev\n");
+      expect(choices).toContain("review\n");
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("extension completions expose enabled host command groups", () => {
+    const repo = makeInstanceRepo();
+    try {
+      const stateDir = join(repo, ".state");
+      const instanceDir = join(stateDir, "dev");
+      const env = { ...completionEnv("/bin/bash"), ROOTCELL_STATE_DIR: stateDir };
+      const extensions = testHostCommandExtensions();
+      mkdirSync(instanceDir, { recursive: true });
+      writeFileSync(join(instanceDir, "extensions.txt"), "pi-plannotator=true\npi-subagents=false\n", "utf8");
+
+      const root = completeExtensionCommand({
+        repoDir: repo,
+        env,
+        instanceName: "dev",
+        words: ["extension", ""],
+        current: "",
+        extensions,
+      });
+      expect(root).toContain("list");
+      expect(root).toContain("pi-plannotator");
+
+      const commands = completeExtensionCommand({
+        repoDir: repo,
+        env,
+        instanceName: "dev",
+        words: ["extension", "pi-plannotator", ""],
+        current: "",
+        extensions,
+      });
+      expect(commands).toEqual(["check"]);
+
+      const commandArgs = completeExtensionCommand({
+        repoDir: repo,
+        env,
+        instanceName: "dev",
+        words: ["extension", "pi-plannotator", "check", ""],
+        current: "",
+        extensions,
+      });
+      expect(commandArgs).toEqual(["alpha"]);
+
+      writeFileSync(join(instanceDir, "extensions.txt"), "pi-plannotator=false\npi-subagents=false\n", "utf8");
+      const disabledRoot = completeExtensionCommand({
+        repoDir: repo,
+        env,
+        instanceName: "dev",
+        words: ["extension", ""],
+        current: "",
+        extensions,
+      });
+      expect(disabledRoot).not.toContain("pi-plannotator");
+
+      const missing = completeExtensionCommand({
+        repoDir: repo,
+        env,
+        instanceName: "new",
+        words: ["extension", ""],
+        current: "",
+        extensions,
+      });
+      expect(missing).not.toContain("pi-plannotator");
+      expect(existsSync(join(stateDir, "new", "extensions.txt"))).toBe(false);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
 });
 
 function runArgs(args: readonly string[]): ParsedRootcellRunArgs {
@@ -1947,6 +2815,42 @@ function runArgs(args: readonly string[]): ParsedRootcellRunArgs {
 
 function generatedCompletion(shell: string): string {
   return stripTrailingBlankLine(runCapture("./rootcell", ["completion"], { env: completionEnv(shell) }).stdout);
+}
+
+function testHostCommandExtensions(
+  run: RootcellExtensionDefinition["hostCommands"][number]["run"] = () => 0,
+): readonly RootcellExtensionDefinition[] {
+  return [
+    {
+      id: "pi-plannotator",
+      description: "test host command extension",
+      requiresProvision: true,
+      guestHooks: {
+        agentNixos: [],
+        firewallNixos: [],
+        homeManager: [],
+      },
+      hostCommands: [
+        {
+          name: "check",
+          description: "test host command",
+          complete: ({ current }) => ["alpha"].filter((value) => value.startsWith(current)),
+          run,
+        },
+      ],
+    },
+    {
+      id: "pi-subagents",
+      description: "test extension without host commands",
+      requiresProvision: true,
+      guestHooks: {
+        agentNixos: [],
+        firewallNixos: [],
+        homeManager: [],
+      },
+      hostCommands: [],
+    },
+  ];
 }
 
 function completionEnv(shell: string): NodeJS.ProcessEnv {
@@ -1987,6 +2891,20 @@ function readLines(path: string): readonly string[] {
   return readFileSync(path, "utf8").trim().split("\n");
 }
 
+function fakeForwardingSshScript(): string {
+  return [
+    "#!/bin/sh",
+    "printf '%s\\n' \"$@\" > \"$ROOTCELL_FAKE_SSH_ARGS\"",
+    "if [ \"${ROOTCELL_FAKE_SSH_FAIL:-}\" = \"1\" ]; then",
+    "  echo fake ssh failed >&2",
+    "  exit 255",
+    "fi",
+    "trap 'exit 0' TERM INT",
+    "while true; do sleep 1; done",
+    "",
+  ].join("\n");
+}
+
 function fakeInstance(name: string, repo = "/repo", env: NodeJS.ProcessEnv = {}): RootcellInstance {
   const paths = instancePaths(repo, name, env);
   return {
@@ -1994,6 +2912,7 @@ function fakeInstance(name: string, repo = "/repo", env: NodeJS.ProcessEnv = {})
     dir: paths.dir,
     envPath: paths.envPath,
     secretsPath: paths.secretsPath,
+    extensionsPath: paths.extensionsPath,
     proxyDir: paths.proxyDir,
     pkiDir: paths.pkiDir,
     generatedDir: paths.generatedDir,

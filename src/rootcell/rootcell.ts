@@ -5,10 +5,13 @@ import {
   readFileSync,
   writeFileSync,
 } from "node:fs";
-import { createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { parseRootcellArgs } from "./args.ts";
 import { loadDotEnv, nixString, parseSecretMappings } from "./env.ts";
+import { runExtensionCommand } from "./extensions/commands.ts";
+import type { ExtensionHostCommandContext } from "./extensions/registry.ts";
+import { enabledExtensionIds, ensureExtensionsConfig } from "./extensions/config.ts";
+import { GENERATED_EXTENSION_HOOK_FILES, writeExtensionNixAggregators } from "./extensions/nix.ts";
 import { DEFAULT_IMAGE_MANIFEST_URL } from "./images.ts";
 import { initRootcellInstanceEnv } from "./init-env.ts";
 import {
@@ -17,14 +20,18 @@ import {
   listRootcellVmInstanceNames,
   loadExistingRootcellInstance,
   loadRootcellInstance,
+  readSelectedRootcellInstance,
   seedRootcellInstanceFiles,
+  SelectedInstanceStateError,
+  writeSelectedRootcellInstance,
 } from "./instance.ts";
 import { runCapture, runInherited } from "./process.ts";
 import { parseAwsEc2Config, parseRootcellVmProvider } from "./providers/aws-ec2-config.ts";
 import { createProviderBundle } from "./providers/factory.ts";
-import type { NetworkPlan, ProviderBundle, VmNetworkAttachment, VmStatus } from "./providers/types.ts";
+import type { NetworkPlan, ProviderBundle, VmNetworkAttachment, VmRole, VmStatus } from "./providers/types.ts";
 import { parseSchema } from "./schema.ts";
 import { parseAwsSecretsManagerProviderConfigs } from "./secrets/aws-secrets-manager-config.ts";
+import { openRoleTargetTunnel, waitForForegroundTunnel, type PortAvailabilityCheck } from "./tunnels.ts";
 import { RootcellConfigSchema, type RootcellConfig, type RootcellInstance, type SpyOptions, type VmFileSet } from "./types.ts";
 
 const GUEST_USER = "luser";
@@ -36,7 +43,7 @@ const EDIT_PROXY_FILES = {
   ssh: "allowed-ssh.txt",
 } as const;
 
-const EDIT_TARGETS = ["env", "http", "https", "dns", "ssh"] as const;
+const EDIT_TARGETS = ["env", "http", "https", "dns", "ssh", "extensions"] as const;
 
 const VM_FILES: VmFileSet = {
   agent: [
@@ -47,6 +54,7 @@ const VM_FILES: VmFileSet = {
     "home.nix",
     "network.nix",
     "pi",
+    "extensions",
   ],
   firewall: [
     "flake.nix",
@@ -54,6 +62,7 @@ const VM_FILES: VmFileSet = {
     "common.nix",
     "firewall-vm.nix",
     "network.nix",
+    "extensions",
     "proxy",
     "src/bin/reload.ts",
     "dist/spy-service.js",
@@ -88,20 +97,55 @@ export interface VmListEntry {
   readonly state: string;
 }
 
+export interface VmListFormatOptions {
+  readonly selectedInstance?: string | undefined;
+  readonly env?: NodeJS.ProcessEnv;
+  readonly stdoutIsTty?: boolean;
+  readonly color?: boolean;
+}
+
+export interface RootcellAppOptions {
+  readonly tunnelPortAvailable?: PortAvailabilityCheck;
+}
+
 function log(message: string): void {
   console.error(`rootcell: ${message}`);
 }
 
-export function formatVmList(entries: readonly VmListEntry[]): string {
+export function formatVmList(entries: readonly VmListEntry[], options: VmListFormatOptions = {}): string {
   if (entries.length === 0) {
     return "No rootcell VMs found.\n";
   }
   const rows = [
     ["INSTANCE", "VM", "STATE"],
-    ...entries.map((entry) => [entry.instance, entry.vm, entry.state]),
+    ...entries.map((entry) => [formatInstanceCell(entry.instance, options.selectedInstance), entry.vm, entry.state]),
   ];
   const widths = rows[0]?.map((_, column) => Math.max(...rows.map((row) => row[column]?.length ?? 0))) ?? [];
-  return `${rows.map((row) => row.map((cell, column) => cell.padEnd(widths[column] ?? 0)).join("  ").trimEnd()).join("\n")}\n`;
+  return `${rows.map((row, index) => {
+    const line = row.map((cell, column) => cell.padEnd(widths[column] ?? 0)).join("  ").trimEnd();
+    const entry = entries[index - 1];
+    if (entry !== undefined && entry.instance === options.selectedInstance && shouldStyleSelectedRows(options)) {
+      return ansiBoldGreen(line);
+    }
+    return line;
+  }).join("\n")}\n`;
+}
+
+function formatInstanceCell(instance: string, selectedInstance: string | undefined): string {
+  return instance === selectedInstance ? `${instance} (selected)` : instance;
+}
+
+function shouldStyleSelectedRows(options: VmListFormatOptions): boolean {
+  if (options.color !== undefined) {
+    return options.color;
+  }
+  const env = options.env ?? process.env;
+  const stdoutIsTty = options.stdoutIsTty ?? process.stdout.isTTY;
+  return stdoutIsTty && env.NO_COLOR === undefined;
+}
+
+function ansiBoldGreen(value: string): string {
+  return `\u001b[1;32m${value}\u001b[0m`;
 }
 
 function statusText(status: VmStatus): string {
@@ -142,6 +186,7 @@ export function buildConfig(repoDir: string, env: NodeJS.ProcessEnv, instance: R
     instanceDir: instance.dir,
     envPath: instance.envPath,
     secretsPath: instance.secretsPath,
+    extensionsPath: instance.extensionsPath,
     proxyDir: instance.proxyDir,
     pkiDir: instance.pkiDir,
     generatedDir: instance.generatedDir,
@@ -166,6 +211,7 @@ export class RootcellApp<TAttachment extends VmNetworkAttachment> {
   constructor(
     private readonly config: RootcellConfig,
     private readonly providers: ProviderBundle<TAttachment>,
+    private readonly options: RootcellAppOptions = {},
   ) {
     this.networkPlan = this.providers.network.plan();
   }
@@ -187,6 +233,10 @@ export class RootcellApp<TAttachment extends VmNetworkAttachment> {
     }
 
     this.writeNetworkLocalNix();
+    const extensions = this.writeExtensionAggregators();
+    if (subcommand === "provision") {
+      log(`enabled extensions: ${enabledExtensionIds(extensions).join(", ") || "none"}`);
+    }
 
     if (subcommand === "pubkey") {
       return await this.printPubkey();
@@ -327,6 +377,12 @@ export class RootcellApp<TAttachment extends VmNetworkAttachment> {
     writeFileSync(join(this.config.generatedDir, "network-local.nix"), content, "utf8");
   }
 
+  private writeExtensionAggregators(): ReturnType<typeof ensureExtensionsConfig> {
+    const extensions = ensureExtensionsConfig(this.config.extensionsPath, log);
+    writeExtensionNixAggregators(this.config.generatedDir, extensions);
+    return extensions;
+  }
+
   private async printPubkey(): Promise<number> {
     const status = await this.providers.vm.status(this.config.agentVm);
     if (status.state !== "running") {
@@ -432,6 +488,16 @@ chmod 0644 "$bundle"
       join(this.config.generatedDir, "git-local.nix"),
       join(this.config.guestRepoDir, "git-local.nix"),
     );
+  }
+
+  private async copyGeneratedExtensionsIntoVm(vm: string): Promise<void> {
+    for (const file of GENERATED_EXTENSION_HOOK_FILES) {
+      await this.copyHostFileIntoVm(
+        vm,
+        join(this.config.generatedDir, file),
+        join(this.config.guestRepoDir, "generated", file),
+      );
+    }
   }
 
   private async copyAgentCaIntoVm(vm: string): Promise<void> {
@@ -602,15 +668,23 @@ exit 1
     }
 
     const remotePort = this.spyRemotePort();
-    const localPort = await chooseSpyLocalPort(SPY_DEFAULT_PORT);
     const launchTs = Math.floor(Date.now() / 1000);
-    const tunnel = await this.providers.vm.forwardLocalPort(this.config.firewallVm, {
-      localHost: "127.0.0.1",
-      localPort,
-      remoteHost: SPY_REMOTE_HOST,
-      remotePort,
-    });
+    const tunnelOptions = this.options.tunnelPortAvailable === undefined
+      ? {}
+      : { portAvailable: this.options.tunnelPortAvailable };
+    const tunnel = await openRoleTargetTunnel(
+      (role, forwardOptions) => this.providers.vm.forwardLocalPort(vmNameForRole(this.config, role), forwardOptions),
+      {
+        role: "firewall",
+        preferredLocalPort: SPY_DEFAULT_PORT,
+        localHost: "127.0.0.1",
+        remoteHost: SPY_REMOTE_HOST,
+        remotePort,
+      },
+      tunnelOptions,
+    );
 
+    const localPort = tunnel.localPort;
     const url = `http://127.0.0.1:${String(localPort)}/?since=${String(launchTs)}`;
     process.stdout.write(`${url}\n`);
     log(`rootcell spy available at ${url} (Ctrl-C closes the tunnel)`);
@@ -618,11 +692,7 @@ exit 1
       this.openBrowser(url);
     }
 
-    try {
-      return await this.waitForSpyTunnel(tunnel.closed);
-    } finally {
-      await tunnel.close();
-    }
+    return await waitForForegroundTunnel(tunnel, { log });
   }
 
   private async checkFirewallSpyReadiness(): Promise<"ready" | "disabled" | "missing" | "inactive" | "unhealthy"> {
@@ -691,29 +761,6 @@ fi
     }
     log("spy service files or assets are missing on the firewall VM.");
     log("run ./rootcell provision, then try ./rootcell spy again.");
-  }
-
-  private async waitForSpyTunnel(tunnelClosed: Promise<number>): Promise<number> {
-    let signalStatus: number | undefined;
-    const signalPromise = new Promise<number>((resolve) => {
-      const onSignal = (signal: NodeJS.Signals): void => {
-        signalStatus = signal === "SIGINT" ? 130 : 143;
-        resolve(signalStatus);
-      };
-      process.once("SIGINT", onSignal);
-      process.once("SIGTERM", onSignal);
-      void tunnelClosed.finally(() => {
-        process.removeListener("SIGINT", onSignal);
-        process.removeListener("SIGTERM", onSignal);
-      });
-    });
-    const tunnelPromise = tunnelClosed.then((status) => {
-      if (signalStatus === undefined) {
-        log("SSH tunnel closed.");
-      }
-      return status === 0 ? 0 : 1;
-    });
-    return await Promise.race([signalPromise, tunnelPromise]);
   }
 
   private openBrowser(url: string): void {
@@ -867,6 +914,7 @@ systemctl is-active mitmproxy-explicit >/dev/null 2>&1 \\
     this.ensureCa();
     await this.copyRepoIntoVm(this.config.firewallVm, VM_FILES.firewall);
     await this.copyGeneratedNetworkIntoVm(this.config.firewallVm);
+    await this.copyGeneratedExtensionsIntoVm(this.config.firewallVm);
     await this.bootstrapFirewallDns();
     await this.runNixosSwitch("firewall", `
 set -e
@@ -917,6 +965,7 @@ sudo nixos-rebuild switch --flake ${shellQuote(this.guestFlakeRef(this.nixosConf
     await this.copyRepoIntoVm(this.config.agentVm, VM_FILES.agent);
     await this.copyGeneratedNetworkIntoVm(this.config.agentVm);
     await this.copyGeneratedGitIntoVm(this.config.agentVm);
+    await this.copyGeneratedExtensionsIntoVm(this.config.agentVm);
     await this.copyAgentCaIntoVm(this.config.agentVm);
     await this.bootstrapAgentFirewallRoute();
     await this.bootstrapAgentFirewallTrust();
@@ -1065,6 +1114,34 @@ function appForInstance(repoDir: string, env: NodeJS.ProcessEnv, instance: Rootc
   return new RootcellApp(config, createProviderBundle(config, log));
 }
 
+function extensionHostCommandContext(
+  repoDir: string,
+  env: NodeJS.ProcessEnv,
+  instanceName: string,
+  extensionConfig: ExtensionHostCommandContext["extensionConfig"],
+): ExtensionHostCommandContext {
+  const instanceEnv = envForExistingInstance(repoDir, env, instanceName);
+  const instance = loadExistingRootcellInstance(repoDir, instanceName, instanceEnv);
+  if (instance === null) {
+    throw new Error(`rootcell instance '${instanceName}' not found; run ./rootcell --instance ${instanceName} first.`);
+  }
+  const config = buildConfig(repoDir, instanceEnv, instance);
+  const providers = createProviderBundle(config, log);
+  return {
+    repoDir,
+    instanceName,
+    extensionConfig,
+    config,
+    log,
+    vmStatus: (role) => providers.vm.status(vmNameForRole(config, role)),
+    forwardLocalPort: (role, options) => providers.vm.forwardLocalPort(vmNameForRole(config, role), options),
+  };
+}
+
+function vmNameForRole(config: RootcellConfig, role: VmRole): string {
+  return role === "agent" ? config.agentVm : config.firewallVm;
+}
+
 function envForExistingInstance(repoDir: string, baseEnv: NodeJS.ProcessEnv, instanceName: string): NodeJS.ProcessEnv {
   const env = { ...baseEnv };
   loadDotEnv(instancePaths(repoDir, instanceName, env).envPath, env);
@@ -1076,15 +1153,16 @@ async function runListCommand(
   env: NodeJS.ProcessEnv,
   instanceName: string,
   explicitInstance: boolean,
+  selectedInstanceName: string | undefined,
 ): Promise<number> {
   if (explicitInstance) {
     const instanceEnv = envForExistingInstance(repoDir, env, instanceName);
     const instance = loadExistingRootcellInstance(repoDir, instanceName, instanceEnv);
     if (instance === null) {
-      process.stdout.write(formatVmList(missingVmEntries(instanceName)));
+      process.stdout.write(formatVmList(missingVmEntries(instanceName), { selectedInstance: selectedInstanceName }));
       return 0;
     }
-    process.stdout.write(formatVmList(await appForInstance(repoDir, instanceEnv, instance).listVms()));
+    process.stdout.write(formatVmList(await appForInstance(repoDir, instanceEnv, instance).listVms(), { selectedInstance: selectedInstanceName }));
     return 0;
   }
 
@@ -1096,7 +1174,10 @@ async function runListCommand(
       entries.push(...await appForInstance(repoDir, instanceEnv, instance).listVms());
     }
   }
-  process.stdout.write(formatVmList(entries));
+  if (selectedInstanceName !== undefined && !entries.some((entry) => entry.instance === selectedInstanceName)) {
+    entries.push(...missingVmEntries(selectedInstanceName));
+  }
+  process.stdout.write(formatVmList(entries, { selectedInstance: selectedInstanceName }));
   return 0;
 }
 
@@ -1156,6 +1237,9 @@ function editPath(paths: ReturnType<typeof instancePaths>, target: (typeof EDIT_
   if (target === "env") {
     return paths.envPath;
   }
+  if (target === "extensions") {
+    return paths.extensionsPath;
+  }
   return join(paths.proxyDir, EDIT_PROXY_FILES[target]);
 }
 
@@ -1185,20 +1269,6 @@ export function renderSpyEnv(env: NodeJS.ProcessEnv = process.env, extraEnv: rea
   ].join("\n");
 }
 
-export async function chooseSpyLocalPort(
-  preferredPort = SPY_DEFAULT_PORT,
-  host = "127.0.0.1",
-  portAvailable: (port: number, host: string) => Promise<boolean> = isLocalPortAvailable,
-): Promise<number> {
-  for (let offset = 0; offset < 100; offset += 1) {
-    const candidate = preferredPort + offset;
-    if (await portAvailable(candidate, host)) {
-      return candidate;
-    }
-  }
-  throw new Error(`no available local port found starting at ${String(preferredPort)}`);
-}
-
 function envFileValue(value: string): string {
   if (/[\r\n]/.test(value)) {
     throw new Error("spy environment values must not contain newlines");
@@ -1224,21 +1294,6 @@ function envBoolean(value: string | undefined, fallback: boolean): boolean {
   return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
 }
 
-async function isLocalPortAvailable(port: number, host: string): Promise<boolean> {
-  return await new Promise<boolean>((resolveAvailable) => {
-    const server = createServer();
-    server.unref();
-    server.once("error", () => {
-      resolveAvailable(false);
-    });
-    server.listen({ host, port }, () => {
-      server.close(() => {
-        resolveAvailable(true);
-      });
-    });
-  });
-}
-
 function missingVmEntries(instanceName: string): readonly VmListEntry[] {
   const vmNames = deriveVmNames(instanceName);
   return [
@@ -1249,6 +1304,7 @@ function missingVmEntries(instanceName: string): readonly VmListEntry[] {
 
 export async function rootcellMain(args: readonly string[], importMetaPath: string): Promise<number> {
   const repoDir = repoDirFromImportMeta(importMetaPath);
+  const explicitInstance = hasInstanceFlag(args);
   let parsed;
   try {
     parsed = parseRootcellArgs(args);
@@ -1262,28 +1318,74 @@ export async function rootcellMain(args: readonly string[], importMetaPath: stri
   }
 
   try {
-    if (parsed.kind === "init-env") {
-      initRootcellInstanceEnv(repoDir, parsed.instanceName, parsed.providerType, log, process.env);
+    if (parsed.kind === "select") {
+      writeSelectedRootcellInstance(repoDir, parsed.selectedInstanceName, process.env);
+      process.stdout.write(`selected rootcell instance '${parsed.selectedInstanceName}'\n`);
       return 0;
     }
+
+    if (parsed.kind === "init-env") {
+      const instanceName = resolveRootcellInstanceName(repoDir, process.env, parsed.instanceName, explicitInstance);
+      initRootcellInstanceEnv(repoDir, instanceName, parsed.providerType, log, process.env);
+      return 0;
+    }
+    const instanceName = resolveRootcellInstanceName(repoDir, process.env, parsed.instanceName, explicitInstance);
     if (parsed.subcommand === "list") {
-      return await runListCommand(repoDir, process.env, parsed.instanceName, hasInstanceFlag(args));
+      const selectedInstanceName = explicitInstance
+        ? readSelectedRootcellInstanceForDisplay(repoDir, process.env)
+        : instanceName;
+      return await runListCommand(repoDir, process.env, instanceName, explicitInstance, selectedInstanceName);
     }
     if (parsed.subcommand === "stop" || parsed.subcommand === "remove") {
-      return await runLifecycleCommand(repoDir, process.env, parsed.subcommand, parsed.instanceName);
+      return await runLifecycleCommand(repoDir, process.env, parsed.subcommand, instanceName);
     }
     if (parsed.subcommand === "edit") {
-      return runEditCommand(repoDir, process.env, parsed.instanceName, parsed.rest[0]);
+      return runEditCommand(repoDir, process.env, instanceName, parsed.rest[0]);
+    }
+    if (parsed.subcommand === "extension") {
+      return await runExtensionCommand({
+        repoDir,
+        env: process.env,
+        instanceName,
+        rest: parsed.rest,
+        log,
+        createContext: ({ extensionConfig }) => extensionHostCommandContext(
+          repoDir,
+          process.env,
+          instanceName,
+          extensionConfig,
+        ),
+      });
     }
 
-    seedRootcellInstanceFiles(repoDir, parsed.instanceName, log);
-    loadDotEnv(instancePaths(repoDir, parsed.instanceName, process.env).envPath, process.env);
-    const instance = loadRootcellInstance(repoDir, parsed.instanceName, process.env);
+    seedRootcellInstanceFiles(repoDir, instanceName, log);
+    loadDotEnv(instancePaths(repoDir, instanceName, process.env).envPath, process.env);
+    const instance = loadRootcellInstance(repoDir, instanceName, process.env);
     const config = buildConfig(repoDir, process.env, instance);
     const app = new RootcellApp(config, createProviderBundle(config, log));
     return await app.runAfterEnvironment(parsed.subcommand, parsed.rest, parsed.spyOptions);
   } catch (error) {
     log(messageFromUnknown(error));
-    return 1;
+    return error instanceof SelectedInstanceStateError ? error.status : 1;
+  }
+}
+
+function resolveRootcellInstanceName(
+  repoDir: string,
+  env: NodeJS.ProcessEnv,
+  parsedInstanceName: string,
+  explicitInstance: boolean,
+): string {
+  if (explicitInstance) {
+    return parsedInstanceName;
+  }
+  return readSelectedRootcellInstance(repoDir, env);
+}
+
+function readSelectedRootcellInstanceForDisplay(repoDir: string, env: NodeJS.ProcessEnv): string | undefined {
+  try {
+    return readSelectedRootcellInstance(repoDir, env);
+  } catch {
+    return undefined;
   }
 }

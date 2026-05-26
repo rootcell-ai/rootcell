@@ -89,9 +89,11 @@ The two VMs have the same roles in either provider:
 | `firewall` VM | Owns the public egress path. It runs `dnsmasq` for DNS allowlisting and `mitmproxy` for HTTPS interception and SSH CONNECT policy. |
 | `./rootcell` | Host-side wrapper that creates, provisions, updates, and enters the VMs. It also syncs allowlists and injects configured provider secrets for each session. |
 
-Rootcell supports named instances. Plain `./rootcell` uses the `default`
-instance and creates VMs named `agent` and `firewall`. `./rootcell --instance
-dev` creates `agent-dev` and `firewall-dev`, with separate CA material,
+Rootcell supports named instances. Plain `./rootcell` uses the selected default
+instance, initially `default`, and creates VMs named `agent` and `firewall` for
+that default instance. `./rootcell select dev` makes `dev` the default target.
+`./rootcell --instance dev` overrides the selected default for one invocation
+and creates `agent-dev` and `firewall-dev`, with separate CA material,
 allowlists, secret mappings, provider state, and private network configuration.
 
 HTTPS egress is transparent from inside the agent VM. A normal command like
@@ -210,12 +212,14 @@ state root.
 
 ```bash
 ./rootcell                        # open a bash shell inside the agent VM
-./rootcell pi                     # run pi directly
+./rootcell select dev             # use the dev instance by default
+./rootcell -- pi                  # run pi directly
 ./rootcell -- nix flake update    # run any command inside the agent VM
 ./rootcell edit env               # edit the instance .env in $EDITOR
 ./rootcell edit http              # edit the HTTPS allowlist in $EDITOR
 ./rootcell edit dns               # edit the DNS allowlist in $EDITOR
 ./rootcell edit ssh               # edit the SSH allowlist in $EDITOR
+./rootcell edit extensions        # edit instance extension opt-ins in $EDITOR
 ./rootcell allow                  # reload network allowlists after editing them
 ./rootcell provision              # rebuild/re-provision after VM Nix or pi config edits
 ./rootcell pubkey                 # print the agent VM's SSH public key
@@ -223,17 +227,87 @@ state root.
 ./rootcell stop --instance dev    # stop the dev instance VMs
 ./rootcell remove --instance dev  # stop dev and delete its provider VM state
 ./rootcell spy                    # open the browser spy through a local SSH tunnel
+./rootcell extension list         # show optional extensions for this instance
+./rootcell extension enable pi-plannotator   # enable an extension for next provision
 ./rootcell -i aws-dev --init-env aws-ec2     # initialize a provider-specific instance .env
 ./rootcell -i local --init-env macos-lima    # initialize an explicit local Lima .env
 
-./rootcell --instance dev           # open the dev instance shell
-./rootcell --instance dev edit env  # edit the dev instance environment
-./rootcell --instance dev edit dns  # edit the dev instance DNS allowlist
-./rootcell --instance dev allow     # reload only the dev instance allowlists
+./rootcell --instance dev           # open the dev instance shell once
+./rootcell --instance dev edit env  # edit the dev instance environment once
+./rootcell --instance dev edit dns  # edit the dev instance DNS allowlist once
+./rootcell --instance dev allow     # reload only the dev instance allowlists once
 ```
 
 Detailed browser spy operator and developer notes live in
 [src/spy/README.md](src/spy/README.md).
+
+## Extensions
+
+Rootcell extensions are per-instance opt-ins for optional Rootcell capabilities.
+They are rootcell concepts, not Pi concepts. Some extensions install Pi
+resources, but others could add VM packages, host commands, local tunnels,
+firewall services, protocol support, allowlists, or guest NixOS and Home Manager
+modules without involving Pi at all.
+For example, a future `lazyvim` extension could install editor tooling in the
+agent VM, while an `ftp` extension could add firewall protocol support and
+allowlist entries.
+
+The first built-ins are Pi-related, so their IDs carry a `pi-` prefix:
+`pi-plannotator` and `pi-subagents`.
+Older `plannotator` and `subagent` keys in `extensions.txt` are migrated to
+those names when rootcell rewrites the file.
+
+Each instance stores its enabled extensions in
+`instances/<name>/extensions.txt`, or under the configured
+`ROOTCELL_STATE_DIR`. The file is seeded with all known extensions disabled.
+Enabling or disabling an extension only edits that file; run
+`./rootcell provision` afterward to apply VM changes.
+
+```bash
+./rootcell extension list
+./rootcell extension enable pi-plannotator
+./rootcell extension disable pi-plannotator
+./rootcell edit extensions
+
+./rootcell --instance dev extension list
+./rootcell --instance dev extension enable pi-subagents
+./rootcell --instance dev provision
+```
+
+### Plannotator
+
+The `pi-plannotator` extension installs the Plannotator Pi package in the agent
+VM and configures Pi sessions for remote browser access. A typical workflow is:
+
+```bash
+./rootcell extension enable pi-plannotator
+./rootcell provision
+
+# Terminal 1: keep the tunnel open.
+./rootcell extension pi-plannotator tunnel
+
+# Terminal 2: start Pi normally.
+./rootcell -- pi
+```
+
+The tunnel command requires `pi-plannotator=true` and a running agent VM. It
+prints the localhost URL to open, prefers port `19432`, chooses another local
+port if needed, and stays in the foreground until Ctrl-C. It does not start or
+provision VMs, health-check the Plannotator server, or open a browser.
+
+### Pi Subagents
+
+The `pi-subagents` extension installs the Pi subagent extension and bundled
+example agents. It is disabled by default for new provisions.
+
+Existing VMs can keep the previously managed subagent files until the next
+explicit provision. After provisioning with `pi-subagents=false`, Home Manager
+removes Rootcell-managed subagent resources. If you rely on them, opt back in
+before provisioning:
+
+```bash
+./rootcell extension enable pi-subagents && ./rootcell provision
+```
 
 ## Allowing Network Access
 
@@ -268,17 +342,20 @@ repositories by HTTPS request regexes because the firewall only sees
 
 Reloading allowlists takes about a second and does not rebuild either VM. To
 reset a live allowlist to project defaults, delete the live file and run
-`./rootcell`; it will be re-seeded from its `.defaults` sibling. For a named
-instance, use the same paths under that instance's state directory and run
-`./rootcell --instance <name> allow`.
+`./rootcell`; it will be re-seeded from its `.defaults` sibling for the selected
+instance. For a one-off named instance, use the same paths under that instance's
+state directory and run `./rootcell --instance <name> allow`.
 
 ## Common Changes
 
 After editing these files, run `./rootcell provision`:
 
 - `flake.nix`, `common.nix`, `agent-vm.nix`, `firewall-vm.nix`, or `home.nix`
+- Anything under `extensions/`
 - Anything under `pi/`
 - The checked-in allowlist defaults
+- Instance extension opt-ins changed by `./rootcell extension enable <id>`,
+  `./rootcell extension disable <id>`, or `./rootcell edit extensions`
 
 For live allowlist edits only, use `./rootcell allow`.
 
@@ -300,6 +377,11 @@ the agent VM.
 
 - `pi/agent/AGENTS.md` becomes the global instruction file.
 - `pi/agent/skills/<name>/SKILL.md` becomes a global pi skill.
+
+Optional Rootcell-managed extension payloads live under the top-level
+`extensions/` directory and are installed only when their Rootcell extension is
+enabled and provisioned. The current built-ins happen to install Pi resources;
+future extensions do not need to.
 
 Add or edit files there, then run `./rootcell provision`.
 
@@ -382,7 +464,8 @@ instances/
 proxy/                   allowlists and mitmproxy/dnsmasq firewall code
   agent_spy.py           Bedrock Runtime spool shim for the browser spy
 src/spy/                 browser spy service, Bedrock adapter, React UI, and docs
-pi/agent/                global pi instructions, skills, and extensions
+pi/agent/                global pi instructions and skills
+extensions/              optional Rootcell extension guest modules and packages
 ```
 
 ## VM Lifecycle
@@ -409,9 +492,10 @@ same instance settings.
 
 ### Environment
 
-Use `./rootcell -i <name> --init-env <provider-type>` to create the selected
-instance directory, seed allowlists and secret mappings, and write a
-provider-specific `<instance-dir>/.env`:
+Use `./rootcell --init-env <provider-type>` to create the selected instance
+directory, seed allowlists and secret mappings, and write a provider-specific
+`<instance-dir>/.env`. Use `-i <name>` to initialize a different instance for
+one invocation:
 
 ```bash
 ./rootcell -i local --init-env macos-lima
@@ -424,10 +508,11 @@ plus `ROOTCELL_AWS_PROFILE`, `ROOTCELL_AWS_REGION`, and
 `ROOTCELL_AWS_CONTROL_CIDR`. The AWS profile and region default from your
 current host environment when available, otherwise to `default` and `us-east-1`.
 
-Normal `./rootcell` entry also seeds `<instance-dir>/.env` from `.env.defaults`
-on first run if it does not already exist. Edit that file for instance-local
-settings such as these, or run `./rootcell -i <name> edit env` to open it in
-`$EDITOR`:
+Normal `./rootcell` entry also seeds the selected instance's `.env` from
+`.env.defaults` on first run if it does not already exist. Edit that file for
+instance-local settings such as these, or run `./rootcell edit env` for the
+selected instance. Use `./rootcell -i <name> edit env` to override the selected
+default for one edit:
 
 ```sh
 ROOTCELL_VM_PROVIDER=lima
@@ -512,12 +597,18 @@ rootcell completion >> ~/.bashrc
 Named instances are isolated from each other:
 
 ```bash
+./rootcell select dev
+./rootcell
 ./rootcell --instance dev
 ./rootcell --instance review
 ```
 
 Each instance gets its own VMs, state directory, CA, allowlists, secret mapping
 file, control SSH key, private network state, and `/24`.
+
+`./rootcell select <name>` changes the default target without creating the
+instance files or starting VMs. `./rootcell select default` returns the default
+target to the built-in `default` instance.
 
 The `default` instance still seeds from legacy repo-local `.env`, `secrets.env`,
 `proxy/allowed-*.txt`, and `pki/` files when present. Named instances seed from
@@ -534,7 +625,9 @@ Open the browser spy for captured Bedrock Runtime requests and responses:
 Check that firewall services are listening:
 
 ```bash
-INSTANCE_DIR="${ROOTCELL_STATE_DIR:-$PWD/instances}/default"
+ROOTCELL_INSTANCES_DIR="${ROOTCELL_STATE_DIR:-$PWD/instances}"
+ROOTCELL_INSTANCE="$(cat "$ROOTCELL_INSTANCES_DIR/.selected-instance" 2>/dev/null || printf default)"
+INSTANCE_DIR="$ROOTCELL_INSTANCES_DIR/$ROOTCELL_INSTANCE"
 ssh -F "$INSTANCE_DIR/ssh/config" rootcell-firewall -- \
   "ss -tln '( sport = :8080 or sport = :8081 )' && ss -uln '( sport = :53 )'"
 ```
