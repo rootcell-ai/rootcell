@@ -20,7 +20,8 @@ import {
 
 const STATE_SCHEMA_VERSION = 1;
 const INSTANCE_METADATA_SCHEMA_VERSION = 1;
-const DEFAULT_INSTANCE = "default";
+export const DEFAULT_INSTANCE = "default";
+const SELECTED_INSTANCE_FILE = ".selected-instance";
 const DEFAULT_POOL_START = "192.168.100.0";
 const DEFAULT_POOL_END = "192.168.254.0";
 const INSTANCE_NAME_RE = /^[a-z](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
@@ -40,6 +41,10 @@ export interface InstancePaths {
 interface StateEntry {
   readonly name: string;
   readonly state: InstanceState;
+}
+
+export class SelectedInstanceStateError extends Error {
+  readonly status = 2;
 }
 
 export function validateInstanceName(name: string): string {
@@ -132,6 +137,34 @@ export function listRootcellInstanceNames(repoDir: string, env: NodeJS.ProcessEn
     .sort();
 }
 
+export function selectedRootcellInstancePath(repoDir: string, env: NodeJS.ProcessEnv = process.env): string {
+  return join(rootcellInstancesRoot(repoDir, env), SELECTED_INSTANCE_FILE);
+}
+
+export function readSelectedRootcellInstance(repoDir: string, env: NodeJS.ProcessEnv = process.env): string {
+  const path = selectedRootcellInstancePath(repoDir, env);
+  if (!existsSync(path)) {
+    return DEFAULT_INSTANCE;
+  }
+  const raw = readFileSync(path, "utf8");
+  try {
+    return parseSelectedInstanceFile(raw);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new SelectedInstanceStateError(`invalid selected rootcell instance in ${path}: ${reason}`);
+  }
+}
+
+export function writeSelectedRootcellInstance(repoDir: string, instanceName: string, env: NodeJS.ProcessEnv = process.env): void {
+  const name = validateInstanceName(instanceName);
+  const root = rootcellInstancesRoot(repoDir, env);
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  chmodSync(root, 0o700);
+  const path = selectedRootcellInstancePath(repoDir, env);
+  writeFileSync(path, `${name}\n`, { encoding: "utf8", mode: 0o600 });
+  chmodSync(path, 0o600);
+}
+
 function instanceHasVmState(repoDir: string, instanceName: string, env: NodeJS.ProcessEnv): boolean {
   const paths = instancePaths(repoDir, instanceName, env);
   return existsSync(join(paths.dir, "v", "a"))
@@ -185,6 +218,34 @@ export function rootcellInstancesRoot(repoDir: string, env: NodeJS.ProcessEnv = 
     return configured;
   }
   return join(repoDir, "instances");
+}
+
+function parseSelectedInstanceFile(raw: string): string {
+  const content = stripOneTrailingNewline(raw);
+  if (content.length === 0) {
+    throw new Error("empty content");
+  }
+  if (/\r|\n/.test(content)) {
+    const nonEmptyLines = content.split(/\r?\n/).filter((line) => line.length > 0);
+    if (nonEmptyLines.length > 1) {
+      throw new Error("multiple non-empty lines");
+    }
+    throw new Error("embedded whitespace");
+  }
+  if (/\s/.test(content)) {
+    throw new Error("embedded whitespace");
+  }
+  return validateInstanceName(content);
+}
+
+function stripOneTrailingNewline(raw: string): string {
+  if (raw.endsWith("\r\n")) {
+    return raw.slice(0, -2);
+  }
+  if (raw.endsWith("\n")) {
+    return raw.slice(0, -1);
+  }
+  return raw;
 }
 
 function ensureInstanceState(repoDir: string, paths: InstancePaths, env: NodeJS.ProcessEnv): InstanceState {

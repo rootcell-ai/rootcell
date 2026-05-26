@@ -89,9 +89,11 @@ The two VMs have the same roles in either provider:
 | `firewall` VM | Owns the public egress path. It runs `dnsmasq` for DNS allowlisting and `mitmproxy` for HTTPS interception and SSH CONNECT policy. |
 | `./rootcell` | Host-side wrapper that creates, provisions, updates, and enters the VMs. It also syncs allowlists and injects configured provider secrets for each session. |
 
-Rootcell supports named instances. Plain `./rootcell` uses the `default`
-instance and creates VMs named `agent` and `firewall`. `./rootcell --instance
-dev` creates `agent-dev` and `firewall-dev`, with separate CA material,
+Rootcell supports named instances. Plain `./rootcell` uses the selected default
+instance, initially `default`, and creates VMs named `agent` and `firewall` for
+that default instance. `./rootcell select dev` makes `dev` the default target.
+`./rootcell --instance dev` overrides the selected default for one invocation
+and creates `agent-dev` and `firewall-dev`, with separate CA material,
 allowlists, secret mappings, provider state, and private network configuration.
 
 HTTPS egress is transparent from inside the agent VM. A normal command like
@@ -210,7 +212,8 @@ state root.
 
 ```bash
 ./rootcell                        # open a bash shell inside the agent VM
-./rootcell pi                     # run pi directly
+./rootcell select dev             # use the dev instance by default
+./rootcell -- pi                  # run pi directly
 ./rootcell -- nix flake update    # run any command inside the agent VM
 ./rootcell edit env               # edit the instance .env in $EDITOR
 ./rootcell edit http              # edit the HTTPS allowlist in $EDITOR
@@ -229,10 +232,10 @@ state root.
 ./rootcell -i aws-dev --init-env aws-ec2     # initialize a provider-specific instance .env
 ./rootcell -i local --init-env macos-lima    # initialize an explicit local Lima .env
 
-./rootcell --instance dev           # open the dev instance shell
-./rootcell --instance dev edit env  # edit the dev instance environment
-./rootcell --instance dev edit dns  # edit the dev instance DNS allowlist
-./rootcell --instance dev allow     # reload only the dev instance allowlists
+./rootcell --instance dev           # open the dev instance shell once
+./rootcell --instance dev edit env  # edit the dev instance environment once
+./rootcell --instance dev edit dns  # edit the dev instance DNS allowlist once
+./rootcell --instance dev allow     # reload only the dev instance allowlists once
 ```
 
 Detailed browser spy operator and developer notes live in
@@ -284,7 +287,7 @@ VM and configures Pi sessions for remote browser access. A typical workflow is:
 ./rootcell extension pi-plannotator tunnel
 
 # Terminal 2: start Pi normally.
-./rootcell pi
+./rootcell -- pi
 ```
 
 The tunnel command requires `pi-plannotator=true` and a running agent VM. It
@@ -339,9 +342,9 @@ repositories by HTTPS request regexes because the firewall only sees
 
 Reloading allowlists takes about a second and does not rebuild either VM. To
 reset a live allowlist to project defaults, delete the live file and run
-`./rootcell`; it will be re-seeded from its `.defaults` sibling. For a named
-instance, use the same paths under that instance's state directory and run
-`./rootcell --instance <name> allow`.
+`./rootcell`; it will be re-seeded from its `.defaults` sibling for the selected
+instance. For a one-off named instance, use the same paths under that instance's
+state directory and run `./rootcell --instance <name> allow`.
 
 ## Common Changes
 
@@ -489,9 +492,10 @@ same instance settings.
 
 ### Environment
 
-Use `./rootcell -i <name> --init-env <provider-type>` to create the selected
-instance directory, seed allowlists and secret mappings, and write a
-provider-specific `<instance-dir>/.env`:
+Use `./rootcell --init-env <provider-type>` to create the selected instance
+directory, seed allowlists and secret mappings, and write a provider-specific
+`<instance-dir>/.env`. Use `-i <name>` to initialize a different instance for
+one invocation:
 
 ```bash
 ./rootcell -i local --init-env macos-lima
@@ -504,10 +508,11 @@ plus `ROOTCELL_AWS_PROFILE`, `ROOTCELL_AWS_REGION`, and
 `ROOTCELL_AWS_CONTROL_CIDR`. The AWS profile and region default from your
 current host environment when available, otherwise to `default` and `us-east-1`.
 
-Normal `./rootcell` entry also seeds `<instance-dir>/.env` from `.env.defaults`
-on first run if it does not already exist. Edit that file for instance-local
-settings such as these, or run `./rootcell -i <name> edit env` to open it in
-`$EDITOR`:
+Normal `./rootcell` entry also seeds the selected instance's `.env` from
+`.env.defaults` on first run if it does not already exist. Edit that file for
+instance-local settings such as these, or run `./rootcell edit env` for the
+selected instance. Use `./rootcell -i <name> edit env` to override the selected
+default for one edit:
 
 ```sh
 ROOTCELL_VM_PROVIDER=lima
@@ -592,12 +597,18 @@ rootcell completion >> ~/.bashrc
 Named instances are isolated from each other:
 
 ```bash
+./rootcell select dev
+./rootcell
 ./rootcell --instance dev
 ./rootcell --instance review
 ```
 
 Each instance gets its own VMs, state directory, CA, allowlists, secret mapping
 file, control SSH key, private network state, and `/24`.
+
+`./rootcell select <name>` changes the default target without creating the
+instance files or starting VMs. `./rootcell select default` returns the default
+target to the built-in `default` instance.
 
 The `default` instance still seeds from legacy repo-local `.env`, `secrets.env`,
 `proxy/allowed-*.txt`, and `pki/` files when present. Named instances seed from
@@ -614,7 +625,9 @@ Open the browser spy for captured Bedrock Runtime requests and responses:
 Check that firewall services are listening:
 
 ```bash
-INSTANCE_DIR="${ROOTCELL_STATE_DIR:-$PWD/instances}/default"
+ROOTCELL_INSTANCES_DIR="${ROOTCELL_STATE_DIR:-$PWD/instances}"
+ROOTCELL_INSTANCE="$(cat "$ROOTCELL_INSTANCES_DIR/.selected-instance" 2>/dev/null || printf default)"
+INSTANCE_DIR="$ROOTCELL_INSTANCES_DIR/$ROOTCELL_INSTANCE"
 ssh -F "$INSTANCE_DIR/ssh/config" rootcell-firewall -- \
   "ss -tln '( sport = :8080 or sport = :8081 )' && ss -uln '( sport = :53 )'"
 ```

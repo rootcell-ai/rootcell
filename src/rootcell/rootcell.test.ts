@@ -24,7 +24,16 @@ import { loadDotEnv, parseSecretMappings } from "./env.ts";
 import { resolveHostTool } from "./host-tools.ts";
 import { initRootcellInstanceEnv } from "./init-env.ts";
 import { buildConfig, formatVmList, renderSpyEnv, rootcellMain, RootcellApp } from "./rootcell.ts";
-import { deriveVmNames, instancePaths, listRootcellVmInstanceNames, loadRootcellInstance, seedRootcellInstanceFiles } from "./instance.ts";
+import {
+  deriveVmNames,
+  instancePaths,
+  listRootcellVmInstanceNames,
+  loadRootcellInstance,
+  readSelectedRootcellInstance,
+  seedRootcellInstanceFiles,
+  selectedRootcellInstancePath,
+  writeSelectedRootcellInstance,
+} from "./instance.ts";
 import { runCapture } from "./process.ts";
 import { parseAwsEc2Config } from "./providers/aws-ec2-config.ts";
 import { AwsEc2NetworkProvider, awsVpcRouterIp } from "./providers/aws-ec2-network.ts";
@@ -61,7 +70,7 @@ import {
 import { chooseLocalPort } from "./tunnels.ts";
 import { forgetKnownHost, ProxyJumpSshTransport, sshConfig } from "./transports/proxyjump-ssh.ts";
 import { dnsmasqAllowlistConfig, generatedLineCount } from "../bin/reload.ts";
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -273,18 +282,12 @@ describe("rootcell argument parsing", () => {
       rest: ["nix", "flake", "update"],
       spyOptions: { open: true },
     });
-    const implicit = runArgs(["pi", "--model", "sonnet"]);
-    expectRunArgs(implicit);
-    expect(implicit).toEqual({
-      kind: "run",
-      instanceName: "default",
-      subcommand: "",
-      rest: ["pi", "--model", "sonnet"],
-      spyOptions: { open: true },
-    });
     const numericOptions = runArgs(["--", "curl", "--connect-timeout", "5", "--max-time", "20", "https://github.com"]);
     expectRunArgs(numericOptions);
     expect(numericOptions.rest).toEqual(["curl", "--connect-timeout", "5", "--max-time", "20", "https://github.com"]);
+
+    expect(() => parseRootcellArgs(["pi", "--model", "sonnet"])).toThrow("unknown rootcell command 'pi'");
+    expect(() => parseRootcellArgs(["nix", "flake", "update"])).toThrow("use 'rootcell -- nix'");
   });
 
   test("parses instance flags in any command position", () => {
@@ -306,7 +309,7 @@ describe("rootcell argument parsing", () => {
       rest: [],
       spyOptions: { open: true },
     });
-    const passThrough = runArgs(["pi", "--instance", "dev", "--model", "sonnet"]);
+    const passThrough = runArgs(["--instance", "dev", "--", "pi", "--model", "sonnet"]);
     expectRunArgs(passThrough);
     expect(passThrough).toEqual({
       kind: "run",
@@ -315,6 +318,23 @@ describe("rootcell argument parsing", () => {
       rest: ["pi", "--model", "sonnet"],
       spyOptions: { open: true },
     });
+    expect(() => parseRootcellArgs(["--instance", "dev", "pi"])).toThrow("use 'rootcell --instance dev -- pi'");
+  });
+
+  test("parses select as a rootcell subcommand", () => {
+    expect(parseRootcellArgs(["select", "dev"])).toEqual({
+      kind: "select",
+      selectedInstanceName: "dev",
+    });
+    expect(parseRootcellArgs(["select", "default"])).toEqual({
+      kind: "select",
+      selectedInstanceName: "default",
+    });
+    expect(() => parseRootcellArgs(["select"])).toThrow();
+    expect(() => parseRootcellArgs(["select", "dev", "extra"])).toThrow();
+    expect(() => parseRootcellArgs(["select", "dev", "--init-env", "macos-lima"])).toThrow("--init-env cannot be combined");
+    expect(() => parseRootcellArgs(["select", "dev", "--instance", "other"])).toThrow("--instance cannot be used with select");
+    expect(() => parseRootcellArgs(["select", "dev", "--", "pi"])).toThrow();
   });
 
   test("rejects invalid instance names", () => {
@@ -2025,6 +2045,21 @@ describe("VM and network providers", () => {
       "dev       firewall-dev  stopped",
       "",
     ].join("\n"));
+    expect(formatVmList([
+      { instance: "dev", vm: "agent-dev", state: "missing" },
+      { instance: "dev", vm: "firewall-dev", state: "missing" },
+    ], { selectedInstance: "dev" })).toBe([
+      "INSTANCE        VM            STATE",
+      "dev (selected)  agent-dev     missing",
+      "dev (selected)  firewall-dev  missing",
+      "",
+    ].join("\n"));
+    expect(formatVmList([
+      { instance: "dev", vm: "agent-dev", state: "running" },
+    ], { selectedInstance: "dev", color: true })).toContain("\u001b[1;32mdev (selected)");
+    expect(formatVmList([
+      { instance: "dev", vm: "agent-dev", state: "running" },
+    ], { selectedInstance: "dev", stdoutIsTty: true, env: { NO_COLOR: "1" } })).not.toContain("\u001b[");
     expect(formatVmList([])).toBe("No rootcell VMs found.\n");
   });
 });
@@ -2088,6 +2123,51 @@ describe("instance state", () => {
   test("defaults instance state to cwd instances directory", () => {
     expect(instancePaths("/repo", "default", {}).dir).toBe("/repo/instances/default");
     expect(instancePaths("/repo", "dev", {}).dir).toBe("/repo/instances/dev");
+  });
+
+  test("stores and reads the selected default instance", () => {
+    const repo = makeInstanceRepo();
+    try {
+      const env = instanceEnv(repo);
+      expect(readSelectedRootcellInstance(repo, env)).toBe("default");
+      expect(existsSync(selectedRootcellInstancePath(repo, env))).toBe(false);
+
+      writeSelectedRootcellInstance(repo, "dev", env);
+
+      const selectedPath = selectedRootcellInstancePath(repo, env);
+      expect(readFileSync(selectedPath, "utf8")).toBe("dev\n");
+      expect(readSelectedRootcellInstance(repo, env)).toBe("dev");
+      expect(statSync(env.ROOTCELL_STATE_DIR ?? "").mode & 0o777).toBe(0o700);
+      expect(statSync(selectedPath).mode & 0o777).toBe(0o600);
+
+      writeSelectedRootcellInstance(repo, "default", env);
+      expect(readSelectedRootcellInstance(repo, env)).toBe("default");
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects corrupted selected instance state", () => {
+    const repo = makeInstanceRepo();
+    try {
+      const env = instanceEnv(repo);
+      mkdirSync(env.ROOTCELL_STATE_DIR ?? "", { recursive: true });
+      const path = selectedRootcellInstancePath(repo, env);
+
+      writeFileSync(path, "", "utf8");
+      expect(() => readSelectedRootcellInstance(repo, env)).toThrow("empty content");
+
+      writeFileSync(path, "dev\nother\n", "utf8");
+      expect(() => readSelectedRootcellInstance(repo, env)).toThrow("multiple non-empty lines");
+
+      writeFileSync(path, "dev other\n", "utf8");
+      expect(() => readSelectedRootcellInstance(repo, env)).toThrow("embedded whitespace");
+
+      writeFileSync(path, "Dev\n", "utf8");
+      expect(() => readSelectedRootcellInstance(repo, env)).toThrow("invalid instance name");
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 
   test("allocates stable unique /24 networks", () => {
@@ -2238,6 +2318,37 @@ describe("instance state", () => {
 });
 
 describe("rootcell edit command", () => {
+  test("uses the selected default instance when --instance is omitted", async () => {
+    const repo = makeInstanceRepo();
+    const oldRootcellStateDir = process.env.ROOTCELL_STATE_DIR;
+    const oldEditor = process.env.EDITOR;
+    const oldRecord = process.env.ROOTCELL_EDITOR_RECORD;
+    try {
+      mkdirSync(join(repo, "src", "bin"), { recursive: true });
+      writeFileSync(join(repo, "flake.nix"), "{}\n", "utf8");
+
+      const editor = join(repo, "editor.sh");
+      const record = join(repo, "opened.txt");
+      writeFileSync(editor, "#!/bin/sh\nprintf '%s\\n' \"$1\" > \"$ROOTCELL_EDITOR_RECORD\"\n", "utf8");
+      chmodSync(editor, 0o700);
+
+      process.env.ROOTCELL_STATE_DIR = join(repo, ".state");
+      process.env.EDITOR = editor;
+      process.env.ROOTCELL_EDITOR_RECORD = record;
+      writeSelectedRootcellInstance(repo, "dev", process.env);
+
+      const status = await rootcellMain(["edit", "dns"], join(repo, "src", "bin", "rootcell.ts"));
+
+      expect(status).toBe(0);
+      expect(readFileSync(record, "utf8").trim()).toBe(join(repo, ".state", "dev", "proxy", "allowed-dns.txt"));
+    } finally {
+      restoreEnv("ROOTCELL_STATE_DIR", oldRootcellStateDir);
+      restoreEnv("EDITOR", oldEditor);
+      restoreEnv("ROOTCELL_EDITOR_RECORD", oldRecord);
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   test("opens the selected instance allowlist in EDITOR", async () => {
     const repo = makeInstanceRepo();
     const oldRootcellStateDir = process.env.ROOTCELL_STATE_DIR;
@@ -2492,6 +2603,49 @@ describe("rootcell edit env command", () => {
   });
 });
 
+describe("rootcell select command", () => {
+  test("persists the selected default without creating instance files", () => {
+    const repo = makeInstanceRepo();
+    try {
+      const env = { ...process.env, ROOTCELL_STATE_DIR: join(repo, ".state") };
+      const result = runCapture("./rootcell", ["select", "dev"], { env });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe("selected rootcell instance 'dev'\n");
+      expect(readFileSync(join(repo, ".state", ".selected-instance"), "utf8")).toBe("dev\n");
+      expect(existsSync(join(repo, ".state", "dev"))).toBe(false);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("list marks the selected instance and tolerates corrupted selection when explicit", () => {
+    const repo = makeInstanceRepo();
+    try {
+      const env = { ...process.env, ROOTCELL_STATE_DIR: join(repo, ".state") };
+      writeSelectedRootcellInstance(repo, "jmp", env);
+
+      const selectedList = runCapture("./rootcell", ["list"], { env });
+      expect(selectedList.status).toBe(0);
+      expect(selectedList.stdout).toContain("jmp (selected)  agent-jmp     missing");
+      expect(selectedList.stdout).toContain("jmp (selected)  firewall-jmp  missing");
+
+      writeFileSync(join(repo, ".state", ".selected-instance"), "bad instance\n", "utf8");
+      const invalidList = runCapture("./rootcell", ["list"], { env, allowFailure: true });
+      expect(invalidList.status).toBe(2);
+      expect(invalidList.stderr).toContain("invalid selected rootcell instance in");
+      expect(invalidList.stderr).toContain("embedded whitespace");
+
+      const explicitList = runCapture("./rootcell", ["list", "--instance", "dev"], { env });
+      expect(explicitList.status).toBe(0);
+      expect(explicitList.stdout).toContain("dev       agent-dev     missing");
+      expect(explicitList.stdout).not.toContain("(selected)");
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("reload helper", () => {
   test("generates dnsmasq server entries from non-comment lines", () => {
     const config = dnsmasqAllowlistConfig("# comment\n\nexample.com\n*.example.org\n");
@@ -2534,11 +2688,17 @@ describe("shell completions", () => {
       writeFileSync(join(instanceDir, "extensions.txt"), "pi-plannotator=false\npi-subagents=true\n", "utf8");
       const env = completionEnv("/bin/bash");
       env.ROOTCELL_STATE_DIR = stateDir;
+      writeSelectedRootcellInstance(repo, "dev", env);
 
       const root = runCapture("./rootcell", ["--get-yargs-completions", "rootcell", "--instance", "dev", "extension", ""], { env }).stdout;
       expect(root).toContain("list\n");
       expect(root).toContain("enable\n");
       expect(root).toContain("disable\n");
+
+      const selectedRoot = runCapture("./rootcell", ["--get-yargs-completions", "rootcell", "extension", ""], { env }).stdout;
+      expect(selectedRoot).toContain("list\n");
+      expect(selectedRoot).toContain("enable\n");
+      expect(selectedRoot).toContain("disable\n");
 
       const enable = runCapture("./rootcell", ["--get-yargs-completions", "rootcell", "--instance", "dev", "extension", "enable", ""], { env }).stdout;
       expect(enable).toContain("pi-plannotator\n");
@@ -2551,6 +2711,27 @@ describe("shell completions", () => {
       const missing = runCapture("./rootcell", ["--get-yargs-completions", "rootcell", "--instance", "new", "extension", "disable", ""], { env }).stdout;
       expect(missing).toBe("");
       expect(existsSync(join(stateDir, "new", "extensions.txt"))).toBe(false);
+
+      writeFileSync(join(stateDir, ".selected-instance"), "bad instance\n", "utf8");
+      const corruptedSelected = runCapture("./rootcell", ["--get-yargs-completions", "rootcell", "extension", "disable", ""], { env }).stdout;
+      expect(corruptedSelected).toBe("");
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("select completions include known instance names", () => {
+    const repo = makeInstanceRepo();
+    try {
+      const env = completionEnv("/bin/bash");
+      env.ROOTCELL_STATE_DIR = join(repo, ".state");
+      seedRootcellInstanceFiles(repo, "dev", ignoreLog, env);
+      seedRootcellInstanceFiles(repo, "review", ignoreLog, env);
+
+      const choices = runCapture("./rootcell", ["--get-yargs-completions", "rootcell", "select", ""], { env }).stdout;
+
+      expect(choices).toContain("dev\n");
+      expect(choices).toContain("review\n");
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }

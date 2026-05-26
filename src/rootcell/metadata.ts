@@ -1,9 +1,10 @@
 export interface SubcommandMetadata {
-  readonly name: "provision" | "allow" | "pubkey" | "spy" | "list" | "stop" | "remove" | "edit" | "extension";
+  readonly name: "provision" | "allow" | "pubkey" | "spy" | "list" | "stop" | "remove" | "edit" | "extension" | "select";
   readonly description: string;
 }
 
 export const ROOTCELL_SUBCOMMANDS: readonly SubcommandMetadata[] = [
+  { name: "select", description: "persist the selected default rootcell instance" },
   { name: "list", description: "list rootcell VMs and their current state" },
   { name: "stop", description: "stop the selected rootcell instance VMs" },
   { name: "remove", description: "stop the selected instance and delete VM state" },

@@ -2,12 +2,13 @@ import yargs from "yargs/yargs";
 import type { Argv, ArgumentsCamelCase } from "yargs";
 import { completeExtensionCommand } from "./extensions/commands.ts";
 import { isRootcellSubcommand, ROOTCELL_SUBCOMMANDS, type RootcellSubcommand } from "./metadata.ts";
-import { listRootcellInstanceNames, validateInstanceName } from "./instance.ts";
+import { DEFAULT_INSTANCE, listRootcellInstanceNames, readSelectedRootcellInstance, validateInstanceName } from "./instance.ts";
 import { parseSchema } from "./schema.ts";
 import {
   ParsedRootcellInitEnvArgsSchema,
   ParsedRootcellHandledArgsSchema,
   ParsedRootcellRunArgsSchema,
+  ParsedRootcellSelectArgsSchema,
   ROOTCELL_INIT_ENV_PROVIDER_TYPES,
   RootcellInitEnvProviderTypeSchema,
   SpyOptionsSchema,
@@ -39,7 +40,11 @@ interface ExtensionArgs extends GlobalArgs {
   readonly extensionArgs?: readonly string[];
 }
 
-type ParserArgv<T> = Argv<T>;
+interface SelectArgs extends GlobalArgs {
+  readonly selectedInstance?: string;
+}
+
+type ParserArgv = Argv;
 
 function subcommandDescription(name: RootcellSubcommand): string {
   return ROOTCELL_SUBCOMMANDS.find((subcommand) => subcommand.name === name)?.description ?? "";
@@ -53,7 +58,7 @@ function lastString(value: string | readonly string[] | undefined): string | und
 }
 
 function instanceName(argv: GlobalArgs): string {
-  return validateInstanceName(lastString(argv.instance) ?? "default");
+  return validateInstanceName(lastString(argv.instance) ?? DEFAULT_INSTANCE);
 }
 
 function stringArray(value: unknown): readonly string[] {
@@ -78,11 +83,11 @@ function argString(value: unknown): string {
 
 function rootcellSubcommand(
   name: RootcellSubcommand,
-  builder?: (argv: ParserArgv<GlobalArgs>) => ParserArgv<GlobalArgs>,
+  builder?: (argv: ParserArgv) => ParserArgv,
 ): readonly [
   string,
   string,
-  (argv: ParserArgv<GlobalArgs>) => ParserArgv<GlobalArgs>,
+  (argv: ParserArgv) => ParserArgv,
 ] {
   return [
     name,
@@ -108,6 +113,12 @@ function completion(
     return;
   }
 
+  const selectCompletions = completeSelectCompletion(current, argv);
+  if (selectCompletions !== undefined) {
+    done([...selectCompletions]);
+    return;
+  }
+
   const extensionCompletions = completeExtensionCompletion(current, argv);
   if (extensionCompletions !== undefined) {
     done([...extensionCompletions]);
@@ -127,10 +138,9 @@ function completeExtensionCompletion(
   current: string,
   argv: ArgumentsCamelCase<GlobalArgs>,
 ): readonly string[] | undefined {
-  const rawWords = argv._.map((value) => String(value));
-  const words = rawWords[0] === "rootcell" ? rawWords.slice(1) : rawWords;
-  const instance = lastString(argv.instance) ?? "default";
+  const words = rootcellWords(argv);
   try {
+    const instance = lastString(argv.instance) ?? readSelectedRootcellInstance(process.cwd(), process.env);
     return completeExtensionCommand({
       repoDir: process.cwd(),
       env: process.env,
@@ -143,7 +153,23 @@ function completeExtensionCompletion(
   }
 }
 
-function createParser(args: readonly string[]): Argv<GuestArgs & SpyArgs & ExtensionArgs> {
+function completeSelectCompletion(
+  current: string,
+  argv: ArgumentsCamelCase<GlobalArgs>,
+): readonly string[] | undefined {
+  const words = rootcellWords(argv);
+  if (words[0] !== "select" || words.length > 2) {
+    return undefined;
+  }
+  return completeInstances(current);
+}
+
+function rootcellWords(argv: ArgumentsCamelCase<GlobalArgs>): readonly string[] {
+  const rawWords = argv._.map((value) => String(value));
+  return rawWords[0] === "rootcell" ? rawWords.slice(1) : rawWords;
+}
+
+function createParser(args: readonly string[]): Argv {
   return yargs([...args])
     .scriptName("rootcell")
     .exitProcess(false)
@@ -153,12 +179,11 @@ function createParser(args: readonly string[]): Argv<GuestArgs & SpyArgs & Exten
       "populate--": true,
       "unknown-options-as-args": true,
     })
-    .usage("$0 [command..]\n\nStart the rootcell agent VM and run a command.")
+    .usage("$0 [command]\n\nStart the rootcell agent VM and run a command.")
     .option("instance", {
       alias: "i",
-      describe: "select rootcell instance",
+      describe: "override the selected default rootcell instance",
       type: "string",
-      default: "default",
       normalize: false,
     })
     .option("init-env", {
@@ -173,6 +198,17 @@ function createParser(args: readonly string[]): Argv<GuestArgs & SpyArgs & Exten
       type: "string",
       hidden: true,
     })
+    .command(
+      "select <selectedInstance>",
+      subcommandDescription("select"),
+      (argv: ParserArgv) => argv
+        .positional("selectedInstance", {
+          describe: "rootcell instance to use by default",
+          type: "string",
+        })
+        .demandCommand(0, 0)
+        .strictOptions(),
+    )
     .command(...rootcellSubcommand("provision"))
     .command(...rootcellSubcommand("allow"))
     .command(...rootcellSubcommand("pubkey"))
@@ -182,7 +218,7 @@ function createParser(args: readonly string[]): Argv<GuestArgs & SpyArgs & Exten
     .command(
       "edit <target>",
       subcommandDescription("edit"),
-      (argv: ParserArgv<EditArgs>) => argv
+      (argv: ParserArgv) => argv
         .positional("target", {
           choices: ["env", "http", "https", "dns", "ssh", "extensions"],
           describe: "instance file to edit",
@@ -194,7 +230,7 @@ function createParser(args: readonly string[]): Argv<GuestArgs & SpyArgs & Exten
     .command(
       "extension [extensionArgs..]",
       subcommandDescription("extension"),
-      (argv: ParserArgv<ExtensionArgs>) => argv
+      (argv: ParserArgv) => argv
         .positional("extensionArgs", {
           array: true,
           describe: "extension command and arguments",
@@ -206,7 +242,7 @@ function createParser(args: readonly string[]): Argv<GuestArgs & SpyArgs & Exten
     .command(
       "spy",
       subcommandDescription("spy"),
-      (argv: ParserArgv<SpyArgs>) => argv
+      (argv: ParserArgv) => argv
         .parserConfiguration({ "unknown-options-as-args": false })
         .option("open", {
           describe: "open the browser after starting the local tunnel; use --no-open to disable",
@@ -217,19 +253,16 @@ function createParser(args: readonly string[]): Argv<GuestArgs & SpyArgs & Exten
         .strictOptions(),
     )
     .command(
-      "$0 [command..]",
-      "run a command inside the agent VM; defaults to an interactive shell",
-      (argv: ParserArgv<GuestArgs>) => argv.positional("command", {
-        array: true,
-        describe: "command and arguments to run inside the agent VM",
-        type: "string",
-      }),
+      "$0",
+      "open an interactive shell; use -- <command> for guest commands",
+      (argv: ParserArgv) => argv,
     )
     .example("$0", "open an interactive shell inside the agent VM")
-    .example("$0 pi", "run pi inside the agent VM")
+    .example("$0 select dev", "use the dev instance by default")
+    .example("$0 -- pi", "run pi inside the agent VM")
     .example("$0 -- nix flake update", "run any command inside the agent VM")
-    .example("$0 edit env", "edit the default instance environment in $EDITOR")
-    .example("$0 edit http", "edit the HTTPS allowlist for the default instance")
+    .example("$0 edit env", "edit the selected instance environment in $EDITOR")
+    .example("$0 edit http", "edit the HTTPS allowlist for the selected instance")
     .example("$0 --instance dev edit dns", "edit the DNS allowlist for the dev instance")
     .example("$0 --instance dev allow", "reload allowlists for the dev instance")
     .example("$0 --instance aws-dev --init-env aws-ec2", "initialize an AWS EC2 instance environment")
@@ -244,7 +277,7 @@ function createParser(args: readonly string[]): Argv<GuestArgs & SpyArgs & Exten
 
 export function parseRootcellArgs(args: readonly string[]): ParsedRootcellArgs {
   rejectUnknownSpyHelpOptions(args);
-  const argv = createParser(args).parseSync();
+  const argv = createParser(args).parseSync() as ArgumentsCamelCase<GuestArgs & SpyArgs & ExtensionArgs & SelectArgs>;
   const firstToken = firstRootcellToken(args);
   if (
     argv.help === true
@@ -268,6 +301,19 @@ export function parseRootcellArgs(args: readonly string[]): ParsedRootcellArgs {
     }, "invalid parsed rootcell args");
   }
 
+  if (subcommand === "select") {
+    if (hasInstanceFlag(args)) {
+      throw new Error("--instance cannot be used with select");
+    }
+    if (stringArray(argv["--"]).length > 0) {
+      throw new Error("select does not accept arguments after --");
+    }
+    return parseSchema(ParsedRootcellSelectArgsSchema, {
+      kind: "select",
+      selectedInstanceName: validateInstanceName(argString((argv as ArgumentsCamelCase<SelectArgs>).selectedInstance)),
+    }, "invalid parsed rootcell args");
+  }
+
   if (subcommand !== undefined) {
     const rest = subcommand === "edit"
       ? [argString((argv as ArgumentsCamelCase<EditArgs>).target)]
@@ -288,16 +334,22 @@ export function parseRootcellArgs(args: readonly string[]): ParsedRootcellArgs {
   }
 
   const afterTerminator = stringArray(argv["--"]);
-  const rest = [...stringArray(argv.command), ...afterTerminator];
-  const first = rest[0];
-  if (first?.startsWith("-") === true && afterTerminator.length === 0) {
+  const commandPositionals = stringArray(argv.command);
+  const implicitGuestCommand = commandPositionals.length > 0
+    ? commandPositionals
+    : argv._.map((value) => String(value));
+  const first = implicitGuestCommand[0];
+  if (first?.startsWith("-") === true) {
     throw new Error(`Unknown argument: ${first.replace(/^-+/, "")}`);
+  }
+  if (first !== undefined) {
+    throw new Error(unknownRootcellCommandMessage(first, argv));
   }
   return parseSchema(ParsedRootcellRunArgsSchema, {
     kind: "run",
     instanceName: instanceName(argv),
     subcommand: "",
-    rest,
+    rest: afterTerminator,
     spyOptions: DEFAULT_SPY_OPTIONS,
   }, "invalid parsed rootcell args");
 }
@@ -306,9 +358,27 @@ function fail(message: string, error: Error): never {
   throw error instanceof Error ? error : new Error(message);
 }
 
-function parsedSubcommand(argv: ArgumentsCamelCase<GuestArgs & SpyArgs & ExtensionArgs>): RootcellSubcommand | undefined {
+function parsedSubcommand(argv: ArgumentsCamelCase<GuestArgs & SpyArgs & ExtensionArgs & SelectArgs>): RootcellSubcommand | undefined {
   const command = argv._[0];
   return typeof command === "string" && isRootcellSubcommand(command) ? command : undefined;
+}
+
+function unknownRootcellCommandMessage(command: string, argv: GlobalArgs): string {
+  const selected = lastString(argv.instance);
+  const instancePrefix = selected === undefined ? "" : `--instance ${validateInstanceName(selected)} `;
+  return `unknown rootcell command '${command}' (use 'rootcell ${instancePrefix}-- ${command}' to run a guest command)`;
+}
+
+function hasInstanceFlag(args: readonly string[]): boolean {
+  for (const arg of args) {
+    if (arg === "--") {
+      return false;
+    }
+    if (arg === "--instance" || arg === "-i" || arg.startsWith("--instance=") || (arg.startsWith("-i") && arg.length > 2)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function rejectUnknownSpyHelpOptions(args: readonly string[]): void {

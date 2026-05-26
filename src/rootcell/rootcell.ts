@@ -20,7 +20,10 @@ import {
   listRootcellVmInstanceNames,
   loadExistingRootcellInstance,
   loadRootcellInstance,
+  readSelectedRootcellInstance,
   seedRootcellInstanceFiles,
+  SelectedInstanceStateError,
+  writeSelectedRootcellInstance,
 } from "./instance.ts";
 import { runCapture, runInherited } from "./process.ts";
 import { parseAwsEc2Config, parseRootcellVmProvider } from "./providers/aws-ec2-config.ts";
@@ -94,6 +97,13 @@ export interface VmListEntry {
   readonly state: string;
 }
 
+export interface VmListFormatOptions {
+  readonly selectedInstance?: string | undefined;
+  readonly env?: NodeJS.ProcessEnv;
+  readonly stdoutIsTty?: boolean;
+  readonly color?: boolean;
+}
+
 export interface RootcellAppOptions {
   readonly tunnelPortAvailable?: PortAvailabilityCheck;
 }
@@ -102,16 +112,40 @@ function log(message: string): void {
   console.error(`rootcell: ${message}`);
 }
 
-export function formatVmList(entries: readonly VmListEntry[]): string {
+export function formatVmList(entries: readonly VmListEntry[], options: VmListFormatOptions = {}): string {
   if (entries.length === 0) {
     return "No rootcell VMs found.\n";
   }
   const rows = [
     ["INSTANCE", "VM", "STATE"],
-    ...entries.map((entry) => [entry.instance, entry.vm, entry.state]),
+    ...entries.map((entry) => [formatInstanceCell(entry.instance, options.selectedInstance), entry.vm, entry.state]),
   ];
   const widths = rows[0]?.map((_, column) => Math.max(...rows.map((row) => row[column]?.length ?? 0))) ?? [];
-  return `${rows.map((row) => row.map((cell, column) => cell.padEnd(widths[column] ?? 0)).join("  ").trimEnd()).join("\n")}\n`;
+  return `${rows.map((row, index) => {
+    const line = row.map((cell, column) => cell.padEnd(widths[column] ?? 0)).join("  ").trimEnd();
+    const entry = entries[index - 1];
+    if (entry !== undefined && entry.instance === options.selectedInstance && shouldStyleSelectedRows(options)) {
+      return ansiBoldGreen(line);
+    }
+    return line;
+  }).join("\n")}\n`;
+}
+
+function formatInstanceCell(instance: string, selectedInstance: string | undefined): string {
+  return instance === selectedInstance ? `${instance} (selected)` : instance;
+}
+
+function shouldStyleSelectedRows(options: VmListFormatOptions): boolean {
+  if (options.color !== undefined) {
+    return options.color;
+  }
+  const env = options.env ?? process.env;
+  const stdoutIsTty = options.stdoutIsTty ?? process.stdout.isTTY;
+  return stdoutIsTty && env.NO_COLOR === undefined;
+}
+
+function ansiBoldGreen(value: string): string {
+  return `\u001b[1;32m${value}\u001b[0m`;
 }
 
 function statusText(status: VmStatus): string {
@@ -1119,15 +1153,16 @@ async function runListCommand(
   env: NodeJS.ProcessEnv,
   instanceName: string,
   explicitInstance: boolean,
+  selectedInstanceName: string | undefined,
 ): Promise<number> {
   if (explicitInstance) {
     const instanceEnv = envForExistingInstance(repoDir, env, instanceName);
     const instance = loadExistingRootcellInstance(repoDir, instanceName, instanceEnv);
     if (instance === null) {
-      process.stdout.write(formatVmList(missingVmEntries(instanceName)));
+      process.stdout.write(formatVmList(missingVmEntries(instanceName), { selectedInstance: selectedInstanceName }));
       return 0;
     }
-    process.stdout.write(formatVmList(await appForInstance(repoDir, instanceEnv, instance).listVms()));
+    process.stdout.write(formatVmList(await appForInstance(repoDir, instanceEnv, instance).listVms(), { selectedInstance: selectedInstanceName }));
     return 0;
   }
 
@@ -1139,7 +1174,10 @@ async function runListCommand(
       entries.push(...await appForInstance(repoDir, instanceEnv, instance).listVms());
     }
   }
-  process.stdout.write(formatVmList(entries));
+  if (selectedInstanceName !== undefined && !entries.some((entry) => entry.instance === selectedInstanceName)) {
+    entries.push(...missingVmEntries(selectedInstanceName));
+  }
+  process.stdout.write(formatVmList(entries, { selectedInstance: selectedInstanceName }));
   return 0;
 }
 
@@ -1266,6 +1304,7 @@ function missingVmEntries(instanceName: string): readonly VmListEntry[] {
 
 export async function rootcellMain(args: readonly string[], importMetaPath: string): Promise<number> {
   const repoDir = repoDirFromImportMeta(importMetaPath);
+  const explicitInstance = hasInstanceFlag(args);
   let parsed;
   try {
     parsed = parseRootcellArgs(args);
@@ -1279,43 +1318,74 @@ export async function rootcellMain(args: readonly string[], importMetaPath: stri
   }
 
   try {
-    if (parsed.kind === "init-env") {
-      initRootcellInstanceEnv(repoDir, parsed.instanceName, parsed.providerType, log, process.env);
+    if (parsed.kind === "select") {
+      writeSelectedRootcellInstance(repoDir, parsed.selectedInstanceName, process.env);
+      process.stdout.write(`selected rootcell instance '${parsed.selectedInstanceName}'\n`);
       return 0;
     }
+
+    if (parsed.kind === "init-env") {
+      const instanceName = resolveRootcellInstanceName(repoDir, process.env, parsed.instanceName, explicitInstance);
+      initRootcellInstanceEnv(repoDir, instanceName, parsed.providerType, log, process.env);
+      return 0;
+    }
+    const instanceName = resolveRootcellInstanceName(repoDir, process.env, parsed.instanceName, explicitInstance);
     if (parsed.subcommand === "list") {
-      return await runListCommand(repoDir, process.env, parsed.instanceName, hasInstanceFlag(args));
+      const selectedInstanceName = explicitInstance
+        ? readSelectedRootcellInstanceForDisplay(repoDir, process.env)
+        : instanceName;
+      return await runListCommand(repoDir, process.env, instanceName, explicitInstance, selectedInstanceName);
     }
     if (parsed.subcommand === "stop" || parsed.subcommand === "remove") {
-      return await runLifecycleCommand(repoDir, process.env, parsed.subcommand, parsed.instanceName);
+      return await runLifecycleCommand(repoDir, process.env, parsed.subcommand, instanceName);
     }
     if (parsed.subcommand === "edit") {
-      return runEditCommand(repoDir, process.env, parsed.instanceName, parsed.rest[0]);
+      return runEditCommand(repoDir, process.env, instanceName, parsed.rest[0]);
     }
     if (parsed.subcommand === "extension") {
       return await runExtensionCommand({
         repoDir,
         env: process.env,
-        instanceName: parsed.instanceName,
+        instanceName,
         rest: parsed.rest,
         log,
         createContext: ({ extensionConfig }) => extensionHostCommandContext(
           repoDir,
           process.env,
-          parsed.instanceName,
+          instanceName,
           extensionConfig,
         ),
       });
     }
 
-    seedRootcellInstanceFiles(repoDir, parsed.instanceName, log);
-    loadDotEnv(instancePaths(repoDir, parsed.instanceName, process.env).envPath, process.env);
-    const instance = loadRootcellInstance(repoDir, parsed.instanceName, process.env);
+    seedRootcellInstanceFiles(repoDir, instanceName, log);
+    loadDotEnv(instancePaths(repoDir, instanceName, process.env).envPath, process.env);
+    const instance = loadRootcellInstance(repoDir, instanceName, process.env);
     const config = buildConfig(repoDir, process.env, instance);
     const app = new RootcellApp(config, createProviderBundle(config, log));
     return await app.runAfterEnvironment(parsed.subcommand, parsed.rest, parsed.spyOptions);
   } catch (error) {
     log(messageFromUnknown(error));
-    return 1;
+    return error instanceof SelectedInstanceStateError ? error.status : 1;
+  }
+}
+
+function resolveRootcellInstanceName(
+  repoDir: string,
+  env: NodeJS.ProcessEnv,
+  parsedInstanceName: string,
+  explicitInstance: boolean,
+): string {
+  if (explicitInstance) {
+    return parsedInstanceName;
+  }
+  return readSelectedRootcellInstance(repoDir, env);
+}
+
+function readSelectedRootcellInstanceForDisplay(repoDir: string, env: NodeJS.ProcessEnv): string | undefined {
+  try {
+    return readSelectedRootcellInstance(repoDir, env);
+  } catch {
+    return undefined;
   }
 }
