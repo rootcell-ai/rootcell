@@ -80,6 +80,16 @@ class AgentSpyDetectionTests(unittest.TestCase):
             "/model/anthropic.claude/invoke",
         )
         self.assertIsNotNone(fips)
+        self.assertEqual(fips["operation"], "invoke")
+
+        invoke_stream = agent_spy.detect_bedrock_request(
+            "bedrock-runtime.us-east-1.amazonaws.com",
+            "/model/us.anthropic.claude-sonnet-4-6/invoke-with-response-stream",
+        )
+        self.assertIsNotNone(invoke_stream)
+        self.assertEqual(invoke_stream["operation"], "invoke-with-response-stream")
+        self.assertEqual(invoke_stream["model_id"], "us.anthropic.claude-sonnet-4-6")
+
         self.assertIsNone(
             agent_spy.detect_bedrock_request(
                 "api.anthropic.com",

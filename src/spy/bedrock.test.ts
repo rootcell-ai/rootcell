@@ -21,9 +21,10 @@ import {
 } from "./schemas.ts";
 
 const FIXTURE_PATH = new URL("./fixtures/bedrock-pi-us-sonnet-4-6.ndjson", import.meta.url);
+const CLAUDE_CODE_FIXTURE_PATH = new URL("./fixtures/bedrock-claude-code-us-sonnet-4-6.ndjson", import.meta.url);
 
-function fixtureEvents(): SpoolEvent[] {
-  return readFileSync(FIXTURE_PATH, "utf8")
+function fixtureEvents(path: URL = FIXTURE_PATH): SpoolEvent[] {
+  return readFileSync(path, "utf8")
     .trim()
     .split("\n")
     .filter(Boolean)
@@ -44,18 +45,18 @@ function fixturePair(flowId: string): readonly [SpoolRequestEvent, SpoolResponse
   return [request, response];
 }
 
-function syntheticRequest(flowId: string, body: Record<string, unknown>): SpoolRequestEvent {
+function syntheticRequest(flowId: string, body: Record<string, unknown>, operation = "converse-stream"): SpoolRequestEvent {
   return {
     version: 1,
     ts: 1779496900,
     direction: "request",
     flow_id: flowId,
     provider: "bedrock",
-    operation: "converse-stream",
+    operation,
     model_id: "us.anthropic.claude-sonnet-4-6",
     host: "bedrock-runtime.us-east-1.amazonaws.com",
     method: "POST",
-    path: "/model/us.anthropic.claude-sonnet-4-6/converse-stream",
+    path: `/model/us.anthropic.claude-sonnet-4-6/${operation}`,
     headers: [["content-type", "application/json"]],
     body_text: JSON.stringify(body),
   };
@@ -64,6 +65,7 @@ function syntheticRequest(flowId: string, body: Record<string, unknown>): SpoolR
 function syntheticResponse(
   flowId: string,
   events: readonly (readonly [string, Record<string, unknown>])[],
+  operation = "converse-stream",
 ): SpoolResponseEvent {
   return {
     version: 1,
@@ -71,17 +73,43 @@ function syntheticResponse(
     direction: "response",
     flow_id: flowId,
     provider: "bedrock",
-    operation: "converse-stream",
+    operation,
     model_id: "us.anthropic.claude-sonnet-4-6",
     host: "bedrock-runtime.us-east-1.amazonaws.com",
     method: "POST",
-    path: "/model/us.anthropic.claude-sonnet-4-6/converse-stream",
+    path: `/model/us.anthropic.claude-sonnet-4-6/${operation}`,
     headers: [["content-type", "application/vnd.amazon.eventstream"]],
     status_code: 200,
     reason: "OK",
     request_headers: [["content-type", "application/json"]],
     body_encoding: "aws-eventstream",
     body_b64: encodeAwsEventStream(events).toString("base64"),
+  };
+}
+
+function syntheticJsonResponse(flowId: string, body: Record<string, unknown>, operation = "invoke"): SpoolResponseEvent {
+  return {
+    version: 1,
+    ts: 1779496901,
+    direction: "response",
+    flow_id: flowId,
+    provider: "bedrock",
+    operation,
+    model_id: "us.anthropic.claude-sonnet-4-6",
+    host: "bedrock-runtime.us-east-1.amazonaws.com",
+    method: "POST",
+    path: `/model/us.anthropic.claude-sonnet-4-6/${operation}`,
+    headers: [["content-type", "application/json"]],
+    status_code: 200,
+    reason: "OK",
+    request_headers: [["content-type", "application/json"]],
+    body_text: JSON.stringify(body),
+  };
+}
+
+function anthropicChunk(payload: Record<string, unknown>): Record<string, unknown> {
+  return {
+    bytes: Buffer.from(JSON.stringify(payload), "utf8").toString("base64"),
   };
 }
 
@@ -98,7 +126,7 @@ function blocks(call: NormalizedProviderCall, direction: "request" | "response")
 }
 
 function firstBlock(
-  call: NormalizedProviderCall,
+  call: { readonly call: { readonly id: string }; readonly blocks: readonly NormalizedBlock[] },
   direction: "request" | "response",
   kind: NormalizedBlock["kind"],
 ): NormalizedBlock {
@@ -175,6 +203,97 @@ describe("Bedrock adapter", () => {
     expect(firstBlock(toolResult, "request", "tool-result").text).toContain("success");
   });
 
+  test("normalizes the Claude Code generated fixture", () => {
+    const calls = normalizeBedrockSpoolEvents(fixtureEvents(CLAUDE_CODE_FIXTURE_PATH));
+    expect(calls).toHaveLength(2);
+    expect(calls.map((call) => call.call.operation)).toEqual(["invoke", "invoke"]);
+
+    const before = callById(calls, "call-fixture-claude-code-before-compaction");
+    expect(blocks(before, "request").filter((block) => block.kind === "prior-conversation-history")).toHaveLength(4);
+    expect(firstBlock(before, "request", "harness-system-context").source).toBe("claude-code-bedrock-system");
+    expect(firstBlock(before, "response", "assistant-output").text).toBe("before-ok");
+    expect(before.usage[0]).toMatchObject({
+      input_tokens: 6200,
+      output_tokens: 12,
+      cache_write_tokens: 100,
+    });
+
+    const after = callById(calls, "call-fixture-claude-code-after-compaction");
+    expect(firstBlock(after, "request", "prior-conversation-history").text).toContain("Summary of the conversation so far");
+    expect(firstBlock(after, "request", "current-user-input").text).toBe("Continue with the implementation.");
+    expect(after.usage[0]).toMatchObject({
+      input_tokens: 1300,
+      output_tokens: 11,
+      cache_read_tokens: 20,
+    });
+  });
+
+  test("normalizes Claude Code Anthropic Messages invoke request blocks", () => {
+    const normalized = normalizeBedrockRequest(syntheticRequest("fixture-flow-claude-code-invoke-request", {
+      anthropic_version: "bedrock-2023-05-31",
+      anthropic_beta: ["context-1m-2025-08-07"],
+      max_tokens: 1024,
+      thinking: { type: "enabled", budget_tokens: 256 },
+      tool_choice: { type: "auto" },
+      output_config: { effort: "standard" },
+      system: [
+        {
+          type: "text",
+          text: "You are Claude Code, Anthropic's official CLI for Claude.",
+          cache_control: { type: "ephemeral" },
+        },
+      ],
+      messages: [
+        { role: "user", content: "Earlier request" },
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "toolu_1", name: "Bash", input: { command: "pwd" } }],
+        },
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "toolu_1", content: [{ type: "text", text: "/tmp/project" }] },
+            { type: "text", text: "Current request", cache_control: { type: "ephemeral" } },
+          ],
+        },
+      ],
+      tools: [{
+        name: "Bash",
+        description: "Run shell commands",
+        input_schema: { type: "object", properties: { command: { type: "string" } } },
+      }],
+    }, "invoke"));
+
+    expect(normalized.call.operation).toBe("invoke");
+    expect(normalized.blocks.filter((block) => block.kind === "harness-system-context")).toHaveLength(1);
+    expect(firstBlock(normalized, "request", "harness-system-context")).toMatchObject({
+      source: "claude-code-bedrock-system",
+      text: "You are Claude Code, Anthropic's official CLI for Claude.",
+    });
+    expect(normalized.blocks.filter((block) => block.kind === "provider-envelope").map((block) => block.provider_path)).toEqual([
+      "$.anthropic_version",
+      "$.anthropic_beta",
+      "$.max_tokens",
+      "$.thinking",
+      "$.tool_choice",
+      "$.output_config",
+    ]);
+    expect(normalized.blocks.filter((block) => block.kind === "provider-envelope").map((block) => block.text)).toEqual([
+      "anthropic_version: bedrock-2023-05-31",
+      'anthropic_beta: ["context-1m-2025-08-07"]',
+      "max_tokens: 1024",
+      'thinking: {"budget_tokens":256,"type":"enabled"}',
+      'tool_choice: {"type":"auto"}',
+      'output_config: {"effort":"standard"}',
+    ]);
+    expect(firstBlock(normalized, "request", "prior-conversation-history").text).toBe("Earlier request");
+    expect(firstBlock(normalized, "request", "tool-call").text).toContain("Bash toolu_1");
+    expect(firstBlock(normalized, "request", "tool-result").text).toContain("toolu_1 /tmp/project");
+    expect(firstBlock(normalized, "request", "current-user-input").text).toBe("Current request");
+    expect(firstBlock(normalized, "request", "tool-definition").text).toContain("Bash Run shell commands");
+    expect(normalized.blocks.filter((block) => block.kind === "cache-marker")).toHaveLength(2);
+  });
+
   test("classifies prior request reasoning content as thinking", () => {
     const normalized = normalizeBedrockRequest(syntheticRequest("fixture-flow-request-reasoning", {
       messages: [
@@ -212,6 +331,39 @@ describe("Bedrock adapter", () => {
     expect(normalized.blocks.filter((block) => (
       block.kind === "unknown" && JSON.stringify(block.json).includes("reasoningContent")
     ))).toHaveLength(0);
+  });
+
+  test("normalizes non-streaming Anthropic Messages invoke responses", () => {
+    const normalized = normalizeBedrockResponse(syntheticJsonResponse("fixture-flow-claude-code-invoke-response", {
+      id: "msg_fixture",
+      type: "message",
+      role: "assistant",
+      content: [
+        { type: "text", text: "Done." },
+        { type: "tool_use", id: "toolu_2", name: "Bash", input: { command: "ls" } },
+      ],
+      stop_reason: "tool_use",
+      stop_sequence: null,
+      usage: {
+        input_tokens: 10,
+        output_tokens: 5,
+        cache_read_input_tokens: 2,
+        cache_creation_input_tokens: 3,
+      },
+    }, "invoke"));
+
+    expect(normalized.call.operation).toBe("invoke");
+    expect(firstBlock(normalized, "response", "assistant-output").text).toBe("Done.");
+    expect(firstBlock(normalized, "response", "tool-call").text).toContain("Bash toolu_2");
+    expect(firstBlock(normalized, "response", "provider-envelope").text).toBe("stop_reason:tool_use");
+    expect(normalized.usage[0]).toMatchObject({
+      source: "provider-reported",
+      input_tokens: 10,
+      output_tokens: 5,
+      cache_read_tokens: 2,
+      cache_write_tokens: 3,
+      total_tokens: 20,
+    });
   });
 
   test("classifies nested and signature-only response reasoning as thinking", () => {
@@ -340,6 +492,81 @@ describe("Bedrock adapter", () => {
     expect(toolUseEventTypes.includes("contentBlockDelta")).toBe(true);
     expect(toolUseEventTypes.includes("messageStop")).toBe(true);
     expect(toolUseEventTypes.includes("metadata")).toBe(true);
+  });
+
+  test("reconstructs Anthropic Messages invoke-with-response-stream chunk events", () => {
+    const normalized = normalizeBedrockResponse(syntheticResponse("fixture-flow-claude-code-stream", [
+      ["chunk", anthropicChunk({
+        type: "message_start",
+        message: {
+          id: "msg_stream",
+          type: "message",
+          role: "assistant",
+          usage: { input_tokens: 30, cache_creation_input_tokens: 4 },
+        },
+      })],
+      ["chunk", anthropicChunk({
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "text", text: "" },
+      })],
+      ["chunk", anthropicChunk({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "text_delta", text: "Hello " },
+      })],
+      ["chunk", anthropicChunk({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "text_delta", text: "world" },
+      })],
+      ["chunk", anthropicChunk({ type: "content_block_stop", index: 0 })],
+      ["chunk", anthropicChunk({
+        type: "content_block_start",
+        index: 1,
+        content_block: { type: "tool_use", id: "toolu_stream", name: "Bash", input: {} },
+      })],
+      ["chunk", anthropicChunk({
+        type: "content_block_delta",
+        index: 1,
+        delta: { type: "input_json_delta", partial_json: "{\"command\":\"pwd\"}" },
+      })],
+      ["chunk", anthropicChunk({ type: "content_block_stop", index: 1 })],
+      ["chunk", anthropicChunk({
+        type: "message_delta",
+        delta: { stop_reason: "tool_use" },
+        usage: { output_tokens: 9, cache_read_input_tokens: 2 },
+      })],
+      ["chunk", anthropicChunk({ type: "message_stop" })],
+    ], "invoke-with-response-stream"));
+
+    expect(normalized.call.operation).toBe("invoke-with-response-stream");
+    expect(firstBlock(normalized, "response", "assistant-output").text).toBe("Hello world");
+    const toolCall = firstBlock(normalized, "response", "tool-call");
+    expect(toolCall.text).toContain("Bash toolu_stream");
+    expect(toolCall.text).toContain("{\"command\":\"pwd\"}");
+    expect(firstBlock(normalized, "response", "provider-envelope").text).toBe("stop_reason:tool_use");
+    expect(normalized.streamEvents.map((event) => event.event_type)).toEqual([
+      "message_start",
+      "content_block_start",
+      "content_block_delta",
+      "content_block_delta",
+      "content_block_stop",
+      "content_block_start",
+      "content_block_delta",
+      "content_block_stop",
+      "message_delta",
+      "message_stop",
+    ]);
+    expect(normalized.streamEvents[2]?.payload_text).toBe("Hello ");
+    expect(normalized.streamEvents[6]?.payload_text).toBe("{\"command\":\"pwd\"}");
+    expect(normalized.usage[0]).toMatchObject({
+      input_tokens: 30,
+      output_tokens: 9,
+      cache_read_tokens: 2,
+      cache_write_tokens: 4,
+      total_tokens: 45,
+    });
   });
 
   test("preserves raw payloads only when requested and keeps hashes stable", () => {

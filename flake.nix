@@ -24,7 +24,10 @@
       #   - GUEST_USER in ./rootcell
       username = "luser";
 
-      pkgs = nixpkgs.legacyPackages.${system};
+      pkgs = import nixpkgs {
+        inherit system;
+        config.allowUnfreePredicate = pkg: nixpkgs.lib.getName pkg == "claude-code";
+      };
 
       mkVM = module: nixpkgs.lib.nixosSystem {
         inherit system;

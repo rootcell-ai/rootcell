@@ -9,11 +9,15 @@ const CapturedBodyShape = {
   body_encoding: z.enum(["aws-eventstream"]).optional(),
 } as const;
 
+export const ProviderIdSchema = z.enum(["bedrock"]);
+
+export type ProviderId = z.infer<typeof ProviderIdSchema>;
+
 const HttpCaptureBaseSchema = z.object({
   version: z.literal(1),
   ts: z.number(),
   flow_id: z.string().min(1),
-  provider: z.literal("bedrock"),
+  provider: ProviderIdSchema,
   operation: z.string().min(1),
   model_id: z.string().min(1),
   host: z.string().min(1),
@@ -54,7 +58,7 @@ export const SpoolErrorEventSchema = z.object({
   ts: z.number(),
   direction: z.literal("error"),
   flow_id: z.string().optional(),
-  provider: z.literal("bedrock").optional(),
+  provider: ProviderIdSchema.optional(),
   error: z.string().min(1),
 }).strict();
 
@@ -62,7 +66,7 @@ export const SpoolDroppedEventSchema = z.object({
   version: z.literal(1),
   ts: z.number(),
   direction: z.literal("dropped"),
-  provider: z.literal("bedrock").optional(),
+  provider: ProviderIdSchema.optional(),
   reason: z.string().min(1),
   dropped_count: z.number().int().positive(),
 }).strict();
@@ -91,7 +95,7 @@ export const ProviderCallStatusSchema = z.enum([
 
 export const ProviderCallSchema = z.object({
   id: z.string().min(1),
-  provider: z.literal("bedrock"),
+  provider: ProviderIdSchema,
   operation: z.string().min(1),
   model_id: z.string().min(1),
   status: ProviderCallStatusSchema,

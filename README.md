@@ -228,7 +228,7 @@ state root.
 ./rootcell remove --instance dev  # stop dev and delete its provider VM state
 ./rootcell spy                    # open the browser spy through a local SSH tunnel
 ./rootcell extension list         # show optional extensions for this instance
-./rootcell extension enable pi-plannotator   # enable an extension for next provision
+./rootcell extension enable claude-code      # enable an extension for next provision
 ./rootcell -i aws-dev --init-env aws-ec2     # initialize a provider-specific instance .env
 ./rootcell -i local --init-env macos-lima    # initialize an explicit local Lima .env
 
@@ -252,10 +252,9 @@ For example, a future `lazyvim` extension could install editor tooling in the
 agent VM, while an `ftp` extension could add firewall protocol support and
 allowlist entries.
 
-The first built-ins are Pi-related, so their IDs carry a `pi-` prefix:
-`pi-plannotator` and `pi-subagents`.
+The first built-ins are `claude-code`, `pi-plannotator`, and `pi-subagents`.
 Older `plannotator` and `subagent` keys in `extensions.txt` are migrated to
-those names when rootcell rewrites the file.
+the Pi-prefixed names when rootcell rewrites the file.
 
 Each instance stores its enabled extensions in
 `instances/<name>/extensions.txt`, or under the configured
@@ -265,6 +264,7 @@ Enabling or disabling an extension only edits that file; run
 
 ```bash
 ./rootcell extension list
+./rootcell extension enable claude-code
 ./rootcell extension enable pi-plannotator
 ./rootcell extension disable pi-plannotator
 ./rootcell edit extensions
@@ -273,6 +273,20 @@ Enabling or disabling an extension only edits that file; run
 ./rootcell --instance dev extension enable pi-subagents
 ./rootcell --instance dev provision
 ```
+
+### Claude Code
+
+The `claude-code` extension installs the Claude Code CLI in the agent VM and
+configures Claude Code sessions to use Amazon Bedrock by default:
+
+```bash
+./rootcell extension enable claude-code
+./rootcell provision
+./rootcell -- claude -p "explain this repository" --output-format json
+```
+
+Secrets stay outside Nix. Rootcell injects Bedrock credentials from
+`secrets.env` and sets `AWS_REGION` when launching commands in the agent VM.
 
 ### Plannotator
 

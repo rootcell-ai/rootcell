@@ -118,7 +118,7 @@ export function normalizeBedrockRequest(
       request_flow_id: request.flow_id,
       request_content_hash: hashUnknown(requestBody),
     },
-    blocks: normalizeRequestBlocks(callId, requestBody),
+    blocks: normalizeRequestBlocks(callId, request.operation, requestBody),
     rawPayloads: options.storeRaw === true ? [rawPayload(callId, "request", request)] : [],
   };
 }
@@ -193,7 +193,17 @@ export function normalizeBedrockSpoolEvents(
     });
 }
 
-function normalizeRequestBlocks(callId: string, body: Record<string, unknown>): NormalizedBlock[] {
+function normalizeRequestBlocks(callId: string, operation: string, body: Record<string, unknown>): NormalizedBlock[] {
+  return isConverseOperation(operation)
+    ? normalizeConverseRequestBlocks(callId, body)
+    : normalizeAnthropicMessagesRequestBlocks(callId, body);
+}
+
+function isConverseOperation(operation: string): boolean {
+  return operation === "converse" || operation === "converse-stream";
+}
+
+function normalizeConverseRequestBlocks(callId: string, body: Record<string, unknown>): NormalizedBlock[] {
   const blocks: NormalizedBlock[] = [];
   let ordinal = 0;
   const messages = arrayField(body, "messages").filter(isRecord);
@@ -236,6 +246,325 @@ function normalizeRequestBlocks(callId: string, body: Record<string, unknown>): 
   }
 
   return blocks;
+}
+
+function normalizeAnthropicMessagesRequestBlocks(callId: string, body: Record<string, unknown>): NormalizedBlock[] {
+  const blocks: NormalizedBlock[] = [];
+  let ordinal = 0;
+  const messages = arrayField(body, "messages").filter(isRecord);
+  const lastUserMessageIndex = findLastUserMessageIndex(messages);
+
+  const addBlock = (input: Omit<BlockInput, "callId" | "direction" | "ordinal">): void => {
+    blocks.push(createBlock({
+      callId,
+      direction: "request",
+      ordinal,
+      ...input,
+    }));
+    ordinal += 1;
+  };
+
+  for (const [key, value] of Object.entries(body)) {
+    if (key === "messages") {
+      normalizeAnthropicMessages(value, lastUserMessageIndex, addBlock);
+    } else if (key === "system") {
+      normalizeAnthropicSystem(value, addBlock);
+    } else if (key === "tools") {
+      normalizeAnthropicTools(value, addBlock);
+    } else if (ANTHROPIC_REQUEST_ENVELOPE_FIELDS.has(key)) {
+      addBlock({
+        kind: "provider-envelope",
+        source: "bedrock-anthropic-request",
+        providerPath: `$.${key}`,
+        text: requestEnvelopeText(key, value),
+        json: value,
+      });
+    } else {
+      addBlock({
+        kind: "unknown",
+        source: "bedrock-anthropic-request",
+        providerPath: `$.${key}`,
+        text: key,
+        json: value,
+      });
+    }
+  }
+
+  return blocks;
+}
+
+const ANTHROPIC_REQUEST_ENVELOPE_FIELDS = new Set([
+  "anthropic_version",
+  "anthropic_beta",
+  "max_tokens",
+  "metadata",
+  "model",
+  "output_config",
+  "service_tier",
+  "stop_sequences",
+  "stream",
+  "temperature",
+  "thinking",
+  "tool_choice",
+  "top_k",
+  "top_p",
+]);
+
+function normalizeAnthropicSystem(
+  value: unknown,
+  addBlock: (input: Omit<BlockInput, "callId" | "direction" | "ordinal">) => void,
+): void {
+  if (typeof value === "string") {
+    addBlock({
+      kind: "harness-system-context",
+      source: sourceForAnthropicSystemText(value),
+      providerPath: "$.system",
+      text: value,
+    });
+    return;
+  }
+
+  if (!Array.isArray(value)) {
+    addBlock({
+      kind: "unknown",
+      source: "bedrock-anthropic-system",
+      providerPath: "$.system",
+      text: "system",
+      json: value,
+    });
+    return;
+  }
+
+  value.forEach((item, index) => {
+    normalizeAnthropicContentBlock(item, {
+      role: "system",
+      providerPath: `$.system[${String(index)}]`,
+      textKind: "harness-system-context",
+      source: "bedrock-anthropic-system",
+      addBlock,
+    });
+  });
+}
+
+function normalizeAnthropicMessages(
+  value: unknown,
+  lastUserMessageIndex: number,
+  addBlock: (input: Omit<BlockInput, "callId" | "direction" | "ordinal">) => void,
+): void {
+  if (!Array.isArray(value)) {
+    addBlock({
+      kind: "unknown",
+      source: "bedrock-anthropic-messages",
+      providerPath: "$.messages",
+      text: "messages",
+      json: value,
+    });
+    return;
+  }
+
+  value.forEach((message, messageIndex) => {
+    if (!isRecord(message)) {
+      addBlock({
+        kind: "unknown",
+        source: "bedrock-anthropic-message",
+        providerPath: `$.messages[${String(messageIndex)}]`,
+        json: message,
+      });
+      return;
+    }
+
+    const role = stringField(message, "role");
+    const providerPath = `$.messages[${String(messageIndex)}]`;
+    const content = message.content;
+    const textKind = role === "user" && messageIndex === lastUserMessageIndex
+      ? "current-user-input"
+      : "prior-conversation-history";
+
+    if (typeof content === "string") {
+      addBlock({
+        kind: textKind,
+        source: "bedrock-anthropic-message",
+        providerPath: `${providerPath}.content`,
+        role,
+        text: content,
+      });
+      return;
+    }
+
+    if (!Array.isArray(content) || content.length === 0) {
+      addBlock({
+        kind: "unknown",
+        source: "bedrock-anthropic-message",
+        providerPath,
+        role,
+        json: message,
+      });
+      return;
+    }
+
+    content.forEach((item, contentIndex) => {
+      normalizeAnthropicContentBlock(item, {
+        role,
+        providerPath: `${providerPath}.content[${String(contentIndex)}]`,
+        textKind,
+        source: "bedrock-anthropic-message",
+        addBlock,
+      });
+    });
+  });
+}
+
+function normalizeAnthropicTools(
+  value: unknown,
+  addBlock: (input: Omit<BlockInput, "callId" | "direction" | "ordinal">) => void,
+): void {
+  if (!Array.isArray(value) || value.length === 0) {
+    addBlock({
+      kind: "provider-envelope",
+      source: "bedrock-anthropic-tools",
+      providerPath: "$.tools",
+      text: "tools",
+      json: value,
+    });
+    return;
+  }
+
+  value.forEach((tool, index) => {
+    addBlock({
+      kind: "tool-definition",
+      source: "bedrock-anthropic-tools",
+      providerPath: `$.tools[${String(index)}]`,
+      text: anthropicToolDefinitionText(tool),
+      json: tool,
+    });
+  });
+}
+
+function normalizeAnthropicContentBlock(
+  item: unknown,
+  context: {
+    readonly role?: string | undefined;
+    readonly providerPath: string;
+    readonly textKind: NormalizedBlock["kind"];
+    readonly source: string;
+    readonly addBlock: (input: Omit<BlockInput, "callId" | "direction" | "ordinal">) => void;
+  },
+): void {
+  if (!isRecord(item)) {
+    context.addBlock({
+      kind: "unknown",
+      source: context.source,
+      providerPath: context.providerPath,
+      role: context.role,
+      json: item,
+    });
+    return;
+  }
+
+  const type = stringField(item, "type");
+  const text = stringField(item, "text");
+  if (text !== undefined && (type === undefined || type === "text")) {
+    context.addBlock({
+      kind: context.textKind,
+      source: context.textKind === "harness-system-context" ? sourceForAnthropicSystemText(text) : context.source,
+      providerPath: `${context.providerPath}.text`,
+      role: context.role,
+      text,
+    });
+    addAnthropicCacheMarker(item, context);
+    return;
+  }
+
+  if (type === "tool_use") {
+    context.addBlock({
+      kind: "tool-call",
+      source: context.source,
+      providerPath: context.providerPath,
+      role: context.role,
+      text: toolUseText(item),
+      json: item,
+    });
+    addAnthropicCacheMarker(item, context);
+    return;
+  }
+
+  if (type === "tool_result") {
+    context.addBlock({
+      kind: "tool-result",
+      source: context.source,
+      providerPath: context.providerPath,
+      role: context.role,
+      text: anthropicToolResultText(item),
+      json: item,
+    });
+    addAnthropicCacheMarker(item, context);
+    return;
+  }
+
+  if (type === "thinking" || type === "redacted_thinking") {
+    const thinking = stringField(item, "thinking") ?? stringField(item, "text");
+    context.addBlock({
+      kind: "thinking",
+      source: context.source,
+      providerPath: context.providerPath,
+      role: context.role,
+      json: item,
+      ...(thinking === undefined ? {} : { text: thinking }),
+    });
+    addAnthropicCacheMarker(item, context);
+    return;
+  }
+
+  if (type === "image" || type === "document") {
+    context.addBlock({
+      kind: "media-summary",
+      source: context.source,
+      providerPath: context.providerPath,
+      role: context.role,
+      text: mediaSummaryText(item),
+      json: item,
+    });
+    addAnthropicCacheMarker(item, context);
+    return;
+  }
+
+  if (item.cache_control !== undefined && Object.keys(item).length === 1) {
+    addAnthropicCacheMarker(item, context);
+    return;
+  }
+
+  context.addBlock({
+    kind: "unknown",
+    source: context.source,
+    providerPath: context.providerPath,
+    role: context.role,
+    json: item,
+  });
+  addAnthropicCacheMarker(item, context);
+}
+
+function addAnthropicCacheMarker(
+  item: Record<string, unknown>,
+  context: {
+    readonly role?: string | undefined;
+    readonly providerPath: string;
+    readonly source: string;
+    readonly addBlock: (input: Omit<BlockInput, "callId" | "direction" | "ordinal">) => void;
+  },
+): void {
+  const cacheControl = item.cache_control;
+  if (cacheControl === undefined) {
+    return;
+  }
+  context.addBlock({
+    kind: "cache-marker",
+    source: "bedrock-anthropic-cache-control",
+    providerPath: `${context.providerPath}.cache_control`,
+    role: context.role,
+    text: cacheControlText(cacheControl),
+    json: cacheControl,
+    cacheMarker: true,
+  });
 }
 
 function normalizeSystemBlocks(
@@ -490,6 +819,19 @@ function normalizeResponse(
   readonly usage: readonly UsageRecord[];
   readonly streamEvents: readonly StreamEvent[];
 } {
+  return isConverseOperation(response.operation)
+    ? normalizeConverseResponse(callId, response)
+    : normalizeAnthropicMessagesResponse(callId, response);
+}
+
+function normalizeConverseResponse(
+  callId: string,
+  response: SpoolResponseEvent,
+): {
+  readonly blocks: readonly NormalizedBlock[];
+  readonly usage: readonly UsageRecord[];
+  readonly streamEvents: readonly StreamEvent[];
+} {
   const decoded = decodeAwsEventStreamJson(responseBodyB64(response));
   const blocks: NormalizedBlock[] = [];
   const usage: UsageRecord[] = [];
@@ -697,6 +1039,272 @@ function normalizeResponse(
   };
 }
 
+function normalizeAnthropicMessagesResponse(
+  callId: string,
+  response: SpoolResponseEvent,
+): {
+  readonly blocks: readonly NormalizedBlock[];
+  readonly usage: readonly UsageRecord[];
+  readonly streamEvents: readonly StreamEvent[];
+} {
+  if (response.body_encoding === "aws-eventstream" && response.body_b64 !== undefined) {
+    return normalizeAnthropicMessagesStreamResponse(callId, response);
+  }
+  return normalizeAnthropicMessagesJsonResponse(callId, response);
+}
+
+function normalizeAnthropicMessagesJsonResponse(
+  callId: string,
+  response: SpoolResponseEvent,
+): {
+  readonly blocks: readonly NormalizedBlock[];
+  readonly usage: readonly UsageRecord[];
+  readonly streamEvents: readonly StreamEvent[];
+} {
+  const body = parseResponseBody(response);
+  const blocks: NormalizedBlock[] = [];
+  let ordinal = 0;
+  const role = stringField(body, "role");
+
+  const addBlock = (input: Omit<BlockInput, "callId" | "direction" | "ordinal">): void => {
+    blocks.push(createBlock({
+      callId,
+      direction: "response",
+      ordinal,
+      ...input,
+    }));
+    ordinal += 1;
+  };
+
+  normalizeAnthropicResponseContent(body.content, {
+    role,
+    providerPath: "$.content",
+    addBlock,
+  });
+
+  addBlock({
+    kind: "provider-envelope",
+    source: "bedrock-anthropic-response",
+    providerPath: "$",
+    role,
+    text: anthropicResponseEnvelopeText(body),
+    json: compactEnvelopeJson(body, ["content", "usage"]),
+  });
+
+  const usageRecord = usageRecordFromUsage(callId, 0, recordField(body, "usage"));
+  return {
+    blocks,
+    usage: usageRecord === undefined ? [] : [usageRecord],
+    streamEvents: [],
+  };
+}
+
+function normalizeAnthropicMessagesStreamResponse(
+  callId: string,
+  response: SpoolResponseEvent,
+): {
+  readonly blocks: readonly NormalizedBlock[];
+  readonly usage: readonly UsageRecord[];
+  readonly streamEvents: readonly StreamEvent[];
+} {
+  const decoded = decodeAwsEventStreamJson(responseBodyB64(response));
+  const messages = decoded.map((message) => ({
+    headers: message.headers,
+    payload: anthropicStreamPayload(message.payload),
+  }));
+  const blocks: NormalizedBlock[] = [];
+  const builders = new Map<number, ResponseBlockBuilder>();
+  const finalized = new Set<number>();
+  let ordinal = 0;
+  let responseRole: string | undefined;
+  const usageParts: Record<string, unknown> = {};
+
+  const addBlock = (input: Omit<BlockInput, "callId" | "direction" | "ordinal">): void => {
+    blocks.push(createBlock({
+      callId,
+      direction: "response",
+      ordinal,
+      ...input,
+    }));
+    ordinal += 1;
+  };
+
+  const getBuilder = (index: number, providerPath: string): ResponseBlockBuilder => {
+    const existing = builders.get(index);
+    if (existing !== undefined) {
+      return existing;
+    }
+    const builder: ResponseBlockBuilder = {
+      index,
+      providerPath,
+      textParts: [],
+      thinkingParts: [],
+      thinkingValues: [],
+      toolInputParts: [],
+      unknownValues: [],
+      ...(responseRole === undefined ? {} : { role: responseRole }),
+    };
+    builders.set(index, builder);
+    return builder;
+  };
+
+  const finalizeBuilder = (index: number): void => {
+    if (finalized.has(index)) {
+      return;
+    }
+    const builder = builders.get(index);
+    if (builder === undefined) {
+      return;
+    }
+    finalized.add(index);
+
+    const role = builder.role ?? responseRole;
+    if (builder.textParts.length > 0) {
+      addBlock({
+        kind: "assistant-output",
+        source: "bedrock-anthropic-response",
+        providerPath: builder.providerPath,
+        role,
+        text: builder.textParts.join(""),
+      });
+    }
+
+    if (builder.thinkingParts.length > 0 || builder.thinkingValues.length > 0) {
+      const thinkingText = builder.thinkingParts.length > 0 ? builder.thinkingParts.join("") : undefined;
+      const thinkingJson = builder.thinkingValues.length > 0 ? builder.thinkingValues : undefined;
+      addBlock({
+        kind: "thinking",
+        source: "bedrock-anthropic-response",
+        providerPath: builder.providerPath,
+        role,
+        ...(thinkingText === undefined ? {} : { text: thinkingText }),
+        ...(thinkingJson === undefined ? {} : { json: thinkingJson }),
+      });
+    }
+
+    if (builder.toolUseStart !== undefined) {
+      const inputText = builder.toolInputParts.join("");
+      const toolUse: Record<string, unknown> = { ...builder.toolUseStart };
+      if (inputText.length > 0) {
+        toolUse.inputText = inputText;
+        const parsed = parseJson(inputText);
+        toolUse.input = parsed.ok ? parsed.value : inputText;
+      }
+      addBlock({
+        kind: "tool-call",
+        source: "bedrock-anthropic-response",
+        providerPath: builder.providerPath,
+        role,
+        text: toolUseText(toolUse),
+        json: { toolUse },
+      });
+    }
+
+    if (builder.unknownValues.length > 0) {
+      addBlock({
+        kind: "unknown",
+        source: "bedrock-anthropic-response",
+        providerPath: builder.providerPath,
+        role,
+        json: builder.unknownValues,
+      });
+    }
+  };
+
+  messages.forEach((message, eventIndex) => {
+    const payload = message.payload;
+    const eventType = stringField(payload, "type") ?? stringField(message.headers, ":event-type") ?? "unknown";
+    const providerPath = `$.eventStream[${String(eventIndex)}].payload`;
+
+    if (eventType === "message_start" && isRecord(payload)) {
+      const messageStart = recordField(payload, "message");
+      responseRole = stringField(messageStart, "role") ?? responseRole;
+      mergeUsage(usageParts, recordField(messageStart, "usage"));
+      return;
+    }
+
+    if (eventType === "content_block_start" && isRecord(payload)) {
+      const blockIndex = numberField(payload, "index");
+      const contentBlock = recordField(payload, "content_block");
+      if (blockIndex === undefined || contentBlock === undefined) {
+        return;
+      }
+      const builder = getBuilder(blockIndex, providerPath);
+      if (builder.role === undefined && responseRole !== undefined) {
+        builder.role = responseRole;
+      }
+      seedAnthropicResponseBuilder(builder, contentBlock);
+      return;
+    }
+
+    if (eventType === "content_block_delta" && isRecord(payload)) {
+      const blockIndex = numberField(payload, "index");
+      const delta = recordField(payload, "delta");
+      if (blockIndex === undefined || delta === undefined) {
+        return;
+      }
+      const builder = getBuilder(blockIndex, providerPath);
+      if (builder.role === undefined && responseRole !== undefined) {
+        builder.role = responseRole;
+      }
+      applyAnthropicResponseDelta(builder, delta);
+      return;
+    }
+
+    if (eventType === "content_block_stop" && isRecord(payload)) {
+      const blockIndex = numberField(payload, "index");
+      if (blockIndex !== undefined) {
+        finalizeBuilder(blockIndex);
+      }
+      return;
+    }
+
+    if (eventType === "message_delta" && isRecord(payload)) {
+      mergeUsage(usageParts, recordField(payload, "usage"));
+      addBlock({
+        kind: "provider-envelope",
+        source: "bedrock-anthropic-response",
+        providerPath,
+        role: responseRole,
+        text: anthropicMessageDeltaText(payload),
+        json: payload,
+      });
+      return;
+    }
+
+    if (eventType === "message_stop") {
+      addBlock({
+        kind: "provider-envelope",
+        source: "bedrock-anthropic-response",
+        providerPath,
+        role: responseRole,
+        text: "message_stop",
+        json: payload,
+      });
+      return;
+    }
+
+    addBlock({
+      kind: "unknown",
+      source: "bedrock-anthropic-response",
+      providerPath,
+      role: responseRole,
+      json: payload,
+    });
+  });
+
+  for (const index of builders.keys()) {
+    finalizeBuilder(index);
+  }
+
+  const usageRecord = usageRecordFromUsage(callId, 0, usageParts);
+  return {
+    blocks,
+    usage: usageRecord === undefined ? [] : [usageRecord],
+    streamEvents: messages.map((message, index) => streamEvent(callId, response.ts, index, message.headers, message.payload)),
+  };
+}
+
 function createBlock(input: BlockInput): NormalizedBlock {
   const material = input.json === undefined ? input.text ?? "" : canonicalJson(input.json);
   return {
@@ -729,7 +1337,7 @@ function streamEvent(
     id: stableId("stream", callId, String(ordinal)),
     call_id: callId,
     ordinal,
-    event_type: stringField(headers, ":event-type") ?? "unknown",
+    event_type: stringField(payload, "type") ?? stringField(headers, ":event-type") ?? "unknown",
     headers: { ...headers },
     observed_at: observedAt,
     ...(payload === undefined ? {} : { payload }),
@@ -739,32 +1347,53 @@ function streamEvent(
 }
 
 function usageRecordFromMetadata(callId: string, index: number, payload: unknown): UsageRecord | undefined {
-  const usage = recordField(payload, "usage");
-  if (usage === undefined) {
+  return usageRecordFromUsage(callId, index, recordField(payload, "usage"));
+}
+
+function usageRecordFromUsage(callId: string, index: number, usage: Record<string, unknown> | undefined): UsageRecord | undefined {
+  if (usage === undefined || Object.keys(usage).length === 0) {
     return undefined;
   }
+
+  const inputTokens = firstNumber(usage, ["inputTokens", "input_tokens"]);
+  const outputTokens = firstNumber(usage, ["outputTokens", "output_tokens"]);
+  const cacheReadTokens = firstNumber(usage, [
+    "cacheReadTokens",
+    "cacheReadInputTokens",
+    "cache_read_tokens",
+    "cache_read_input_tokens",
+  ]);
+  const cacheWriteTokens = firstNumber(usage, [
+    "cacheWriteTokens",
+    "cacheWriteInputTokens",
+    "cacheCreationInputTokens",
+    "cache_creation_input_tokens",
+    "cache_write_tokens",
+    "cache_write_input_tokens",
+  ]);
+  const totalTokens = firstNumber(usage, ["totalTokens", "total_tokens"]) ?? sumNumbers([
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
+  ]);
 
   return {
     id: stableId("usage", callId, String(index)),
     call_id: callId,
     source: "provider-reported",
     raw: usage,
-    ...optionalIntegerField("input_tokens", firstNumber(usage, ["inputTokens", "input_tokens"])),
-    ...optionalIntegerField("output_tokens", firstNumber(usage, ["outputTokens", "output_tokens"])),
-    ...optionalIntegerField("cache_read_tokens", firstNumber(usage, [
-      "cacheReadTokens",
-      "cacheReadInputTokens",
-      "cache_read_tokens",
-      "cache_read_input_tokens",
-    ])),
-    ...optionalIntegerField("cache_write_tokens", firstNumber(usage, [
-      "cacheWriteTokens",
-      "cacheWriteInputTokens",
-      "cache_write_tokens",
-      "cache_write_input_tokens",
-    ])),
-    ...optionalIntegerField("total_tokens", firstNumber(usage, ["totalTokens", "total_tokens"])),
+    ...optionalIntegerField("input_tokens", inputTokens),
+    ...optionalIntegerField("output_tokens", outputTokens),
+    ...optionalIntegerField("cache_read_tokens", cacheReadTokens),
+    ...optionalIntegerField("cache_write_tokens", cacheWriteTokens),
+    ...optionalIntegerField("total_tokens", totalTokens),
   };
+}
+
+function sumNumbers(values: readonly (number | undefined)[]): number | undefined {
+  const present = values.filter((value): value is number => value !== undefined);
+  return present.length === 0 ? undefined : present.reduce((total, value) => total + value, 0);
 }
 
 function rawPayload(
@@ -811,6 +1440,15 @@ function parseRequestBody(request: SpoolRequestEvent): Record<string, unknown> {
   return parsed.value;
 }
 
+function parseResponseBody(response: SpoolResponseEvent): Record<string, unknown> {
+  const text = capturedBodyText(response);
+  const parsed = parseJson(text);
+  if (!parsed.ok || !isRecord(parsed.value)) {
+    throw new Error(`Bedrock response body for flow ${response.flow_id} is not a JSON object`);
+  }
+  return parsed.value;
+}
+
 function responseBodyB64(response: SpoolResponseEvent): string {
   if (response.body_encoding !== "aws-eventstream" || response.body_b64 === undefined) {
     throw new Error(`Bedrock response body for flow ${response.flow_id} is not an AWS event stream`);
@@ -850,10 +1488,16 @@ function toolDefinitionText(value: unknown): string {
   return [name, description].filter((part) => part !== undefined && part.length > 0).join(" ");
 }
 
+function anthropicToolDefinitionText(value: unknown): string {
+  const name = stringField(value, "name");
+  const description = stringField(value, "description");
+  return [name, description].filter((part) => part !== undefined && part.length > 0).join(" ") || "tool";
+}
+
 function toolUseText(value: unknown): string {
   const record = isRecord(value) && isRecord(value.toolUse) ? value.toolUse : value;
   const name = stringField(record, "name") ?? "toolUse";
-  const toolUseId = stringField(record, "toolUseId");
+  const toolUseId = stringField(record, "toolUseId") ?? stringField(record, "id");
   const inputText = stringField(record, "inputText");
   return [name, toolUseId, inputText].filter((part) => part !== undefined && part.length > 0).join(" ");
 }
@@ -862,6 +1506,231 @@ function toolResultText(value: unknown): string {
   const toolUseId = stringField(value, "toolUseId") ?? "toolResult";
   const status = stringField(value, "status");
   return status === undefined ? toolUseId : `${toolUseId} ${status}`;
+}
+
+function anthropicToolResultText(value: unknown): string {
+  const toolUseId = stringField(value, "tool_use_id") ?? stringField(value, "toolUseId") ?? "toolResult";
+  const content = valueContentText(value);
+  return content === undefined ? toolUseId : `${toolUseId} ${content}`;
+}
+
+function mediaSummaryText(value: unknown): string {
+  const type = stringField(value, "type") ?? "media";
+  const mediaType = stringField(recordField(value, "source"), "media_type") ?? stringField(value, "media_type");
+  return mediaType === undefined ? type : `${type}:${mediaType}`;
+}
+
+function cacheControlText(value: unknown): string {
+  const type = stringField(value, "type");
+  return type === undefined ? "cache_control" : `cache_control:${type}`;
+}
+
+function requestEnvelopeText(key: string, value: unknown): string {
+  return `${key}: ${requestEnvelopeValueText(value)}`;
+}
+
+function requestEnvelopeValueText(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean" || value === null) {
+    return String(value);
+  }
+  return truncateText(canonicalJson(value), 1_000);
+}
+
+function truncateText(value: string, maxLength: number): string {
+  return value.length <= maxLength ? value : `${value.slice(0, maxLength - 3)}...`;
+}
+
+function sourceForAnthropicSystemText(text: string): string {
+  return /\bClaude Code\b|\bofficial CLI for Claude\b|\bclaude code\b/i.test(text)
+    ? "claude-code-bedrock-system"
+    : "bedrock-anthropic-system";
+}
+
+function anthropicResponseEnvelopeText(value: Record<string, unknown>): string {
+  const stopReason = stringField(value, "stop_reason");
+  if (stopReason !== undefined) {
+    return `stop_reason:${stopReason}`;
+  }
+  return stringField(value, "type") ?? "message";
+}
+
+function anthropicMessageDeltaText(value: Record<string, unknown>): string {
+  const delta = recordField(value, "delta");
+  const stopReason = stringField(delta, "stop_reason");
+  return stopReason === undefined ? "message_delta" : `stop_reason:${stopReason}`;
+}
+
+function compactEnvelopeJson(value: Record<string, unknown>, omittedKeys: readonly string[]): Record<string, unknown> {
+  const omitted = new Set(omittedKeys);
+  return Object.fromEntries(Object.entries(value).filter(([key]) => !omitted.has(key)));
+}
+
+function normalizeAnthropicResponseContent(
+  value: unknown,
+  context: {
+    readonly role?: string | undefined;
+    readonly providerPath: string;
+    readonly addBlock: (input: Omit<BlockInput, "callId" | "direction" | "ordinal">) => void;
+  },
+): void {
+  if (!Array.isArray(value)) {
+    context.addBlock({
+      kind: "unknown",
+      source: "bedrock-anthropic-response",
+      providerPath: context.providerPath,
+      role: context.role,
+      json: value,
+    });
+    return;
+  }
+
+  value.forEach((item, index) => {
+    const providerPath = `${context.providerPath}[${String(index)}]`;
+    if (!isRecord(item)) {
+      context.addBlock({
+        kind: "unknown",
+        source: "bedrock-anthropic-response",
+        providerPath,
+        role: context.role,
+        json: item,
+      });
+      return;
+    }
+
+    const type = stringField(item, "type");
+    if (type === "text") {
+      context.addBlock({
+        kind: "assistant-output",
+        source: "bedrock-anthropic-response",
+        providerPath,
+        role: context.role,
+        text: stringField(item, "text") ?? "",
+      });
+      return;
+    }
+    if (type === "thinking" || type === "redacted_thinking") {
+      const thinking = stringField(item, "thinking") ?? stringField(item, "text");
+      context.addBlock({
+        kind: "thinking",
+        source: "bedrock-anthropic-response",
+        providerPath,
+        role: context.role,
+        json: item,
+        ...(thinking === undefined ? {} : { text: thinking }),
+      });
+      return;
+    }
+    if (type === "tool_use") {
+      context.addBlock({
+        kind: "tool-call",
+        source: "bedrock-anthropic-response",
+        providerPath,
+        role: context.role,
+        text: toolUseText(item),
+        json: item,
+      });
+      return;
+    }
+    context.addBlock({
+      kind: "unknown",
+      source: "bedrock-anthropic-response",
+      providerPath,
+      role: context.role,
+      json: item,
+    });
+  });
+}
+
+function seedAnthropicResponseBuilder(builder: ResponseBlockBuilder, contentBlock: Record<string, unknown>): void {
+  const type = stringField(contentBlock, "type");
+  if (type === "text") {
+    const text = stringField(contentBlock, "text");
+    if (text !== undefined) {
+      builder.textParts.push(text);
+    }
+    return;
+  }
+  if (type === "thinking") {
+    const thinking = stringField(contentBlock, "thinking");
+    if (thinking !== undefined) {
+      builder.thinkingParts.push(thinking);
+    }
+    return;
+  }
+  if (type === "tool_use") {
+    builder.toolUseStart = contentBlock;
+    return;
+  }
+  if (Object.keys(contentBlock).length > 0) {
+    builder.unknownValues.push(contentBlock);
+  }
+}
+
+function applyAnthropicResponseDelta(builder: ResponseBlockBuilder, delta: Record<string, unknown>): void {
+  const type = stringField(delta, "type");
+  const text = stringField(delta, "text");
+  if (type === "text_delta" && text !== undefined) {
+    builder.textParts.push(text);
+    return;
+  }
+  const partialJson = stringField(delta, "partial_json");
+  if (type === "input_json_delta" && partialJson !== undefined) {
+    builder.toolInputParts.push(partialJson);
+    return;
+  }
+  const thinking = stringField(delta, "thinking");
+  if (type === "thinking_delta" && thinking !== undefined) {
+    builder.thinkingParts.push(thinking);
+    return;
+  }
+  if (type === "signature_delta") {
+    builder.thinkingValues.push(delta);
+    return;
+  }
+  builder.unknownValues.push(delta);
+}
+
+function anthropicStreamPayload(payload: unknown): unknown {
+  const bytes = stringField(payload, "bytes");
+  if (bytes === undefined) {
+    return payload;
+  }
+  const decoded = Buffer.from(bytes, "base64").toString("utf8");
+  const parsed = parseJson(decoded);
+  return parsed.ok ? parsed.value : { bytesText: decoded };
+}
+
+function mergeUsage(target: Record<string, unknown>, usage: Record<string, unknown> | undefined): void {
+  if (usage === undefined) {
+    return;
+  }
+  for (const [key, value] of Object.entries(usage)) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      target[key] = value;
+    }
+  }
+}
+
+function valueContentText(value: unknown): string | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const content = value.content;
+  if (typeof content === "string") {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return undefined;
+  }
+  return content.map((item) => {
+    if (typeof item === "string") {
+      return item;
+    }
+    return stringField(item, "text");
+  }).filter((part): part is string => part !== undefined && part.length > 0).join(" ");
 }
 
 function messageStopText(payload: unknown): string {
@@ -910,6 +1779,19 @@ function reasoningContentText(value: unknown): string | undefined {
 function streamPayloadText(payload: unknown): string | undefined {
   if (!isRecord(payload)) {
     return undefined;
+  }
+  const type = stringField(payload, "type");
+  if (type === "content_block_delta") {
+    const delta = recordField(payload, "delta");
+    return stringField(delta, "text")
+      ?? stringField(delta, "partial_json")
+      ?? stringField(delta, "thinking");
+  }
+  if (type === "content_block_start") {
+    const contentBlock = recordField(payload, "content_block");
+    return stringField(contentBlock, "text")
+      ?? stringField(contentBlock, "thinking")
+      ?? toolUseText(contentBlock);
   }
   const delta = recordField(payload, "delta");
   return stringField(delta, "text")

@@ -6,6 +6,7 @@
 # Anything else returns 0.0.0.0 via the catch-all.
 
 amazonaws.com
+googleapis.com
 openai.com
 chatgpt.com
 github.com

@@ -1316,10 +1316,14 @@ function compactionReasonLabel(reason: SpyCompactionReason): string {
       return "no previous request";
     case "pi_request_context_profile":
       return "Pi request profile";
+    case "claude_code_request_context_profile":
+      return "Claude Code request profile";
     case "summarization_system_prompt":
       return "summary system prompt";
     case "conversation_wrapper_input":
       return "conversation wrapper";
+    case "claude_code_summary_prompt":
+      return "Claude Code summary prompt";
     case "large_current_user_input":
       return "large current input";
     case "stable_request_context":

@@ -11,6 +11,7 @@ import {
 } from "./schemas.ts";
 
 const FIXTURE_PATH = new URL("./fixtures/bedrock-pi-us-sonnet-4-6.ndjson", import.meta.url);
+const CLAUDE_CODE_FIXTURE_PATH = new URL("./fixtures/bedrock-claude-code-us-sonnet-4-6.ndjson", import.meta.url);
 
 describe("compaction detection", () => {
   test("does not flag existing Pi/Bedrock fixture calls as compaction candidates", () => {
@@ -63,6 +64,69 @@ describe("compaction detection", () => {
     expect(assessment.evidence.summaryLikeBlockIds).toEqual(["current-summary"]);
   });
 
+  test("labels Claude Code compaction candidates when request context shrinks around a summary", () => {
+    const previousBlocks = [
+      requestBlock("previous-system", "harness-system-context", "You are Claude Code, Anthropic's official CLI for Claude.", { source: "claude-code-bedrock-system", hash: "stable-system" }),
+      requestBlock("previous-tool", "tool-definition", "Bash Run shell commands", { source: "bedrock-anthropic-tools", hash: "stable-tool" }),
+      requestBlock("previous-history-1", "prior-conversation-history", "First Claude Code historical turn. ".repeat(120), { role: "user", source: "bedrock-anthropic-message" }),
+      requestBlock("previous-history-2", "prior-conversation-history", "Second Claude Code historical turn. ".repeat(120), { role: "assistant", source: "bedrock-anthropic-message" }),
+      requestBlock("previous-history-3", "prior-conversation-history", "Third Claude Code historical turn. ".repeat(120), { role: "user", source: "bedrock-anthropic-message" }),
+      requestBlock("previous-history-4", "prior-conversation-history", "Fourth Claude Code historical turn. ".repeat(120), { role: "assistant", source: "bedrock-anthropic-message" }),
+      requestBlock("previous-current", "current-user-input", "continue with the task", { role: "user", source: "bedrock-anthropic-message" }),
+    ];
+    const currentBlocks = [
+      requestBlock("current-system", "harness-system-context", "You are Claude Code, Anthropic's official CLI for Claude.", { source: "claude-code-bedrock-system", hash: "stable-system" }),
+      requestBlock("current-tool", "tool-definition", "Bash Run shell commands", { source: "bedrock-anthropic-tools", hash: "stable-tool" }),
+      requestBlock("current-summary", "prior-conversation-history", "Summary of the conversation so far: the user asked for a Rootcell extension and Bedrock spy support.", { role: "user", source: "bedrock-anthropic-message" }),
+      requestBlock("current-current", "current-user-input", "continue with the task", { role: "user", source: "bedrock-anthropic-message" }),
+    ];
+
+    const assessment = detectCompaction({
+      summary: summary("current-claude-code", currentBlocks, { requestByteSize: 5_000, inputTokens: 1_500 }),
+      requestBlocks: currentBlocks,
+      previousSummary: summary("previous-claude-code", previousBlocks, { requestByteSize: 22_000, inputTokens: 8_000 }),
+      previousRequestBlocks: previousBlocks,
+    });
+
+    expect(assessment).toMatchObject({
+      status: "candidate",
+      source: "claude_code_pattern",
+      confidence: "high",
+      label: "Claude Code compaction candidate",
+    });
+    expect(assessment.reasons).toContain("claude_code_request_context_profile");
+    expect(assessment.reasons).toContain("stable_request_context");
+    expect(assessment.reasons).toContain("summary_like_history_block");
+    expect(assessment.reasons).toContain("prior_history_byte_drop");
+    expect(assessment.reasons).toContain("input_token_drop");
+  });
+
+  test("labels the Claude Code fixture transition as a compaction candidate", () => {
+    const calls = normalizeBedrockSpoolEvents(fixtureEvents(CLAUDE_CODE_FIXTURE_PATH));
+    expect(calls.map((call) => call.call.operation)).toEqual(["invoke", "invoke"]);
+    const previous = calls[0];
+    const current = calls[1];
+    if (previous === undefined || current === undefined) {
+      throw new Error("missing Claude Code fixture calls");
+    }
+
+    const assessment = detectCompaction({
+      summary: summaryFromNormalizedCall(current),
+      requestBlocks: requestBlocks(current.blocks),
+      previousSummary: summaryFromNormalizedCall(previous),
+      previousRequestBlocks: requestBlocks(previous.blocks),
+    });
+
+    expect(assessment).toMatchObject({
+      status: "candidate",
+      source: "claude_code_pattern",
+      label: "Claude Code compaction candidate",
+    });
+    expect(assessment.evidence.summaryLikeBlockIds).toHaveLength(1);
+    expect(assessment.reasons).toContain("claude_code_request_context_profile");
+    expect(assessment.reasons).toContain("prior_history_block_drop");
+  });
+
   test("labels Pi summarization requests as compaction events without a prior transition", () => {
     const currentBlocks = [
       requestBlock(
@@ -97,6 +161,72 @@ describe("compaction detection", () => {
       "conversation_wrapper_input",
       "large_current_user_input",
     ]);
+  });
+
+  test("labels Claude Code text-only prior-conversation summary requests as compaction events", () => {
+    const currentBlocks = [
+      requestBlock(
+        "current-system",
+        "harness-system-context",
+        "You are Claude Code, Anthropic's official CLI for Claude.",
+        { source: "claude-code-bedrock-system" },
+      ),
+      requestBlock(
+        "current-summary-request",
+        "current-user-input",
+        [
+          "Reply with plain text only and do not use any tools.",
+          "Summarize the prior conversation context so the development work can continue without losing context.",
+          "Capture current work, pending tasks, all user messages, errors and fixes, and files that were changed.",
+        ].join("\n\n"),
+        { role: "user", source: "bedrock-anthropic-message" },
+      ),
+    ];
+
+    const assessment = detectCompaction({
+      summary: summary("current-claude-code-summary", currentBlocks),
+      requestBlocks: currentBlocks,
+      previousSummary: null,
+      previousRequestBlocks: [],
+    });
+
+    expect(assessment).toMatchObject({
+      status: "candidate",
+      source: "summarization_request",
+      confidence: "high",
+      label: "Claude Code compaction summary request",
+    });
+    expect(assessment.reasons).toEqual([
+      "claude_code_request_context_profile",
+      "claude_code_summary_prompt",
+    ]);
+  });
+
+  test("does not label ordinary Claude Code summarize requests as compaction events", () => {
+    const currentBlocks = [
+      requestBlock(
+        "current-system",
+        "harness-system-context",
+        "You are Claude Code, Anthropic's official CLI for Claude.",
+        { source: "claude-code-bedrock-system" },
+      ),
+      requestBlock(
+        "current-summary-request",
+        "current-user-input",
+        "Please summarize src/spy/compaction.ts and point out the important functions.",
+        { role: "user", source: "bedrock-anthropic-message" },
+      ),
+    ];
+
+    const assessment = detectCompaction({
+      summary: summary("current-ordinary-summary", currentBlocks),
+      requestBlocks: currentBlocks,
+      previousSummary: null,
+      previousRequestBlocks: [],
+    });
+
+    expect(assessment.status).toBe("none");
+    expect(assessment.reasons).toEqual(["no_previous_comparable_call"]);
   });
 
   test("labels generic structural compaction candidates separately from Pi patterns", () => {
@@ -172,8 +302,8 @@ describe("compaction detection", () => {
   });
 });
 
-function fixtureEvents(): SpoolEvent[] {
-  return readFileSync(FIXTURE_PATH, "utf8")
+function fixtureEvents(path: URL = FIXTURE_PATH): SpoolEvent[] {
+  return readFileSync(path, "utf8")
     .trim()
     .split("\n")
     .filter(Boolean)
