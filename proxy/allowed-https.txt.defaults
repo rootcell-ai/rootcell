@@ -16,6 +16,9 @@
 # AWS Bedrock (the agent's LLM provider)
 bedrock-runtime.*.amazonaws.com
 
+# Claude Code binary source used by pinned nixpkgs if the Nix cache misses.
+storage.googleapis.com ^(GET|HEAD) /claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases/2\.1\.141/linux-arm64/claude(?:\?.*)?$
+
 # OpenAI Codex / ChatGPT Plus-Pro subscription auth
 auth.openai.com
 chatgpt.com

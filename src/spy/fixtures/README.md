@@ -17,3 +17,9 @@ Captured cases:
 - toolUse stream response
 - follow-up request containing toolResult
 - provider-reported usage metadata
+
+`bedrock-claude-code-us-sonnet-4-6.ndjson` is a generated, non-secret
+Anthropic Messages-over-Bedrock fixture for Claude Code request/response
+normalization and compaction discovery. It models stable Claude Code system/tool
+context, prior-history replacement by a summary-like block, and provider token
+drops without including live AWS credentials or project data.

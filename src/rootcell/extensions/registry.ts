@@ -5,7 +5,7 @@ import type { RootcellConfig } from "../types.ts";
 import type { ParsedExtensionsConfig } from "./config.ts";
 import { PLANNOTATOR_TUNNEL_COMMAND } from "./pi-plannotator.ts";
 
-export const RootcellExtensionIdSchema = z.enum(["pi-plannotator", "pi-subagents"]);
+export const RootcellExtensionIdSchema = z.enum(["claude-code", "pi-plannotator", "pi-subagents"]);
 
 export type RootcellExtensionId = z.infer<typeof RootcellExtensionIdSchema>;
 
@@ -106,6 +106,17 @@ const NO_HOST_COMMANDS: readonly RootcellExtensionHostCommand[] = parseSchema(
 );
 
 export const ROOTCELL_EXTENSIONS: readonly RootcellExtensionDefinition[] = parseSchema(RootcellExtensionDefinitionsSchema, [
+  {
+    id: "claude-code",
+    description: "Claude Code CLI configured for Amazon Bedrock",
+    requiresProvision: true,
+    guestHooks: {
+      agentNixos: [],
+      firewallNixos: [],
+      homeManager: ["extensions/claude-code/home-manager.nix"],
+    },
+    hostCommands: NO_HOST_COMMANDS,
+  },
   {
     id: "pi-plannotator",
     description: "Pi Plannotator integration package and remote-session configuration",

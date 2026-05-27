@@ -17,6 +17,11 @@ const HISTORY_BLOCK_DROP_RATIO = 0.4;
 const SUMMARY_LIKE_HISTORY_PATTERN = /\b(summary|summarized|summarised|condensed|compacted|compressed|conversation so far|context summary|previous context|prior conversation|earlier conversation)\b/i;
 const SUMMARIZATION_SYSTEM_PATTERN = /\b(context summarization assistant|structured summary|summari[sz]e the conversation|read a conversation between a user and an AI coding assistant|do not continue the conversation)\b/i;
 const CONVERSATION_WRAPPER_PATTERN = /<conversation>[\s\S]*<\/conversation>|\[User\]:[\s\S]*\[Assistant\]:/i;
+const CLAUDE_CODE_TEXT_ONLY_PATTERN = /\b(?:respond|reply)\s+with\s+(?:plain\s+)?text\s+only\b|\bentire\s+response\s+must\s+be\s+plain\s+text\b/i;
+const CLAUDE_CODE_NO_TOOL_PATTERN = /\bdo\s+not\s+(?:call|use)\s+(?:any\s+)?tools?\b|\btool\s+calls?\s+will\s+be\s+rejected\b|\bwithout\s+(?:calling|using)\s+tools?\b/i;
+const CLAUDE_CODE_SUMMARY_INTENT_PATTERN = /\b(?:summari[sz]e|summary|recap|condense|compact)\b/i;
+const CLAUDE_CODE_CONVERSATION_SCOPE_PATTERN = /\bconversation\s+(?:so\s+far|above|history|context)\b|\b(?:previous|prior|earlier)\s+(?:conversation|messages|actions|work|context)\b/i;
+const CLAUDE_CODE_CONTINUATION_PATTERN = /\b(?:continue|continuing|resume|preserve|without\s+losing)\s+(?:development\s+)?(?:work|context|task)\b|\bcurrent\s+work\b|\bpending\s+tasks?\b|\ball\s+user\s+messages\b/i;
 
 export interface RequestTransitionInput {
   readonly summary: SpyCallSummary;
@@ -33,7 +38,9 @@ export function detectCompaction(input: RequestTransitionInput): SpyCompactionAs
     .map((block) => block.id);
   const historyDiff = classifyHistoryBlocks(currentHistoryBlocks, previousHistoryBlocks);
   const contextStability = stableContext(input.requestBlocks, input.previousRequestBlocks);
-  const summarizationRequest = detectSummarizationRequest(input.requestBlocks);
+  const piProfile = isPiRequestContext(input);
+  const claudeCodeProfile = isClaudeCodeRequestContext(input);
+  const summarizationRequest = detectSummarizationRequest(input.requestBlocks, { claudeCodeProfile });
 
   const evidence = {
     currentCallId: input.summary.call.id,
@@ -59,8 +66,8 @@ export function detectCompaction(input: RequestTransitionInput): SpyCompactionAs
     return {
       status: "candidate",
       source: "summarization_request",
-      confidence: summarizationRequest.largeCurrentInput ? "high" : "medium",
-      label: "Compaction summarization request",
+      confidence: summarizationRequest.largeCurrentInput || summarizationRequest.claudeCodeSummaryPrompt ? "high" : "medium",
+      label: summarizationRequest.claudeCodeSummaryPrompt ? "Claude Code compaction summary request" : "Compaction summarization request",
       reasons: summarizationRequest.reasons,
       evidence,
     };
@@ -78,7 +85,6 @@ export function detectCompaction(input: RequestTransitionInput): SpyCompactionAs
   }
 
   const reasons: SpyCompactionReason[] = [];
-  const piProfile = isPiRequestContext(input);
   const stable = contextStability.repeatedBlockCount + contextStability.changedBlockCount > 0;
   const currentInputExists = input.requestBlocks.some((block) => block.kind === "current-user-input");
   const historyByteDrop = evidence.previousPriorHistoryByteSize !== null
@@ -98,6 +104,9 @@ export function detectCompaction(input: RequestTransitionInput): SpyCompactionAs
 
   if (piProfile) {
     reasons.push("pi_request_context_profile");
+  }
+  if (claudeCodeProfile) {
+    reasons.push("claude_code_request_context_profile");
   }
   if (stable) {
     reasons.push("stable_request_context");
@@ -123,12 +132,16 @@ export function detectCompaction(input: RequestTransitionInput): SpyCompactionAs
     (summaryLikeHistory && (historyByteDrop || requestByteDrop || inputTokenDrop))
       || (historyByteDrop && (historyBlockDrop || requestByteDrop || inputTokenDrop))
   );
-  const heuristicCandidate = !piCandidate && stable && currentInputExists && hasPriorHistory && (
+  const claudeCodeCandidate = !piCandidate && claudeCodeProfile && stable && currentInputExists && hasPriorHistory && (
+    (summaryLikeHistory && (historyByteDrop || requestByteDrop || inputTokenDrop))
+      || (historyByteDrop && (historyBlockDrop || requestByteDrop || inputTokenDrop))
+  );
+  const heuristicCandidate = !piCandidate && !claudeCodeCandidate && stable && currentInputExists && hasPriorHistory && (
     (summaryLikeHistory && historyByteDrop)
       || (historyByteDrop && historyBlockDrop && (requestByteDrop || inputTokenDrop))
   );
 
-  if (!piCandidate && !heuristicCandidate) {
+  if (!piCandidate && !claudeCodeCandidate && !heuristicCandidate) {
     return {
       status: "none",
       source: "none",
@@ -141,16 +154,16 @@ export function detectCompaction(input: RequestTransitionInput): SpyCompactionAs
 
   return {
     status: "candidate",
-    source: piCandidate ? "pi_pattern" : "heuristic",
+    source: piCandidate ? "pi_pattern" : claudeCodeCandidate ? "claude_code_pattern" : "heuristic",
     confidence: candidateConfidence({
-      piCandidate,
+      piCandidate: piCandidate || claudeCodeCandidate,
       summaryLikeHistory,
       historyByteDrop,
       historyBlockDrop,
       requestByteDrop,
       inputTokenDrop,
     }),
-    label: piCandidate ? "Pi compaction candidate" : "Heuristic compaction candidate",
+    label: piCandidate ? "Pi compaction candidate" : claudeCodeCandidate ? "Claude Code compaction candidate" : "Heuristic compaction candidate",
     reasons,
     evidence,
   };
@@ -160,9 +173,13 @@ function historyBlocks(blocks: readonly NormalizedBlock[]): NormalizedBlock[] {
   return blocks.filter((block) => block.direction === "request" && block.kind === "prior-conversation-history");
 }
 
-function detectSummarizationRequest(blocks: readonly NormalizedBlock[]): {
+function detectSummarizationRequest(
+  blocks: readonly NormalizedBlock[],
+  options: { readonly claudeCodeProfile: boolean },
+): {
   readonly isCandidate: boolean;
   readonly largeCurrentInput: boolean;
+  readonly claudeCodeSummaryPrompt: boolean;
   readonly reasons: SpyCompactionReason[];
 } {
   const systemPrompt = blocks.find((block) =>
@@ -175,22 +192,46 @@ function detectSummarizationRequest(blocks: readonly NormalizedBlock[]): {
     && block.kind === "current-user-input"
     && CONVERSATION_WRAPPER_PATTERN.test(block.text ?? "")
   );
-  const largeCurrentInput = wrappedInput !== undefined && wrappedInput.byte_size >= MIN_LARGE_SUMMARIZATION_INPUT_BYTES;
+  const claudeCodePrompt = options.claudeCodeProfile
+    ? blocks.find((block) =>
+      block.direction === "request"
+      && block.kind === "current-user-input"
+      && isClaudeCodeSummarizationPrompt(block.text ?? "")
+    )
+    : undefined;
+  const largeCurrentInput = [wrappedInput, claudeCodePrompt]
+    .filter((block): block is NormalizedBlock => block !== undefined)
+    .some((block) => block.byte_size >= MIN_LARGE_SUMMARIZATION_INPUT_BYTES);
   const reasons: SpyCompactionReason[] = [];
+  const piStyleCandidate = systemPrompt !== undefined && wrappedInput !== undefined;
+  const claudeCodeSummaryPrompt = claudeCodePrompt !== undefined;
   if (systemPrompt !== undefined) {
     reasons.push("summarization_system_prompt");
   }
   if (wrappedInput !== undefined) {
     reasons.push("conversation_wrapper_input");
   }
+  if (claudeCodeSummaryPrompt) {
+    reasons.push("claude_code_request_context_profile");
+    reasons.push("claude_code_summary_prompt");
+  }
   if (largeCurrentInput) {
     reasons.push("large_current_user_input");
   }
   return {
-    isCandidate: systemPrompt !== undefined && wrappedInput !== undefined,
+    isCandidate: piStyleCandidate || claudeCodeSummaryPrompt,
     largeCurrentInput,
+    claudeCodeSummaryPrompt,
     reasons,
   };
+}
+
+function isClaudeCodeSummarizationPrompt(text: string): boolean {
+  const constrainedSingleTurn = CLAUDE_CODE_NO_TOOL_PATTERN.test(text) && CLAUDE_CODE_TEXT_ONLY_PATTERN.test(text);
+  const summaryOfPriorConversation = CLAUDE_CODE_SUMMARY_INTENT_PATTERN.test(text) && CLAUDE_CODE_CONVERSATION_SCOPE_PATTERN.test(text);
+  return constrainedSingleTurn
+    && summaryOfPriorConversation
+    && CLAUDE_CODE_CONTINUATION_PATTERN.test(text);
 }
 
 function byteSize(blocks: readonly NormalizedBlock[]): number {
@@ -256,10 +297,20 @@ function isContextBlock(block: NormalizedBlock): boolean {
 
 function isPiRequestContext(input: RequestTransitionInput): boolean {
   return input.requestBlocks.some((block) => {
-    if (block.source.includes("pi")) {
+    if (block.source === "pi" || block.source.startsWith("pi-") || block.source.includes("-pi-")) {
       return true;
     }
     return block.kind === "harness-system-context" && /\binside pi\b/i.test(block.text ?? "");
+  });
+}
+
+function isClaudeCodeRequestContext(input: RequestTransitionInput): boolean {
+  return input.requestBlocks.some((block) => {
+    if (block.source.includes("claude-code")) {
+      return true;
+    }
+    return block.kind === "harness-system-context"
+      && /\bClaude Code\b|\bofficial CLI for Claude\b|\bAnthropic's official CLI\b/i.test(block.text ?? "");
   });
 }
 
