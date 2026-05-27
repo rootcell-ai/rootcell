@@ -3,6 +3,11 @@ import {
   normalizeBedrockRequest,
   normalizeBedrockResponse,
 } from "./bedrock.ts";
+import {
+  cursorCallIdForFlow,
+  normalizeCursorRequest,
+  normalizeCursorResponse,
+} from "./cursor.ts";
 import type {
   NormalizedBlock,
   ProviderId,
@@ -45,6 +50,12 @@ const ADAPTERS: Readonly<Record<ProviderId, SpyProviderAdapter>> = {
     callIdForFlow: bedrockCallIdForFlow,
     normalizeRequest: normalizeBedrockRequest,
     normalizeResponse: normalizeBedrockResponse,
+  },
+  cursor: {
+    id: "cursor",
+    callIdForFlow: cursorCallIdForFlow,
+    normalizeRequest: normalizeCursorRequest,
+    normalizeResponse: normalizeCursorResponse,
   },
 };
 

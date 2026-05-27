@@ -242,6 +242,33 @@ CREATE INDEX IF NOT EXISTS token_count_subject_idx
   ON token_count(subject_type, call_id, direction, block_id, kind);
 `,
   },
+  {
+    version: 5,
+    name: "provider response stream chunk captures",
+    sql: `
+CREATE TABLE IF NOT EXISTS stream_chunk_capture (
+  id TEXT PRIMARY KEY,
+  call_id TEXT NOT NULL REFERENCES provider_call(id) ON DELETE CASCADE,
+  flow_id TEXT NOT NULL,
+  chunk_index INTEGER NOT NULL,
+  observed_at REAL NOT NULL,
+  host TEXT NOT NULL,
+  method TEXT NOT NULL,
+  path TEXT NOT NULL,
+  headers_json TEXT NOT NULL,
+  body_b64 TEXT NOT NULL,
+  body_sha256 TEXT,
+  body_encoding TEXT,
+  content_type TEXT,
+  UNIQUE(call_id, chunk_index)
+);
+
+CREATE INDEX IF NOT EXISTS stream_chunk_capture_call_idx
+  ON stream_chunk_capture(call_id, chunk_index);
+CREATE INDEX IF NOT EXISTS stream_chunk_capture_flow_idx
+  ON stream_chunk_capture(flow_id, chunk_index);
+`,
+  },
 ];
 
 export function applySpyMigrations(db: Database): void {

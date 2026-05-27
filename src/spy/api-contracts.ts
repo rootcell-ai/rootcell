@@ -129,12 +129,13 @@ export const SpyTokenCountResponseSchema = z.object({
   records: z.array(SpyTokenCountRecordSchema),
 }).strict();
 
-export const SpyCompactionDetectionSourceSchema = z.enum(["none", "pi_pattern", "claude_code_pattern", "heuristic", "summarization_request"]);
+export const SpyCompactionDetectionSourceSchema = z.enum(["none", "pi_pattern", "claude_code_pattern", "cursor_pattern", "heuristic", "summarization_request"]);
 export const SpyCompactionConfidenceSchema = z.enum(["none", "low", "medium", "high"]);
 export const SpyCompactionReasonSchema = z.enum([
   "no_previous_comparable_call",
   "pi_request_context_profile",
   "claude_code_request_context_profile",
+  "cursor_request_context_profile",
   "summarization_system_prompt",
   "conversation_wrapper_input",
   "claude_code_summary_prompt",

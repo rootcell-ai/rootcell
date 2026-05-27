@@ -294,6 +294,7 @@ in
         "--listen-port 8080"
         "--set termlog_verbosity=warn"
         "--set flow_detail=0"
+        "--set store_streamed_bodies=true"
         # Defer opening the upstream TCP connection until after our addon
         # runs. Originally needed for the SNI deny path's address rewrite
         # to take effect (the default "eager" strategy opens the upstream
@@ -334,6 +335,7 @@ in
         "--listen-port 8081"
         "--set termlog_verbosity=warn"
         "--set flow_detail=0"
+        "--set store_streamed_bodies=true"
         "--set connection_strategy=lazy"
         "--set confdir=%t/mitmproxy-transparent"
         "-s /etc/agent-vm/mitmproxy_addon.py"

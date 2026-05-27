@@ -87,8 +87,13 @@ const BLOCK_KIND_OPTIONS: readonly NormalizedBlock["kind"][] = [
 ];
 const PROVIDER_OPTIONS = [
   { value: "bedrock", label: "Bedrock" },
+  { value: "cursor", label: "Cursor" },
 ] as const;
 const OPERATION_OPTIONS = [
+  { value: "agent", label: "Agent" },
+  { value: "Run", label: "Cursor Run" },
+  { value: "RunSSE", label: "Cursor Run SSE" },
+  { value: "StreamUnifiedChat", label: "Cursor Unified Chat" },
   { value: "invoke", label: "Invoke" },
   { value: "invoke-with-response-stream", label: "Invoke Stream" },
   { value: "converse", label: "Converse" },
@@ -1318,6 +1323,8 @@ function compactionReasonLabel(reason: SpyCompactionReason): string {
       return "Pi request profile";
     case "claude_code_request_context_profile":
       return "Claude Code request profile";
+    case "cursor_request_context_profile":
+      return "Cursor request profile";
     case "summarization_system_prompt":
       return "summary system prompt";
     case "conversation_wrapper_input":
@@ -1417,7 +1424,9 @@ function RequestCompositionPanel(props: {
           <span className="text-right">Tokens</span>
         </div>
         {composition.sections.map((section) => {
-          const tokenCount = tokenCountForSection(props.tokenCounts, "request", section.kind);
+          const tokenCount = section.present ? tokenCountForSection(props.tokenCounts, "request", section.kind) : undefined;
+          const tokenText = section.present ? formatTokenRecord(tokenCount) : "-";
+          const tokenTitle = section.present ? tokenProvenanceLabel(tokenCount) : "section absent";
           return (
             <div key={section.kind} className="grid grid-cols-[minmax(92px,1fr)_42px_46px_42px_48px_52px_54px] items-center gap-1 border-t border-stone-200 px-3 py-2">
               <span className="font-medium leading-4 text-stone-800">{blockKindLabel(section.kind)}</span>
@@ -1428,7 +1437,7 @@ function RequestCompositionPanel(props: {
               <span className="text-right text-stone-600">{formatNumber(section.blockCount)}</span>
               <span className="text-right text-stone-600">{formatNumber(section.charSize)}</span>
               <span className="text-right text-stone-600">{formatBytes(section.byteSize)}</span>
-              <span className="text-right text-stone-600" title={tokenProvenanceLabel(tokenCount)}>{formatTokenRecord(tokenCount)}</span>
+              <span className="text-right text-stone-600" title={tokenTitle}>{tokenText}</span>
             </div>
           );
         })}
@@ -2121,12 +2130,14 @@ function RawPayloadPanel(props: {
 function RawPayloadRow(props: { readonly payload: RawPayloadRecord }): React.ReactElement {
   const [expanded, setExpanded] = React.useState(false);
   const payload = props.payload;
+  const displayText = payload.body_text ?? payload.body_b64;
+  const displayLabel = payload.body_text === undefined ? "Raw provider payload (base64)" : "Raw provider payload";
   return (
     <div className="rounded-md border border-stone-200 bg-stone-50 p-3" data-testid="raw-payload-card">
       <div className="flex items-center gap-2">
         <Badge tone={payload.direction === "request" ? "teal" : "green"}>{payload.direction}</Badge>
         <span className="min-w-0 truncate text-xs text-stone-500">{payload.content_type ?? payload.body_encoding ?? "payload"} · {payload.body_sha256 ?? "no hash"}</span>
-        {payload.body_text === undefined ? null : (
+        {displayText === undefined ? null : (
           <Button
             type="button"
             className="ml-auto"
@@ -2139,19 +2150,21 @@ function RawPayloadRow(props: { readonly payload: RawPayloadRecord }): React.Rea
           </Button>
         )}
       </div>
-      {payload.body_text === undefined ? (
+      {displayText === undefined ? (
         <div className="mt-2 text-xs text-stone-500">base64 payload · {payload.body_b64 === undefined ? "not available" : `${formatNumber(payload.body_b64.length)} encoded chars`}</div>
       ) : expanded ? (
         <div data-testid="raw-payload-body">
           <SelectableTextViewer
-            text={payload.body_text}
+            text={displayText}
             previewChars={RAW_PAYLOAD_PREVIEW_CHARS}
-            fullLabel="Raw provider payload"
+            fullLabel={displayLabel}
             testId="raw-payload-text"
           />
         </div>
       ) : (
-        <div className="mt-2 text-xs text-stone-500">Payload body collapsed.</div>
+        <div className="mt-2 text-xs text-stone-500">
+          {payload.body_text === undefined ? `Base64 payload collapsed · ${formatNumber(payload.body_b64?.length ?? 0)} encoded chars` : "Payload body collapsed."}
+        </div>
       )}
     </div>
   );

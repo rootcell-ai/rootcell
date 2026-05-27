@@ -23,3 +23,10 @@ Anthropic Messages-over-Bedrock fixture for Claude Code request/response
 normalization and compaction discovery. It models stable Claude Code system/tool
 context, prior-history replacement by a summary-like block, and provider token
 drops without including live AWS credentials or project data.
+
+`cursor-agent-composer-2.5.ndjson` is a redacted and stabilized capture from the
+real `jmp` rootcell instance using Cursor Agent CLI against the Composer 2.5
+family with Cursor's HTTP/1.1 agent compatibility mode enabled. It preserves
+the Cursor `AgentService/RunSSE` Connect-proto request shape, SSE response
+shape, redacted auth headers, first/resumed marker prompts, raw payload storage,
+and provider usage metadata.

@@ -26,7 +26,10 @@
 
       pkgs = import nixpkgs {
         inherit system;
-        config.allowUnfreePredicate = pkg: nixpkgs.lib.getName pkg == "claude-code";
+        config.allowUnfreePredicate = pkg: builtins.elem (nixpkgs.lib.getName pkg) [
+          "claude-code"
+          "cursor-cli"
+        ];
       };
 
       mkVM = module: nixpkgs.lib.nixosSystem {
