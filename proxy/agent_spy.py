@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Bedrock traffic capture shim for the firewall VM.
+"""LLM provider traffic capture shim for the firewall VM.
 
 This module is intentionally stdlib-only. mitmproxy imports the capture helpers
-from its own Python environment, provider-gates Bedrock Runtime traffic, and
+from its own Python environment, provider-gates LLM runtime traffic, and
 writes bounded sanitized spool events for the TypeScript spy service.
 """
 
@@ -38,6 +38,18 @@ BEDROCK_OPERATIONS = {
     "converse-stream",
 }
 
+CURSOR_API_HOSTS = {
+    "api.cursor.com",
+    "api.cursor.sh",
+    "api2.cursor.sh",
+    "agentn.global.api5.cursor.sh",
+}
+
+CURSOR_STREAM_OPERATION_RE = re.compile(
+    r"^(?:Run|RunSSE|StreamUnifiedChat)$",
+    re.IGNORECASE,
+)
+
 SECRET_HEADER_NAMES = {
     "authorization",
     "proxy-authorization",
@@ -46,6 +58,7 @@ SECRET_HEADER_NAMES = {
     "x-amz-signature",
     "x-api-key",
     "api-key",
+    "cursor-api-key",
 }
 
 PRESIGNED_QUERY_KEYS = {
@@ -195,6 +208,112 @@ def detect_bedrock_request(host: str | None, path: str, headers: Any = None) -> 
     }
 
 
+def is_cursor_api_host(host: str | None) -> bool:
+    if not host:
+        return False
+    normalized = host.split(":", 1)[0].strip(".").lower()
+    return normalized in CURSOR_API_HOSTS or fnmatch.fnmatchcase(normalized, "*.cursor.sh")
+
+
+def detect_cursor_request(
+    host: str | None,
+    path: str,
+    method: str | None = None,
+    body: bytes | None = None,
+) -> dict[str, str] | None:
+    """Detect all Cursor API calls so startup/tool capability traffic is visible."""
+
+    if not is_cursor_api_host(host):
+        return None
+
+    url_path = urllib.parse.urlsplit(path).path
+    operation = _cursor_operation_from_path(url_path)
+    return {
+        "provider": "cursor",
+        "model_id": _cursor_model_id_from_body(body) or "cursor",
+        "operation": operation,
+        "streaming": "unknown",
+    }
+
+
+def detect_provider_request(
+    host: str | None,
+    path: str,
+    headers: Any = None,
+    method: str | None = None,
+    body: bytes | None = None,
+) -> dict[str, str] | None:
+    return detect_bedrock_request(host, path, headers) or detect_cursor_request(host, path, method, body)
+
+
+def _cursor_operation_from_path(path: str) -> str:
+    parts = [urllib.parse.unquote(part) for part in path.split("/") if part]
+    if not parts:
+        return "agent"
+    for part in reversed(parts):
+        cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "-", part).strip("-")
+        if cleaned:
+            return cleaned[:80]
+    return "agent"
+
+
+def _cursor_model_id_from_body(body: bytes | None) -> str | None:
+    if not body:
+        return None
+    text = _decode_utf8(body)
+    if text is None:
+        return _cursor_model_id_from_binary(body)
+    try:
+        value = json.loads(text)
+    except Exception:
+        return _cursor_model_id_from_text(text)
+    return _first_deep_string(value, {
+        "model",
+        "model_id",
+        "modelname",
+        "modeldisplayname",
+        "selectedmodel",
+    }) or _cursor_model_id_from_text(text)
+
+
+def _cursor_model_id_from_binary(body: bytes) -> str | None:
+    try:
+        text = body.decode("latin1", errors="ignore")
+    except Exception:
+        return None
+    return _cursor_model_id_from_text(text)
+
+
+def _cursor_model_id_from_text(text: str) -> str | None:
+    match = re.search(r"\bcomposer-2\.5(?:-fast)?\b", text, re.IGNORECASE)
+    if match:
+        return match.group(0)
+    match = re.search(r"Composer\s+2\.5(?:\s+Fast)?", text, re.IGNORECASE)
+    if match:
+        return match.group(0)
+    match = re.search(r"(?:model|modelName|selectedModel)[\"'\s:=]+([A-Za-z0-9_. -]{2,80})", text)
+    if match:
+        return match.group(1).strip()
+    return None
+
+
+def _first_deep_string(value: Any, keys: set[str]) -> str | None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if str(key).lower() in keys and isinstance(child, str) and child:
+                return child
+        for child in value.values():
+            found = _first_deep_string(child, keys)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _first_deep_string(child, keys)
+            if found is not None:
+                return found
+    return None
+
+
 def _decode_utf8(data: bytes) -> str | None:
     try:
         return data.decode("utf-8")
@@ -209,7 +328,7 @@ def _event_base(flow: Any, direction: str, info: dict[str, str]) -> dict[str, An
         "ts": time.time(),
         "direction": direction,
         "flow_id": str(getattr(flow, "id", "")),
-        "provider": "bedrock",
+        "provider": info["provider"],
         "operation": info["operation"],
         "model_id": info["model_id"],
         "host": str(getattr(request, "pretty_host", None) or getattr(request, "host", "")),
@@ -233,6 +352,19 @@ def _response_body_bytes(flow: Any) -> bytes:
     if body is None:
         body = getattr(response, "content", b"") or b""
     return body
+
+
+def _next_stream_chunk_index(flow: Any) -> int:
+    metadata = getattr(flow, "metadata", None)
+    if not isinstance(metadata, dict):
+        return 0
+    current = metadata.get("agent_spy_stream_chunk_index")
+    try:
+        index = int(current)
+    except (TypeError, ValueError):
+        index = 0
+    metadata["agent_spy_stream_chunk_index"] = index + 1
+    return index
 
 
 def load_spy_config(path: str | None = None) -> dict[str, str]:
@@ -389,19 +521,21 @@ def _write_spool_event(event: dict[str, Any], config: dict[str, Any], write_drop
     return _atomic_write_spool_file(spool_dir, _spool_file_name(event), payload)
 
 
-def _bedrock_info_for_flow(flow: Any) -> dict[str, str] | None:
+def _provider_info_for_flow(flow: Any) -> dict[str, str] | None:
     metadata = getattr(flow, "metadata", None)
     info = metadata.get("agent_spy") if isinstance(metadata, dict) else None
-    if isinstance(info, dict) and info.get("provider") == "bedrock":
+    if isinstance(info, dict) and info.get("provider") in {"bedrock", "cursor"}:
         return {str(key): str(value) for key, value in info.items()}
 
     request = getattr(flow, "request", None)
     if request is None:
         return None
-    return detect_bedrock_request(
+    return detect_provider_request(
         getattr(request, "pretty_host", None) or getattr(request, "host", None),
         str(getattr(request, "path", "")),
         getattr(request, "headers", None),
+        getattr(request, "method", None),
+        _request_body_bytes(flow),
     )
 
 
@@ -410,11 +544,22 @@ def _flow_id(flow: Any) -> str | None:
     return str(value) if value is not None else None
 
 
-def _attach_body(event: dict[str, Any], body: bytes, *, force_encoding: str | None = None) -> None:
+def _attach_body(
+    event: dict[str, Any],
+    body: bytes,
+    *,
+    force_encoding: str | None = None,
+    force_base64: bool = False,
+) -> None:
     if force_encoding == "aws-eventstream":
         event["body_b64"] = base64.b64encode(body).decode("ascii")
         event["body_sha256"] = _sha256_bytes(body)
         event["body_encoding"] = "aws-eventstream"
+        return
+
+    if force_base64:
+        event["body_b64"] = base64.b64encode(body).decode("ascii")
+        event["body_sha256"] = _sha256_bytes(body)
         return
 
     text = _decode_utf8(body)
@@ -439,10 +584,10 @@ def _write_shim_error(flow: Any, message: str) -> None:
         flow_id = _flow_id(flow)
         if flow_id is not None:
             event["flow_id"] = flow_id
-        info = _bedrock_info_for_flow(flow)
+        info = _provider_info_for_flow(flow)
         if info is None:
             return
-        event["provider"] = "bedrock"
+        event["provider"] = info["provider"]
         _write_spool_event(event, config)
     except Exception:
         # The spy tap must never interfere with user traffic.
@@ -450,17 +595,20 @@ def _write_shim_error(flow: Any, message: str) -> None:
 
 
 def capture_request(flow: Any) -> None:
-    """mitmproxy hook helper. Capture a validated Bedrock request if enabled."""
+    """mitmproxy hook helper. Capture a validated provider request if enabled."""
 
     try:
         config = _capture_config()
         if config is None:
             return
         request = flow.request
-        info = detect_bedrock_request(
+        body = _request_body_bytes(flow)
+        info = detect_provider_request(
             getattr(request, "pretty_host", None) or getattr(request, "host", None),
             str(getattr(request, "path", "")),
             getattr(request, "headers", None),
+            getattr(request, "method", None),
+            body,
         )
         if not info:
             return
@@ -469,23 +617,22 @@ def capture_request(flow: Any) -> None:
         if isinstance(metadata, dict):
             metadata["agent_spy"] = info
 
-        body = _request_body_bytes(flow)
         event = _event_base(flow, "request", info)
         event["headers"] = redact_headers(getattr(request, "headers", None))
-        _attach_body(event, body)
+        _attach_body(event, body, force_base64=info["provider"] == "cursor")
         _write_spool_event(event, config)
     except Exception as exc:  # pragma: no cover - defensive for live traffic.
         _write_shim_error(flow, str(exc))
 
 
 def capture_response(flow: Any) -> None:
-    """mitmproxy hook helper. Capture a Bedrock response if its request matched."""
+    """mitmproxy hook helper. Capture a provider response if its request matched."""
 
     try:
         config = _capture_config()
         if config is None:
             return
-        info = _bedrock_info_for_flow(flow)
+        info = _provider_info_for_flow(flow)
         if not info or getattr(flow, "response", None) is None:
             return
 
@@ -498,23 +645,73 @@ def capture_response(flow: Any) -> None:
 
         body = _response_body_bytes(flow)
         content_type = _header_value(getattr(response, "headers", None), "content-type")
-        if _is_eventstream_content_type(content_type):
+        if info["provider"] == "bedrock" and _is_eventstream_content_type(content_type):
             _attach_body(event, body, force_encoding="aws-eventstream")
         else:
-            _attach_body(event, body)
+            _attach_body(event, body, force_base64=info["provider"] == "cursor")
         _write_spool_event(event, config)
     except Exception as exc:  # pragma: no cover - defensive for live traffic.
         _write_shim_error(flow, str(exc))
 
 
+def capture_stream_chunk(flow: Any, chunk: bytes) -> None:
+    """Capture one provider response body chunk while returning traffic unchanged."""
+
+    if not chunk:
+        return
+    try:
+        config = _capture_config()
+        if config is None:
+            return
+        info = _provider_info_for_flow(flow)
+        if info is None:
+            return
+        response = getattr(flow, "response", None)
+        if response is None:
+            return
+        event = _event_base(flow, "stream-chunk", info)
+        event["headers"] = redact_headers(getattr(response, "headers", None))
+        event["chunk_index"] = _next_stream_chunk_index(flow)
+        event["body_b64"] = base64.b64encode(chunk).decode("ascii")
+        event["body_sha256"] = _sha256_bytes(chunk)
+        _write_spool_event(event, config)
+    except Exception as exc:  # pragma: no cover - defensive for live traffic.
+        _write_shim_error(flow, str(exc))
+
+
+def prepare_response_stream(flow: Any) -> None:
+    """Enable pass-through streaming for provider responses that are long-lived."""
+
+    try:
+        info = _provider_info_for_flow(flow)
+        response = getattr(flow, "response", None)
+        if info is None or response is None:
+            return
+        if info.get("provider") != "cursor":
+            return
+        content_type = _header_value(getattr(response, "headers", None), "content-type")
+        if (
+            CURSOR_STREAM_OPERATION_RE.match(info.get("operation", "")) is None
+            and _content_type_base(content_type) != "text/event-stream"
+        ):
+            return
+        def tee_cursor_chunk(chunk: bytes) -> bytes:
+            capture_stream_chunk(flow, chunk)
+            return chunk
+
+        setattr(response, "stream", tee_cursor_chunk)
+    except Exception:
+        return
+
+
 def capture_error(flow: Any) -> None:
-    """mitmproxy hook helper. Capture Bedrock flow errors if spy is enabled."""
+    """mitmproxy hook helper. Capture provider flow errors if spy is enabled."""
 
     try:
         config = _capture_config()
         if config is None:
             return
-        info = _bedrock_info_for_flow(flow)
+        info = _provider_info_for_flow(flow)
         if info is None:
             return
         flow_error = getattr(flow, "error", None)
@@ -523,7 +720,7 @@ def capture_error(flow: Any) -> None:
             "version": 1,
             "ts": time.time(),
             "direction": "error",
-            "provider": "bedrock",
+            "provider": info["provider"],
             "error": str(message),
         }
         flow_id = _flow_id(flow)

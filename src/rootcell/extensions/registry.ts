@@ -5,7 +5,7 @@ import type { RootcellConfig } from "../types.ts";
 import type { ParsedExtensionsConfig } from "./config.ts";
 import { PLANNOTATOR_TUNNEL_COMMAND } from "./pi-plannotator.ts";
 
-export const RootcellExtensionIdSchema = z.enum(["claude-code", "pi-plannotator", "pi-subagents"]);
+export const RootcellExtensionIdSchema = z.enum(["claude-code", "cursor-cli", "pi-plannotator", "pi-subagents"]);
 
 export type RootcellExtensionId = z.infer<typeof RootcellExtensionIdSchema>;
 
@@ -114,6 +114,17 @@ export const ROOTCELL_EXTENSIONS: readonly RootcellExtensionDefinition[] = parse
       agentNixos: [],
       firewallNixos: [],
       homeManager: ["extensions/claude-code/home-manager.nix"],
+    },
+    hostCommands: NO_HOST_COMMANDS,
+  },
+  {
+    id: "cursor-cli",
+    description: "Cursor Agent CLI configured for headless coding-agent runs",
+    requiresProvision: true,
+    guestHooks: {
+      agentNixos: [],
+      firewallNixos: [],
+      homeManager: ["extensions/cursor-cli/home-manager.nix"],
     },
     hostCommands: NO_HOST_COMMANDS,
   },

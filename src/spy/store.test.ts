@@ -4,14 +4,17 @@ import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import { bedrockCallIdForFlow } from "./bedrock.ts";
+import { cursorCallIdForFlow } from "./cursor.ts";
 import { currentSpySchemaVersion } from "./migrations.ts";
 import {
   SpoolEventSchema,
   SpoolRequestEventSchema,
   SpoolResponseEventSchema,
+  SpoolStreamChunkEventSchema,
   type SpoolEvent,
   type SpoolRequestEvent,
   type SpoolResponseEvent,
+  type SpoolStreamChunkEvent,
 } from "./schemas.ts";
 import { openSpyStore, type SpyCallDetail, type SpyStore } from "./store.ts";
 
@@ -158,6 +161,99 @@ function syntheticBedrockRequest(flowId: string, ts: number, body: Record<string
   });
 }
 
+function syntheticCursorRequest(flowId: string, ts: number, body: Record<string, unknown>): SpoolRequestEvent {
+  return SpoolRequestEventSchema.parse({
+    version: 1,
+    ts,
+    direction: "request",
+    flow_id: flowId,
+    provider: "cursor",
+    operation: "StreamUnifiedChat",
+    model_id: "Composer 2.5",
+    host: "api2.cursor.sh",
+    method: "POST",
+    path: "/aiserver.v1.AiService/StreamUnifiedChat",
+    headers: [["content-type", "application/json"]],
+    body_text: JSON.stringify(body),
+  });
+}
+
+function syntheticCursorResponse(flowId: string, ts: number, body: Record<string, unknown>): SpoolResponseEvent {
+  return SpoolResponseEventSchema.parse({
+    version: 1,
+    ts,
+    direction: "response",
+    flow_id: flowId,
+    provider: "cursor",
+    operation: "StreamUnifiedChat",
+    model_id: "Composer 2.5",
+    host: "api2.cursor.sh",
+    method: "POST",
+    path: "/aiserver.v1.AiService/StreamUnifiedChat",
+    headers: [["content-type", "application/json"]],
+    status_code: 200,
+    reason: "OK",
+    request_headers: [["content-type", "application/json"]],
+    body_text: JSON.stringify(body),
+  });
+}
+
+function syntheticCursorStreamChunk(flowId: string, ts: number, chunkIndex: number, body: Buffer): SpoolStreamChunkEvent {
+  return SpoolStreamChunkEventSchema.parse({
+    version: 1,
+    ts,
+    direction: "stream-chunk",
+    flow_id: flowId,
+    provider: "cursor",
+    operation: "StreamUnifiedChat",
+    model_id: "Composer 2.5",
+    host: "api2.cursor.sh",
+    method: "POST",
+    path: "/aiserver.v1.AiService/StreamUnifiedChat",
+    headers: [["content-type", "application/connect+proto"]],
+    chunk_index: chunkIndex,
+    body_b64: body.toString("base64"),
+  });
+}
+
+function connectFrame(payload: Buffer): Buffer {
+  const header = Buffer.alloc(5);
+  header.writeUInt32BE(payload.length, 1);
+  return Buffer.concat([header, payload]);
+}
+
+function protoVarint(value: number): Buffer {
+  const bytes: number[] = [];
+  let remaining = value;
+  while (remaining >= 0x80) {
+    bytes.push((remaining & 0x7f) | 0x80);
+    remaining = Math.floor(remaining / 0x80);
+  }
+  bytes.push(remaining);
+  return Buffer.from(bytes);
+}
+
+function protoVarintField(fieldNumber: number, value: number): Buffer {
+  return Buffer.concat([protoVarint(fieldNumber * 8), protoVarint(value)]);
+}
+
+function protoMessageField(fieldNumber: number, message: Buffer): Buffer {
+  return Buffer.concat([protoVarint(fieldNumber * 8 + 2), protoVarint(message.length), message]);
+}
+
+function protoStringField(fieldNumber: number, value: string): Buffer {
+  return protoMessageField(fieldNumber, Buffer.from(value, "utf8"));
+}
+
+function cursorContextSectionMetadata(key: string, label: string, startOffset: number, size: number): Buffer {
+  return Buffer.concat([
+    protoStringField(1, key),
+    protoStringField(2, label),
+    protoVarintField(3, startOffset),
+    protoVarintField(4, size),
+  ]);
+}
+
 function responseVariant(
   event: SpoolResponseEvent,
   overrides: Partial<Pick<SpoolResponseEvent, "flow_id" | "ts" | "model_id" | "operation" | "status_code">>,
@@ -258,6 +354,166 @@ describe("spy SQLite store", () => {
       expect(health.pendingCallCount).toBe(0);
       expect(health.droppedCaptureCount).toBe(0);
       expect(health.lastIngestAt).not.toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+
+  test("ingests Cursor provider request and response records", () => {
+    const { dbPath, store } = createTestStore({ storeRaw: true });
+    try {
+      const request = syntheticCursorRequest("fixture-cursor-store", 3000, {
+        model: "Composer 2.5",
+        messages: [
+          { role: "user", content: "RCSPY-CURSOR-ALPHA" },
+          { role: "user", content: "RCSPY-CURSOR-BETA" },
+        ],
+      });
+      const response = syntheticCursorResponse("fixture-cursor-store", 3001, {
+        result: { text: "cursor-store-ok" },
+        usage: { inputTokens: 50, outputTokens: 5 },
+      });
+      const placeholderRequest = { ...request, model_id: "cursor" } satisfies SpoolRequestEvent;
+
+      store.persistRequest(placeholderRequest);
+      expect(store.persistResponse(response)).toBe(true);
+
+      const callId = cursorCallIdForFlow(request.flow_id);
+      expect(statusForCall(dbPath, callId)).toBe("complete");
+      const detail = requiredDetail(store, callId);
+      expect(detail.summary.call.provider).toBe("cursor");
+      expect(detail.summary.call.model_id).toBe("Composer 2.5");
+      expect(detail.blocks.map((block) => block.text ?? "").join("\n")).toContain("RCSPY-CURSOR-BETA");
+      expect(detail.blocks.map((block) => block.text ?? "").join("\n")).toContain("cursor-store-ok");
+      expect(detail.rawPayloads).toHaveLength(2);
+      expect(store.listCallSummaries({ provider: "cursor" }).items).toHaveLength(1);
+      expect(store.listCallSummaries({ provider: "bedrock" }).items).toHaveLength(0);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("backfills Cursor request context found in response streams", () => {
+    const { store } = createTestStore();
+    try {
+      const request = syntheticCursorRequest("fixture-cursor-response-context", 3050, {});
+      const response = syntheticCursorResponse("fixture-cursor-response-context", 3051, {
+        events: [
+          { role: "system", content: "Cursor system prompt from response stream" },
+          { role: "user", content: "<user_info>\nWorkspace Path: /tmp/cursor\n</user_info>" },
+          { role: "user", content: "<user_query>\nCursor current request from response stream\n</user_query>" },
+          { role: "assistant", content: [{ type: "text", text: "cursor-response-context-ok" }] },
+        ],
+      });
+
+      store.persistRequest(request);
+      expect(store.persistResponse(response)).toBe(true);
+
+      const detail = requiredDetail(store, cursorCallIdForFlow(request.flow_id));
+      const requestBlocks = detail.blocks.filter((block) => block.direction === "request");
+      expect(requestBlocks.some((block) =>
+        block.kind === "harness-system-context"
+        && block.text?.includes("Cursor system prompt from response stream") === true
+      )).toBe(true);
+      expect(requestBlocks.some((block) =>
+        block.kind === "current-user-input"
+        && block.text === "Cursor current request from response stream"
+      )).toBe(true);
+      expect(detail.requestComposition.sections.find((section) => section.kind === "current-user-input")?.present).toBe(true);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("includes Cursor protobuf context section metadata in request composition", () => {
+    const { store } = createTestStore();
+    try {
+      const flowId = "fixture-cursor-context-section-metadata";
+      const request = syntheticCursorRequest(flowId, 3060, {
+        model: "Composer 2.5",
+        prompt: "Cursor context metadata prompt",
+      });
+      const sectionEnvelope = Buffer.concat([
+        protoMessageField(3, cursorContextSectionMetadata("tools", "Tool definitions", 5_884, 24_509)),
+        protoMessageField(3, cursorContextSectionMetadata("conversation", "Conversation", 1_029, 3_083)),
+      ]);
+      const response = SpoolResponseEventSchema.parse({
+        ...syntheticCursorResponse(flowId, 3061, {}),
+        headers: [["content-type", "application/connect+proto"]],
+        body_text: undefined,
+        body_b64: connectFrame(sectionEnvelope).toString("base64"),
+      });
+
+      store.persistRequest(request);
+      expect(store.persistResponse(response)).toBe(true);
+
+      const detail = requiredDetail(store, cursorCallIdForFlow(flowId));
+      expect(compositionSection(detail, "tool-definition")).toMatchObject({
+        present: true,
+        blockCount: 1,
+        byteSize: 24_509,
+      });
+      expect(compositionSection(detail, "prior-conversation-history")).toMatchObject({
+        present: true,
+        blockCount: 1,
+        byteSize: 3_083,
+      });
+      expect(detail.summary.requestByteSize).toBeGreaterThan(24_509 + 3_083);
+      expect(detail.blocks.find((block) => block.kind === "tool-definition")?.source).toBe("cursor-response-context-metadata");
+    } finally {
+      store.close();
+    }
+  });
+
+  test("reassembles Cursor stream chunks into raw wire events and derived usage when raw payload storage is off", () => {
+    const { dbPath, spoolDir, store } = createTestStore();
+    try {
+      const flowId = "fixture-cursor-stream-chunks";
+      const request = syntheticCursorRequest(flowId, 3060, {
+        model: "Composer 2.5",
+        prompt: "RCSPY-CURSOR-STREAM-CHUNK",
+      });
+      const usageMessage = Buffer.concat([
+        protoVarintField(1, 10779),
+        protoVarintField(2, 52),
+        protoVarintField(3, 2848),
+        protoVarintField(4, 0),
+      ]);
+      const responsePayload = protoMessageField(1, protoMessageField(14, usageMessage));
+      const responseBytes = connectFrame(responsePayload);
+      const chunkOne = syntheticCursorStreamChunk(flowId, 3061, 0, responseBytes.subarray(0, 4));
+      const chunkTwo = syntheticCursorStreamChunk(flowId, 3062, 1, responseBytes.subarray(4));
+      const response = syntheticCursorResponse(flowId, 3063, {});
+
+      writeSpoolEvents(spoolDir, [request, chunkOne, chunkTwo, response]);
+
+      expect(store.ingestSpoolBatch()).toMatchObject({ ingested: 4, deferred: 0 });
+
+      const detail = requiredDetail(store, cursorCallIdForFlow(flowId));
+      expect(detail.summary.usage).toMatchObject({
+        inputTokens: 7931,
+        outputTokens: 52,
+        cacheReadTokens: 2848,
+        cacheWriteTokens: 0,
+        totalTokens: 10831,
+      });
+      expect(detail.usageRecords[0]?.raw).toMatchObject({
+        raw_protobuf: {
+          path: "$frame[0].1.14",
+          wireInputTokens: 10779,
+        },
+      });
+      const wireEvents = store.getStreamEvents(detail.summary.call.id).items;
+      const wireEvent = wireEvents.find((event) => event.event_type === "connect-protobuf-frame");
+      expect(wireEvent?.payload).toMatchObject({
+        format: "connect",
+        frameB64: responseBytes.toString("base64"),
+        payloadB64: responsePayload.toString("base64"),
+      });
+      expect(JSON.stringify(wireEvent?.payload)).toContain("\"fieldNumber\":14");
+      expect(detail.rawPayloads).toHaveLength(0);
+      expect(countRows(dbPath, "raw_payload")).toBe(0);
+      expect(countRows(dbPath, "stream_chunk_capture")).toBe(2);
     } finally {
       store.close();
     }

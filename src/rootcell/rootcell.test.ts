@@ -146,6 +146,15 @@ describe("rootcell extension registry", () => {
     expect(claudeCode?.guestHooks.firewallNixos).toEqual(expect.schemaMatching(EmptyStringArraySchema));
     expect(claudeCode?.hostCommands).toEqual(expect.schemaMatching(EmptyStringArraySchema));
   });
+
+  test("registers Cursor CLI package install hook", () => {
+    const cursor = ROOTCELL_EXTENSIONS.find((extension) => extension.id === "cursor-cli");
+
+    expect(cursor?.guestHooks.homeManager).toEqual(["extensions/cursor-cli/home-manager.nix"]);
+    expect(cursor?.guestHooks.agentNixos).toEqual(expect.schemaMatching(EmptyStringArraySchema));
+    expect(cursor?.guestHooks.firewallNixos).toEqual(expect.schemaMatching(EmptyStringArraySchema));
+    expect(cursor?.hostCommands).toEqual(expect.schemaMatching(EmptyStringArraySchema));
+  });
 });
 
 describe("rootcell argument parsing", () => {
@@ -605,6 +614,7 @@ describe("rootcell extension config", () => {
       "",
       "pi-subagents=true",
       "claude-code=false",
+      "cursor-cli=false",
       "pi-plannotator=false",
       "",
     ].join("\n"));
@@ -616,16 +626,17 @@ describe("rootcell extension config", () => {
       const path = join(repo, "extensions.txt");
       const seeded = ensureExtensionsConfig(path);
       expect(formatExtensionsList(seeded)).toContain("claude-code     disabled");
+      expect(formatExtensionsList(seeded)).toContain("cursor-cli      disabled");
       expect(formatExtensionsList(seeded)).toContain("pi-plannotator  disabled");
-      expect(readFileSync(path, "utf8")).toBe("claude-code=false\npi-plannotator=false\npi-subagents=false\n");
+      expect(readFileSync(path, "utf8")).toBe("claude-code=false\ncursor-cli=false\npi-plannotator=false\npi-subagents=false\n");
 
       const enabled = setExtensionEnabled(path, "pi-subagents", true);
       expect(enabled.changed).toBe(true);
-      expect(readFileSync(path, "utf8")).toBe("claude-code=false\npi-plannotator=false\npi-subagents=true\n");
+      expect(readFileSync(path, "utf8")).toBe("claude-code=false\ncursor-cli=false\npi-plannotator=false\npi-subagents=true\n");
 
       const enabledAgain = setExtensionEnabled(path, "pi-subagents", true);
       expect(enabledAgain.changed).toBe(false);
-      expect(readFileSync(path, "utf8")).toBe("claude-code=false\npi-plannotator=false\npi-subagents=true\n");
+      expect(readFileSync(path, "utf8")).toBe("claude-code=false\ncursor-cli=false\npi-plannotator=false\npi-subagents=true\n");
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }
@@ -633,7 +644,7 @@ describe("rootcell extension config", () => {
 
   test("migrates legacy Pi extension ids in extensions.txt", () => {
     const rendered = renderExtensionsConfig(parseExtensionsConfig("plannotator=true\nsubagent=false\n"));
-    expect(rendered).toBe("pi-plannotator=true\npi-subagents=false\nclaude-code=false\n");
+    expect(rendered).toBe("pi-plannotator=true\npi-subagents=false\nclaude-code=false\ncursor-cli=false\n");
     expect(() => parseExtensionsConfig("plannotator=true\npi-plannotator=false\n")).toThrow("duplicate extension key");
   });
 });
@@ -652,8 +663,9 @@ describe("rootcell extension Nix hooks", () => {
   });
 
   test("renders enabled Home Manager extension imports", () => {
-    const rendered = renderExtensionNixAggregator(parseExtensionsConfig("claude-code=true\npi-subagents=true\npi-plannotator=true\n"), "homeManager");
+    const rendered = renderExtensionNixAggregator(parseExtensionsConfig("claude-code=true\ncursor-cli=true\npi-subagents=true\npi-plannotator=true\n"), "homeManager");
     expect(rendered).toContain("../extensions/claude-code/home-manager.nix");
+    expect(rendered).toContain("../extensions/cursor-cli/home-manager.nix");
     expect(rendered).toContain("../extensions/pi-subagents/home-manager.nix");
     expect(rendered).toContain("../extensions/pi-plannotator/home-manager.nix");
     expect(renderExtensionNixAggregator(parseExtensionsConfig("pi-subagents=true\n"), "agentNixos")).not.toContain("../extensions/pi-subagents");
@@ -2415,7 +2427,7 @@ describe("rootcell edit command", () => {
 
       expect(status).toBe(0);
       expect(readFileSync(record, "utf8").trim()).toBe(join(repo, ".state", "dev", "extensions.txt"));
-      expect(readFileSync(join(repo, ".state", "dev", "extensions.txt"), "utf8")).toBe("claude-code=false\npi-plannotator=false\npi-subagents=false\n");
+      expect(readFileSync(join(repo, ".state", "dev", "extensions.txt"), "utf8")).toBe("claude-code=false\ncursor-cli=false\npi-plannotator=false\npi-subagents=false\n");
     } finally {
       restoreEnv("ROOTCELL_STATE_DIR", oldRootcellStateDir);
       restoreEnv("EDITOR", oldEditor);
@@ -2433,19 +2445,19 @@ describe("rootcell extension command", () => {
       const list = runCapture("./rootcell", ["--instance", "dev", "extension", "list"], { env });
       expect(list.stdout).toContain("pi-plannotator  disabled");
       expect(list.stdout).toContain("pi-subagents    disabled");
-      expect(readFileSync(join(repo, ".state", "dev", "extensions.txt"), "utf8")).toBe("claude-code=false\npi-plannotator=false\npi-subagents=false\n");
+      expect(readFileSync(join(repo, ".state", "dev", "extensions.txt"), "utf8")).toBe("claude-code=false\ncursor-cli=false\npi-plannotator=false\npi-subagents=false\n");
 
       const enable = runCapture("./rootcell", ["--instance", "dev", "extension", "enable", "pi-subagents"], { env });
       expect(enable.stdout).toContain("pi-subagents enabled for instance 'dev'.");
       expect(enable.stdout).toContain("run ./rootcell --instance dev provision to apply VM changes.");
-      expect(readFileSync(join(repo, ".state", "dev", "extensions.txt"), "utf8")).toBe("claude-code=false\npi-plannotator=false\npi-subagents=true\n");
+      expect(readFileSync(join(repo, ".state", "dev", "extensions.txt"), "utf8")).toBe("claude-code=false\ncursor-cli=false\npi-plannotator=false\npi-subagents=true\n");
 
       const enableAgain = runCapture("./rootcell", ["--instance", "dev", "extension", "enable", "pi-subagents"], { env });
       expect(enableAgain.stdout).toContain("pi-subagents already enabled for instance 'dev'.");
 
       const disable = runCapture("./rootcell", ["--instance", "dev", "extension", "disable", "pi-subagents"], { env });
       expect(disable.stdout).toContain("pi-subagents disabled for instance 'dev'.");
-      expect(readFileSync(join(repo, ".state", "dev", "extensions.txt"), "utf8")).toBe("claude-code=false\npi-plannotator=false\npi-subagents=false\n");
+      expect(readFileSync(join(repo, ".state", "dev", "extensions.txt"), "utf8")).toBe("claude-code=false\ncursor-cli=false\npi-plannotator=false\npi-subagents=false\n");
 
       const invalid = runCapture("./rootcell", ["--instance", "dev", "extension", "enable", "missing"], { env, allowFailure: true });
       expect(invalid.status).toBe(2);
@@ -2460,7 +2472,7 @@ describe("rootcell extension command", () => {
     try {
       const env = { ...process.env, ROOTCELL_STATE_DIR: join(repo, ".state") };
       mkdirSync(join(repo, ".state", "dev"), { recursive: true });
-      writeFileSync(join(repo, ".state", "dev", "extensions.txt"), "claude-code=false\npi-plannotator=true\npi-subagents=false\n", "utf8");
+      writeFileSync(join(repo, ".state", "dev", "extensions.txt"), "claude-code=false\ncursor-cli=false\npi-plannotator=true\npi-subagents=false\n", "utf8");
       const calls: string[] = [];
       const extensions = testHostCommandExtensions(async (context, args) => {
         calls.push(`run:${context.instanceName}:${args.join(",")}:${context.extensionConfig.enabled.has("pi-plannotator") ? "enabled" : "disabled"}`);
@@ -2563,7 +2575,7 @@ describe("rootcell extension command", () => {
       expect(contexts).toBe(0);
 
       mkdirSync(join(repo, ".state", "dev"), { recursive: true });
-      writeFileSync(join(repo, ".state", "dev", "extensions.txt"), "claude-code=false\npi-plannotator=true\npi-subagents=false\n", "utf8");
+      writeFileSync(join(repo, ".state", "dev", "extensions.txt"), "claude-code=false\ncursor-cli=false\npi-plannotator=true\npi-subagents=false\n", "utf8");
       logs.length = 0;
       expect(await runExtensionCommand({ ...input, rest: ["missing", "check"] })).toBe(2);
       expect(logs.join("\n")).toContain("unknown extension command or id 'missing'");
@@ -2697,7 +2709,7 @@ describe("shell completions", () => {
       const stateDir = join(repo, ".state");
       const instanceDir = join(stateDir, "dev");
       mkdirSync(instanceDir, { recursive: true });
-      writeFileSync(join(instanceDir, "extensions.txt"), "claude-code=false\npi-plannotator=false\npi-subagents=true\n", "utf8");
+      writeFileSync(join(instanceDir, "extensions.txt"), "claude-code=false\ncursor-cli=false\npi-plannotator=false\npi-subagents=true\n", "utf8");
       const env = completionEnv("/bin/bash");
       env.ROOTCELL_STATE_DIR = stateDir;
       writeSelectedRootcellInstance(repo, "dev", env);
@@ -2757,7 +2769,7 @@ describe("shell completions", () => {
       const env = { ...completionEnv("/bin/bash"), ROOTCELL_STATE_DIR: stateDir };
       const extensions = testHostCommandExtensions();
       mkdirSync(instanceDir, { recursive: true });
-      writeFileSync(join(instanceDir, "extensions.txt"), "claude-code=false\npi-plannotator=true\npi-subagents=false\n", "utf8");
+      writeFileSync(join(instanceDir, "extensions.txt"), "claude-code=false\ncursor-cli=false\npi-plannotator=true\npi-subagents=false\n", "utf8");
 
       const root = completeExtensionCommand({
         repoDir: repo,
@@ -2790,7 +2802,7 @@ describe("shell completions", () => {
       });
       expect(commandArgs).toEqual(["alpha"]);
 
-      writeFileSync(join(instanceDir, "extensions.txt"), "claude-code=false\npi-plannotator=false\npi-subagents=false\n", "utf8");
+      writeFileSync(join(instanceDir, "extensions.txt"), "claude-code=false\ncursor-cli=false\npi-plannotator=false\npi-subagents=false\n", "utf8");
       const disabledRoot = completeExtensionCommand({
         repoDir: repo,
         env,

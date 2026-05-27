@@ -127,6 +127,42 @@ describe("compaction detection", () => {
     expect(assessment.reasons).toContain("prior_history_block_drop");
   });
 
+  test("labels Cursor compaction candidates when captured context shrinks around a summary", () => {
+    const previousBlocks = [
+      requestBlock("previous-system", "harness-system-context", "You are Cursor Agent.", { source: "cursor-request-json", hash: "stable-system" }),
+      requestBlock("previous-tool", "tool-definition", "shell Run commands", { source: "cursor-request-json", hash: "stable-tool" }),
+      requestBlock("previous-history-1", "prior-conversation-history", "First Cursor historical turn. ".repeat(120), { role: "user", source: "cursor-request-message" }),
+      requestBlock("previous-history-2", "prior-conversation-history", "Second Cursor historical turn. ".repeat(120), { role: "assistant", source: "cursor-request-message" }),
+      requestBlock("previous-history-3", "prior-conversation-history", "Third Cursor historical turn. ".repeat(120), { role: "user", source: "cursor-request-message" }),
+      requestBlock("previous-history-4", "prior-conversation-history", "Fourth Cursor historical turn. ".repeat(120), { role: "assistant", source: "cursor-request-message" }),
+      requestBlock("previous-current", "current-user-input", "continue with the task", { role: "user", source: "cursor-request-message" }),
+    ];
+    const currentBlocks = [
+      requestBlock("current-system", "harness-system-context", "You are Cursor Agent.", { source: "cursor-request-json", hash: "stable-system" }),
+      requestBlock("current-tool", "tool-definition", "shell Run commands", { source: "cursor-request-json", hash: "stable-tool" }),
+      requestBlock("current-summary", "prior-conversation-history", "Summary of the conversation so far: the user asked for Cursor CLI spy support.", { role: "user", source: "cursor-request-message" }),
+      requestBlock("current-current", "current-user-input", "continue with the task", { role: "user", source: "cursor-request-message" }),
+    ];
+
+    const assessment = detectCompaction({
+      summary: summary("current-cursor", currentBlocks, { requestByteSize: 5_000, inputTokens: 1_500, provider: "cursor", modelId: "Composer 2.5" }),
+      requestBlocks: currentBlocks,
+      previousSummary: summary("previous-cursor", previousBlocks, { requestByteSize: 22_000, inputTokens: 8_000, provider: "cursor", modelId: "Composer 2.5" }),
+      previousRequestBlocks: previousBlocks,
+    });
+
+    expect(assessment).toMatchObject({
+      status: "candidate",
+      source: "cursor_pattern",
+      confidence: "high",
+      label: "Cursor compaction candidate",
+    });
+    expect(assessment.reasons).toContain("cursor_request_context_profile");
+    expect(assessment.reasons).toContain("stable_request_context");
+    expect(assessment.reasons).toContain("summary_like_history_block");
+    expect(assessment.reasons).toContain("input_token_drop");
+  });
+
   test("labels Pi summarization requests as compaction events without a prior transition", () => {
     const currentBlocks = [
       requestBlock(
@@ -334,16 +370,21 @@ function summaryFromNormalizedCall(call: NormalizedProviderCall): SpyCallSummary
 function summary(
   id: string,
   blocks: readonly NormalizedBlock[],
-  options: { readonly requestByteSize?: number | undefined; readonly inputTokens?: number | undefined } = {},
+  options: {
+    readonly requestByteSize?: number | undefined;
+    readonly inputTokens?: number | undefined;
+    readonly provider?: ProviderCall["provider"] | undefined;
+    readonly modelId?: string | undefined;
+  } = {},
 ): SpyCallSummary {
   const request = requestBlocks(blocks);
   const response = blocks.filter((block) => block.direction === "response");
   return {
     call: {
       id,
-      provider: "bedrock",
+      provider: options.provider ?? "bedrock",
       operation: "converse-stream",
-      model_id: "us.anthropic.claude-sonnet-4-6",
+      model_id: options.modelId ?? "us.anthropic.claude-sonnet-4-6",
       status: "complete",
       started_at: id.startsWith("previous") ? 1 : 2,
       completed_at: id.startsWith("previous") ? 1.5 : 2.5,

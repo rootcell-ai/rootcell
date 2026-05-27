@@ -27,11 +27,13 @@ class MitmproxyAddonTests(unittest.TestCase):
         mitmproxy_addon.logger.disabled = True
         self._allow_https = mitmproxy_addon.ALLOW_HTTPS
         self._https_cache = mitmproxy_addon._https_cache
+        self._agent_spy = mitmproxy_addon.agent_spy
         mitmproxy_addon._https_cache = mitmproxy_addon._HttpsPolicyCache()
 
     def tearDown(self):
         mitmproxy_addon.ALLOW_HTTPS = self._allow_https
         mitmproxy_addon._https_cache = self._https_cache
+        mitmproxy_addon.agent_spy = self._agent_spy
         mitmproxy_addon.ctx.options.connection_strategy = "lazy"
         mitmproxy_addon.logger.disabled = False
 
@@ -140,6 +142,21 @@ class MitmproxyAddonTests(unittest.TestCase):
             self.assertFalse(flow.killed)
         finally:
             os.unlink(path)
+
+    def test_responseheaders_delegates_stream_decision_to_spy(self):
+        calls = []
+
+        class FakeSpy:
+            @staticmethod
+            def prepare_response_stream(flow):
+                calls.append(flow)
+
+        flow = _flow("api2.cursor.sh", "api2.cursor.sh", "POST", "/aiserver.v1.AiService/StreamUnifiedChat")
+        mitmproxy_addon.agent_spy = FakeSpy
+
+        mitmproxy_addon.responseheaders(flow)
+
+        self.assertEqual(calls, [flow])
 
     def test_load_accepts_lazy_connection_strategy(self):
         mitmproxy_addon.ctx.options.connection_strategy = "lazy"

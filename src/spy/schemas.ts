@@ -9,7 +9,7 @@ const CapturedBodyShape = {
   body_encoding: z.enum(["aws-eventstream"]).optional(),
 } as const;
 
-export const ProviderIdSchema = z.enum(["bedrock"]);
+export const ProviderIdSchema = z.enum(["bedrock", "cursor"]);
 
 export type ProviderId = z.infer<typeof ProviderIdSchema>;
 

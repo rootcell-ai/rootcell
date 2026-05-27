@@ -19,6 +19,16 @@ bedrock-runtime.*.amazonaws.com
 # Claude Code binary source used by pinned nixpkgs if the Nix cache misses.
 storage.googleapis.com ^(GET|HEAD) /claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases/2\.1\.141/linux-arm64/claude(?:\?.*)?$
 
+# Cursor Agent CLI binary source used by pinned nixpkgs if the Nix cache misses.
+downloads.cursor.com ^(GET|HEAD) /lab/2026\.05\.07-42ddaca/linux/arm64/agent-cli-package\.tar\.gz(?:\?.*)?$
+# Cursor Agent CLI runtime self-update source.
+downloads.cursor.com ^(GET|HEAD) /lab/2026\.05\.24-dda726e/linux/arm64/agent-cli-package\.tar\.gz(?:\?.*)?$
+
+# Cursor Agent CLI API.
+api.cursor.com
+api.cursor.sh
+*.cursor.sh
+
 # OpenAI Codex / ChatGPT Plus-Pro subscription auth
 auth.openai.com
 chatgpt.com

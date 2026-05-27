@@ -40,6 +40,7 @@ export function detectCompaction(input: RequestTransitionInput): SpyCompactionAs
   const contextStability = stableContext(input.requestBlocks, input.previousRequestBlocks);
   const piProfile = isPiRequestContext(input);
   const claudeCodeProfile = isClaudeCodeRequestContext(input);
+  const cursorProfile = isCursorRequestContext(input);
   const summarizationRequest = detectSummarizationRequest(input.requestBlocks, { claudeCodeProfile });
 
   const evidence = {
@@ -108,6 +109,9 @@ export function detectCompaction(input: RequestTransitionInput): SpyCompactionAs
   if (claudeCodeProfile) {
     reasons.push("claude_code_request_context_profile");
   }
+  if (cursorProfile) {
+    reasons.push("cursor_request_context_profile");
+  }
   if (stable) {
     reasons.push("stable_request_context");
   }
@@ -136,12 +140,16 @@ export function detectCompaction(input: RequestTransitionInput): SpyCompactionAs
     (summaryLikeHistory && (historyByteDrop || requestByteDrop || inputTokenDrop))
       || (historyByteDrop && (historyBlockDrop || requestByteDrop || inputTokenDrop))
   );
-  const heuristicCandidate = !piCandidate && !claudeCodeCandidate && stable && currentInputExists && hasPriorHistory && (
+  const cursorCandidate = !piCandidate && !claudeCodeCandidate && cursorProfile && stable && currentInputExists && hasPriorHistory && (
+    (summaryLikeHistory && (historyByteDrop || requestByteDrop || inputTokenDrop))
+      || (historyByteDrop && (historyBlockDrop || requestByteDrop || inputTokenDrop))
+  );
+  const heuristicCandidate = !piCandidate && !claudeCodeCandidate && !cursorCandidate && stable && currentInputExists && hasPriorHistory && (
     (summaryLikeHistory && historyByteDrop)
       || (historyByteDrop && historyBlockDrop && (requestByteDrop || inputTokenDrop))
   );
 
-  if (!piCandidate && !claudeCodeCandidate && !heuristicCandidate) {
+  if (!piCandidate && !claudeCodeCandidate && !cursorCandidate && !heuristicCandidate) {
     return {
       status: "none",
       source: "none",
@@ -154,16 +162,16 @@ export function detectCompaction(input: RequestTransitionInput): SpyCompactionAs
 
   return {
     status: "candidate",
-    source: piCandidate ? "pi_pattern" : claudeCodeCandidate ? "claude_code_pattern" : "heuristic",
+    source: piCandidate ? "pi_pattern" : claudeCodeCandidate ? "claude_code_pattern" : cursorCandidate ? "cursor_pattern" : "heuristic",
     confidence: candidateConfidence({
-      piCandidate: piCandidate || claudeCodeCandidate,
+      piCandidate: piCandidate || claudeCodeCandidate || cursorCandidate,
       summaryLikeHistory,
       historyByteDrop,
       historyBlockDrop,
       requestByteDrop,
       inputTokenDrop,
     }),
-    label: piCandidate ? "Pi compaction candidate" : claudeCodeCandidate ? "Claude Code compaction candidate" : "Heuristic compaction candidate",
+    label: piCandidate ? "Pi compaction candidate" : claudeCodeCandidate ? "Claude Code compaction candidate" : cursorCandidate ? "Cursor compaction candidate" : "Heuristic compaction candidate",
     reasons,
     evidence,
   };
@@ -312,6 +320,10 @@ function isClaudeCodeRequestContext(input: RequestTransitionInput): boolean {
     return block.kind === "harness-system-context"
       && /\bClaude Code\b|\bofficial CLI for Claude\b|\bAnthropic's official CLI\b/i.test(block.text ?? "");
   });
+}
+
+function isCursorRequestContext(input: RequestTransitionInput): boolean {
+  return input.summary.call.provider === "cursor" || input.requestBlocks.some((block) => block.source.includes("cursor"));
 }
 
 function blockSignature(block: NormalizedBlock): string {

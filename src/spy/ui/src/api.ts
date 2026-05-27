@@ -136,6 +136,9 @@ export function callsUrl(query: CallQuery): string {
   if (query.status !== undefined) {
     params.set("status", query.status);
   }
+  if (query.traffic !== undefined) {
+    params.set("traffic", query.traffic);
+  }
   if (search !== undefined && search.length > 0) {
     params.set("q", search);
     return `/api/search?${params.toString()}`;

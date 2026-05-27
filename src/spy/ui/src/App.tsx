@@ -60,6 +60,7 @@ import type {
 const api = new SpyApiClient();
 const CALL_LIMIT = 100;
 const ALL_FILTER = "all";
+const DEFAULT_TRAFFIC_SCOPE = "conversation";
 const TIMELINE_ROW_ESTIMATE = 138;
 const BLOCK_LIST_VIRTUALIZE_MIN_ITEMS = 24;
 const BLOCK_ROW_ESTIMATE = 230;
@@ -87,8 +88,22 @@ const BLOCK_KIND_OPTIONS: readonly NormalizedBlock["kind"][] = [
 ];
 const PROVIDER_OPTIONS = [
   { value: "bedrock", label: "Bedrock" },
+  { value: "cursor", label: "Cursor" },
 ] as const;
 const OPERATION_OPTIONS = [
+  { value: "agent", label: "Agent" },
+  { value: "Run", label: "Cursor Run" },
+  { value: "RunSSE", label: "Cursor Run SSE" },
+  { value: "StreamUnifiedChat", label: "Cursor Unified Chat" },
+  { value: "StreamUnifiedChatWithTools", label: "Cursor Chat Tools" },
+  { value: "BidiAppend", label: "Cursor Bidi Append" },
+  { value: "SubmitLogs", label: "Cursor Logs" },
+  { value: "TrackEvents", label: "Cursor Events" },
+  { value: "traces", label: "Cursor Traces" },
+  { value: "GetUserPrivacyMode", label: "Cursor Privacy" },
+  { value: "GetServerConfig", label: "Cursor Config" },
+  { value: "GetManagedSkills", label: "Cursor Skills" },
+  { value: "AvailableModels", label: "Cursor Models" },
   { value: "invoke", label: "Invoke" },
   { value: "invoke-with-response-stream", label: "Invoke Stream" },
   { value: "converse", label: "Converse" },
@@ -159,6 +174,7 @@ export function App(): React.ReactElement {
     operation: ALL_FILTER,
     status: ALL_FILTER,
     blockKind: ALL_FILTER,
+    traffic: DEFAULT_TRAFFIC_SCOPE,
   });
   const [calls, setCalls] = React.useState<readonly SpyCallSummary[]>([]);
   const [nextCursor, setNextCursor] = React.useState<string | undefined>();
@@ -182,7 +198,8 @@ export function App(): React.ReactElement {
     filters.model,
     filters.operation,
     filters.status,
-  ].join("|"), [filters.model, filters.operation, filters.provider, filters.status, search, since]);
+    filters.traffic,
+  ].join("|"), [filters.model, filters.operation, filters.provider, filters.status, filters.traffic, search, since]);
   const previousTimelineContextKey = React.useRef<string | null>(null);
   const previousSelectedCallId = React.useRef<string | undefined>(undefined);
 
@@ -198,6 +215,7 @@ export function App(): React.ReactElement {
         modelId: filterQueryValue(filters.model),
         operation: filterQueryValue(filters.operation),
         status: filterQueryValue(filters.status),
+        traffic: filters.traffic,
         ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
       });
       setCalls((current) => options.append === true ? [...current, ...page.items] : page.items);
@@ -216,7 +234,7 @@ export function App(): React.ReactElement {
       setCallState("error");
       setCallError(error instanceof Error ? error.message : "failed to load calls");
     }
-  }, [filters.model, filters.operation, filters.provider, filters.status, preset, search, since]);
+  }, [filters.model, filters.operation, filters.provider, filters.status, filters.traffic, preset, search, since]);
 
   React.useEffect(() => {
     void loadCalls();
@@ -789,6 +807,16 @@ function TimelineControls(props: {
           <option value="dropped">Dropped</option>
         </Select>
         <Select
+          aria-label="Filter Cursor traffic scope"
+          value={filters.traffic}
+          onChange={(event) => {
+            props.onFilters({ ...filters, traffic: event.target.value === "all" ? "all" : "conversation" });
+          }}
+        >
+          <option value="conversation">Conversation traffic</option>
+          <option value="all">All captured traffic</option>
+        </Select>
+        <Select
           aria-label="Filter by model"
           className="max-w-[210px] flex-1"
           value={filters.model}
@@ -1318,6 +1346,8 @@ function compactionReasonLabel(reason: SpyCompactionReason): string {
       return "Pi request profile";
     case "claude_code_request_context_profile":
       return "Claude Code request profile";
+    case "cursor_request_context_profile":
+      return "Cursor request profile";
     case "summarization_system_prompt":
       return "summary system prompt";
     case "conversation_wrapper_input":
@@ -1417,7 +1447,9 @@ function RequestCompositionPanel(props: {
           <span className="text-right">Tokens</span>
         </div>
         {composition.sections.map((section) => {
-          const tokenCount = tokenCountForSection(props.tokenCounts, "request", section.kind);
+          const tokenCount = section.present ? tokenCountForSection(props.tokenCounts, "request", section.kind) : undefined;
+          const tokenText = section.present ? formatTokenRecord(tokenCount) : "-";
+          const tokenTitle = section.present ? tokenProvenanceLabel(tokenCount) : "section absent";
           return (
             <div key={section.kind} className="grid grid-cols-[minmax(92px,1fr)_42px_46px_42px_48px_52px_54px] items-center gap-1 border-t border-stone-200 px-3 py-2">
               <span className="font-medium leading-4 text-stone-800">{blockKindLabel(section.kind)}</span>
@@ -1428,7 +1460,7 @@ function RequestCompositionPanel(props: {
               <span className="text-right text-stone-600">{formatNumber(section.blockCount)}</span>
               <span className="text-right text-stone-600">{formatNumber(section.charSize)}</span>
               <span className="text-right text-stone-600">{formatBytes(section.byteSize)}</span>
-              <span className="text-right text-stone-600" title={tokenProvenanceLabel(tokenCount)}>{formatTokenRecord(tokenCount)}</span>
+              <span className="text-right text-stone-600" title={tokenTitle}>{tokenText}</span>
             </div>
           );
         })}
@@ -2121,12 +2153,14 @@ function RawPayloadPanel(props: {
 function RawPayloadRow(props: { readonly payload: RawPayloadRecord }): React.ReactElement {
   const [expanded, setExpanded] = React.useState(false);
   const payload = props.payload;
+  const displayText = payload.body_text ?? payload.body_b64;
+  const displayLabel = payload.body_text === undefined ? "Raw provider payload (base64)" : "Raw provider payload";
   return (
     <div className="rounded-md border border-stone-200 bg-stone-50 p-3" data-testid="raw-payload-card">
       <div className="flex items-center gap-2">
         <Badge tone={payload.direction === "request" ? "teal" : "green"}>{payload.direction}</Badge>
         <span className="min-w-0 truncate text-xs text-stone-500">{payload.content_type ?? payload.body_encoding ?? "payload"} · {payload.body_sha256 ?? "no hash"}</span>
-        {payload.body_text === undefined ? null : (
+        {displayText === undefined ? null : (
           <Button
             type="button"
             className="ml-auto"
@@ -2139,19 +2173,21 @@ function RawPayloadRow(props: { readonly payload: RawPayloadRecord }): React.Rea
           </Button>
         )}
       </div>
-      {payload.body_text === undefined ? (
+      {displayText === undefined ? (
         <div className="mt-2 text-xs text-stone-500">base64 payload · {payload.body_b64 === undefined ? "not available" : `${formatNumber(payload.body_b64.length)} encoded chars`}</div>
       ) : expanded ? (
         <div data-testid="raw-payload-body">
           <SelectableTextViewer
-            text={payload.body_text}
+            text={displayText}
             previewChars={RAW_PAYLOAD_PREVIEW_CHARS}
-            fullLabel="Raw provider payload"
+            fullLabel={displayLabel}
             testId="raw-payload-text"
           />
         </div>
       ) : (
-        <div className="mt-2 text-xs text-stone-500">Payload body collapsed.</div>
+        <div className="mt-2 text-xs text-stone-500">
+          {payload.body_text === undefined ? `Base64 payload collapsed · ${formatNumber(payload.body_b64?.length ?? 0)} encoded chars` : "Payload body collapsed."}
+        </div>
       )}
     </div>
   );
@@ -2421,6 +2457,7 @@ function timelineEmptyStateFor(search: string, filters: UiFilters): TimelineEmpt
     && filters.model === ALL_FILTER
     && filters.operation === ALL_FILTER
     && filters.status === ALL_FILTER
+    && filters.traffic === DEFAULT_TRAFFIC_SCOPE
     ? "range"
     : "query";
 }

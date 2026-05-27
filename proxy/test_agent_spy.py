@@ -32,6 +32,7 @@ def eventstream_message(headers, payload):
 def make_flow(
     flow_id="flow-1",
     host="bedrock-runtime.us-east-1.amazonaws.com",
+    method="POST",
     path="/model/anthropic.claude/converse-stream",
     request_headers=None,
     request_body=b'{"messages":[]}',
@@ -42,7 +43,7 @@ def make_flow(
     request = types.SimpleNamespace(
         pretty_host=host,
         host=host,
-        method="POST",
+        method=method,
         path=path,
         headers=request_headers
         or [
@@ -96,6 +97,84 @@ class AgentSpyDetectionTests(unittest.TestCase):
                 "/model/anthropic.claude/invoke",
             )
         )
+
+    def test_detects_cursor_agent_api_paths(self):
+        info = agent_spy.detect_cursor_request(
+            "api2.cursor.sh",
+            "/aiserver.v1.AiService/StreamUnifiedChat",
+            "POST",
+            b'{"model":"Composer 2.5","prompt":"hello"}',
+        )
+        self.assertIsNotNone(info)
+        self.assertEqual(info["provider"], "cursor")
+        self.assertEqual(info["operation"], "StreamUnifiedChat")
+        self.assertEqual(info["model_id"], "Composer 2.5")
+
+        run_info = agent_spy.detect_cursor_request(
+            "api2.cursor.sh",
+            "/agent.v1.AgentService/RunSSE",
+            "POST",
+            b'{"model":"composer-2.5-fast","prompt":"hello"}',
+        )
+        self.assertIsNotNone(run_info)
+        self.assertEqual(run_info["provider"], "cursor")
+        self.assertEqual(run_info["operation"], "RunSSE")
+        self.assertEqual(run_info["model_id"], "composer-2.5-fast")
+
+        self.assertIsNone(
+            agent_spy.detect_cursor_request(
+                "downloads.cursor.com",
+                "/lab/2026.05.07-42ddaca/linux/arm64/agent-cli-package.tar.gz",
+                "GET",
+            )
+        )
+        login_info = agent_spy.detect_cursor_request("api.cursor.com", "/auth/login", "POST")
+        self.assertIsNotNone(login_info)
+        self.assertEqual(login_info["operation"], "login")
+
+        analytics_info = agent_spy.detect_cursor_request(
+            "agentn.global.api5.cursor.sh",
+            "/aiserver.v1.AnalyticsService/BootstrapStatsig",
+            "POST",
+        )
+        self.assertIsNotNone(analytics_info)
+        self.assertEqual(analytics_info["operation"], "BootstrapStatsig")
+
+        bidi_info = agent_spy.detect_cursor_request(
+            "api2.cursor.sh",
+            "/aiserver.v1.BidiService/BidiAppend",
+            "POST",
+        )
+        self.assertIsNotNone(bidi_info)
+        self.assertEqual(bidi_info["operation"], "BidiAppend")
+
+        repo_info = agent_spy.detect_cursor_request(
+            "api2.cursor.sh",
+            "/repository.v1.RepositoryService/FastRepoInitHandshakeV2",
+            "POST",
+        )
+        self.assertIsNotNone(repo_info)
+        self.assertEqual(repo_info["operation"], "FastRepoInitHandshakeV2")
+
+        get_info = agent_spy.detect_cursor_request(
+            "api2.cursor.sh",
+            "/aiserver.v1.ServerConfigService/GetUsableModels",
+            "GET",
+        )
+        self.assertIsNotNone(get_info)
+        self.assertEqual(get_info["operation"], "GetUsableModels")
+
+    def test_detects_wildcard_cursor_agent_hosts(self):
+        info = agent_spy.detect_cursor_request(
+            "agentn.global.api5.cursor.sh",
+            "/aiserver.v1.AiService/StreamUnifiedChat",
+            "POST",
+            b'{"model":"composer-2.5-fast","prompt":"hello"}',
+        )
+        self.assertIsNotNone(info)
+        self.assertEqual(info["provider"], "cursor")
+        self.assertEqual(info["operation"], "StreamUnifiedChat")
+        self.assertEqual(info["model_id"], "composer-2.5-fast")
 
     def test_redacts_auth_headers(self):
         headers = agent_spy.redact_headers(
@@ -200,6 +279,109 @@ class AgentSpySpoolShimTests(unittest.TestCase):
         self.write_config(enabled=True)
         agent_spy.capture_request(make_flow(host="api.anthropic.com"))
         self.assertEqual(self.read_events(), [])
+
+    def test_cursor_request_spool_event_shape_and_redaction(self):
+        self.write_config(enabled=True)
+        flow = make_flow(
+            host="api2.cursor.sh",
+            path="/aiserver.v1.AiService/StreamUnifiedChat?signature=secret&ok=1",
+            request_headers=[
+                ("Content-Type", "application/json"),
+                ("Authorization", "Bearer cursor-secret"),
+                ("X-Cursor-Client-Version", "fixture"),
+            ],
+            request_body=b'{"model":"Composer 2.5","prompt":"RCSPY-CURSOR-ALPHA"}',
+        )
+
+        agent_spy.capture_request(flow)
+
+        events = self.read_events()
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(event["provider"], "cursor")
+        self.assertEqual(event["operation"], "StreamUnifiedChat")
+        self.assertEqual(event["model_id"], "Composer 2.5")
+        self.assertIn("ok=1", event["path"])
+        self.assertNotIn("secret", event["path"])
+        self.assertEqual(
+            [pair for pair in event["headers"] if pair[0].lower() == "authorization"],
+            [["Authorization", "[redacted]"]],
+        )
+        self.assertNotIn("body_text", event)
+        self.assertEqual(
+            json.loads(base64.b64decode(event["body_b64"]).decode("utf-8"))["prompt"],
+            "RCSPY-CURSOR-ALPHA",
+        )
+        self.assertEqual(event["body_sha256"], agent_spy._sha256_bytes(flow.request.raw_content))
+        self.assertEqual(flow.metadata["agent_spy"]["provider"], "cursor")
+
+    def test_cursor_get_request_spools_empty_raw_body(self):
+        self.write_config(enabled=True)
+        flow = make_flow(
+            host="api2.cursor.sh",
+            method="GET",
+            path="/aiserver.v1.ServerConfigService/GetUsableModels",
+            request_body=b"",
+        )
+
+        agent_spy.capture_request(flow)
+
+        events = self.read_events()
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(event["provider"], "cursor")
+        self.assertEqual(event["operation"], "GetUsableModels")
+        self.assertEqual(event["body_b64"], "")
+        self.assertEqual(event["body_sha256"], agent_spy._sha256_bytes(b""))
+
+    def test_cursor_response_streaming_is_enabled_for_matched_flows(self):
+        flow = make_flow(
+            host="agentn.global.api5.cursor.sh",
+            path="/agent.v1.AgentService/Run",
+            request_headers=[("Content-Type", "application/connect+proto")],
+            request_body=b"\x00composer-2.5-fast\x00RCSPY-CURSOR-ALPHA",
+            response_headers=[("Content-Type", "application/connect+proto")],
+        )
+
+        agent_spy.prepare_response_stream(flow)
+
+        self.assertTrue(callable(flow.response.stream))
+
+    def test_cursor_non_stream_operation_does_not_force_response_streaming(self):
+        flow = make_flow(
+            host="api2.cursor.sh",
+            path="/aiserver.v1.ServerConfigService/GetUsableModels",
+            request_headers=[("Content-Type", "application/connect+proto")],
+            request_body=b"",
+            response_headers=[("Content-Type", "application/json")],
+        )
+
+        agent_spy.prepare_response_stream(flow)
+
+        self.assertFalse(hasattr(flow.response, "stream"))
+
+    def test_cursor_response_stream_callback_spools_chunks_unchanged(self):
+        self.write_config(enabled=True)
+        flow = make_flow(
+            host="agentn.global.api5.cursor.sh",
+            path="/agent.v1.AgentService/RunSSE",
+            request_headers=[("Content-Type", "application/connect+proto")],
+            request_body=b"\x00composer-2.5-fast\x00RCSPY-CURSOR-ALPHA",
+            response_headers=[("Content-Type", "application/connect+proto")],
+        )
+
+        agent_spy.capture_request(flow)
+        agent_spy.prepare_response_stream(flow)
+        returned = flow.response.stream(b"\x00\x00\x00\x00\x05hello")
+
+        self.assertEqual(returned, b"\x00\x00\x00\x00\x05hello")
+        events = self.read_events()
+        chunk = [event for event in events if event["direction"] == "stream-chunk"][0]
+        self.assertEqual(chunk["provider"], "cursor")
+        self.assertEqual(chunk["operation"], "RunSSE")
+        self.assertEqual(chunk["chunk_index"], 0)
+        self.assertEqual(base64.b64decode(chunk["body_b64"]), b"\x00\x00\x00\x00\x05hello")
+        self.assertEqual(chunk["body_sha256"], agent_spy._sha256_bytes(b"\x00\x00\x00\x00\x05hello"))
 
     def test_response_eventstream_is_spooled_as_b64(self):
         self.write_config(enabled=True)

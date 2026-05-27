@@ -24,8 +24,9 @@ import {
   type SpyStore,
   type SpyStoreOptions,
   type SpyStreamEventsOptions,
+  type SpyTrafficScope,
 } from "./store.ts";
-import { ProviderCallStatusSchema } from "./schemas.ts";
+import { ProviderCallStatusSchema, ProviderIdSchema, type ProviderId } from "./schemas.ts";
 import { unavailableTokenRecord } from "./tokens.ts";
 
 const DEFAULT_BIND = "127.0.0.1";
@@ -40,6 +41,8 @@ const DEFAULT_RETENTION_INTERVAL_MS = 15 * 60 * 1000;
 const DEFAULT_INGEST_BATCH_LIMIT = 100;
 const DEFAULT_TOKEN_COUNT_MODE: SpyTokenCountMode = "provider";
 const TOKEN_COUNT_CONCURRENCY = 8;
+const NON_BEDROCK_TOKEN_COUNT_ERROR =
+  "provider token counting is currently available only for Bedrock captures; Cursor request/block token recounting is not implemented";
 
 const ClearRequestSchema = z.object({
   confirm: z.literal(true),
@@ -240,8 +243,11 @@ class SpyHttpService {
       if (detail === null) {
         throw new HttpError(404, "call not found");
       }
-      this.startBackgroundTokenCounts(detail);
-      return jsonResponse(detail);
+      if (detail.summary.call.provider === "bedrock") {
+        this.startBackgroundTokenCounts(detail);
+        return jsonResponse(detail);
+      }
+      return jsonResponse(this.withImmediateUnavailableTokenCounts(detail));
     }
 
     return jsonError(404, "not found");
@@ -323,6 +329,9 @@ class SpyHttpService {
         return cached;
       }
     }
+    if (prepared.provider !== "bedrock") {
+      return unavailableTokenRecord(prepared.base, NON_BEDROCK_TOKEN_COUNT_ERROR);
+    }
     if (this.tokenCounter === undefined) {
       return unavailableTokenRecord(prepared.base, "provider token counting is not configured");
     }
@@ -373,6 +382,23 @@ class SpyHttpService {
         this.backgroundTokenCountKeys.delete(subjectKey(subject));
       }
     });
+  }
+
+  private withImmediateUnavailableTokenCounts(detail: SpyCallDetail): SpyCallDetail {
+    const records: SpyTokenCountRecord[] = [];
+    for (const subject of missingTokenCountSubjects(detail)) {
+      const prepared = this.store.prepareTokenCountSubject(subject);
+      if (prepared !== null && prepared.provider !== "bedrock") {
+        records.push(unavailableTokenRecord(prepared.base, NON_BEDROCK_TOKEN_COUNT_ERROR));
+      }
+    }
+    if (records.length === 0) {
+      return detail;
+    }
+    return {
+      ...detail,
+      tokenCounts: [...detail.tokenCounts, ...records],
+    };
   }
 
   private serveStatic(path: string, requestHeaders: Headers): Response {
@@ -557,28 +583,31 @@ function searchOptions(url: URL): SpySearchCallsOptions {
   };
 }
 
-function callFilters(url: URL): Pick<SpyListCallsOptions, "provider" | "modelId" | "operation" | "status"> {
+function callFilters(url: URL): Pick<SpyListCallsOptions, "provider" | "modelId" | "operation" | "status" | "traffic"> {
   const provider = providerParam(url);
   const modelId = stringParam(url, "model_id");
   const operation = stringParam(url, "operation");
   const status = statusParam(url);
+  const traffic = trafficParam(url);
   return {
     ...(provider === undefined ? {} : { provider }),
     ...(modelId === undefined ? {} : { modelId }),
     ...(operation === undefined ? {} : { operation }),
     ...(status === undefined ? {} : { status }),
+    ...(traffic === undefined ? {} : { traffic }),
   };
 }
 
-function providerParam(url: URL): "bedrock" | undefined {
+function providerParam(url: URL): ProviderId | undefined {
   const value = stringParam(url, "provider");
   if (value === undefined) {
     return undefined;
   }
-  if (value !== "bedrock") {
+  const parsed = ProviderIdSchema.safeParse(value);
+  if (!parsed.success) {
     throw new HttpError(400, "invalid provider");
   }
-  return value;
+  return parsed.data;
 }
 
 function statusParam(url: URL): SpyListCallsOptions["status"] {
@@ -591,6 +620,17 @@ function statusParam(url: URL): SpyListCallsOptions["status"] {
     throw new HttpError(400, "invalid status");
   }
   return parsed.data;
+}
+
+function trafficParam(url: URL): SpyTrafficScope | undefined {
+  const value = stringParam(url, "traffic");
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === "conversation" || value === "all") {
+    return value;
+  }
+  throw new HttpError(400, "invalid traffic scope");
 }
 
 function streamOptions(url: URL): SpyStreamEventsOptions {

@@ -18,7 +18,7 @@ describe("pi-plannotator extension host command", () => {
       const logs: string[] = [];
       let contexts = 0;
       mkdirSync(instanceDir, { recursive: true });
-      writeFileSync(join(instanceDir, "extensions.txt"), "claude-code=false\npi-plannotator=false\npi-subagents=false\n", "utf8");
+      writeFileSync(join(instanceDir, "extensions.txt"), "claude-code=false\ncursor-cli=false\npi-plannotator=false\npi-subagents=false\n", "utf8");
 
       const status = await runExtensionCommand({
         repoDir: repo,
@@ -47,7 +47,7 @@ describe("pi-plannotator extension host command", () => {
       const instanceDir = join(stateDir, "dev");
       const env = { ...process.env, ROOTCELL_STATE_DIR: stateDir };
       mkdirSync(instanceDir, { recursive: true });
-      writeFileSync(join(instanceDir, "extensions.txt"), "claude-code=false\npi-plannotator=true\npi-subagents=false\n", "utf8");
+      writeFileSync(join(instanceDir, "extensions.txt"), "claude-code=false\ncursor-cli=false\npi-plannotator=true\npi-subagents=false\n", "utf8");
 
       expect(completeExtensionCommand({
         repoDir: repo,
@@ -71,7 +71,7 @@ describe("pi-plannotator extension host command", () => {
         current: "",
       })).toEqual([]);
 
-      writeFileSync(join(instanceDir, "extensions.txt"), "claude-code=false\npi-plannotator=false\npi-subagents=false\n", "utf8");
+      writeFileSync(join(instanceDir, "extensions.txt"), "claude-code=false\ncursor-cli=false\npi-plannotator=false\npi-subagents=false\n", "utf8");
       expect(completeExtensionCommand({
         repoDir: repo,
         env,
@@ -210,7 +210,7 @@ function testContext(input: {
   return {
     repoDir: "/repo",
     instanceName: "dev",
-    extensionConfig: parseExtensionsConfig("claude-code=false\npi-plannotator=true\npi-subagents=false\n"),
+    extensionConfig: parseExtensionsConfig("claude-code=false\ncursor-cli=false\npi-plannotator=true\npi-subagents=false\n"),
     config: {} as RootcellConfig,
     log: (message) => input.logs?.push(message),
     vmStatus: input.vmStatus ?? (() => Promise.resolve({ state: "running" })),

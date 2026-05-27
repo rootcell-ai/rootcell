@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Database } from "bun:sqlite";
@@ -6,18 +7,15 @@ import type {
   SpyTokenCountRecord,
   SpyTokenCountSubject,
 } from "./api-contracts.ts";
-import {
-  bedrockCallIdForFlow,
-  normalizeBedrockRequest,
-  normalizeBedrockResponse,
-} from "./bedrock.ts";
 import { detectCompaction } from "./compaction.ts";
 import { applySpyMigrations, currentSpySchemaVersion } from "./migrations.ts";
+import { providerAdapterFor } from "./providers.ts";
 import {
   HttpEventRecordSchema,
   NormalizedBlockSchema,
   ProviderCallSchema,
   RawPayloadRecordSchema,
+  SpoolResponseEventSchema,
   SpoolEventSchema,
   StreamEventSchema,
   UsageRecordSchema,
@@ -47,6 +45,12 @@ const DEFAULT_RETENTION_DAYS = 7;
 const DEFAULT_MAX_BYTES = 6 * 1024 * 1024 * 1024;
 const DEFAULT_QUERY_LIMIT = 100;
 const MAX_QUERY_LIMIT = 500;
+const CURSOR_CONVERSATION_OPERATIONS = [
+  "Run",
+  "RunSSE",
+  "StreamUnifiedChat",
+  "StreamUnifiedChatWithTools",
+] as const;
 const REQUEST_COMPOSITION_SECTION_ORDER: readonly NormalizedBlock["kind"][] = [
   "provider-envelope",
   "harness-system-context",
@@ -169,12 +173,15 @@ export interface SpyProviderCallFilters {
   readonly modelId?: string | undefined;
   readonly operation?: string | undefined;
   readonly status?: ProviderCall["status"] | undefined;
+  readonly traffic?: SpyTrafficScope | undefined;
 }
 
 export interface SpyListCallsOptions extends SpyProviderCallFilters {
   readonly cursor?: string | undefined;
   readonly limit?: number | undefined;
 }
+
+export type SpyTrafficScope = "conversation" | "all";
 
 export interface SpySearchCallsOptions extends SpyProviderCallFilters {
   readonly query: string;
@@ -200,6 +207,7 @@ export interface SpyCallDetail {
 
 export interface SpyPreparedTokenCountSubject {
   readonly subject: SpyTokenCountSubject;
+  readonly provider: ProviderCall["provider"];
   readonly base: TokenRecordBase;
   readonly text: string;
   readonly requestBodyText?: string | undefined;
@@ -262,7 +270,7 @@ type PragmaRow = Readonly<Record<string, number>>;
 
 interface ProviderCallRow {
   readonly id: string;
-  readonly provider: "bedrock";
+  readonly provider: ProviderCall["provider"];
   readonly operation: string;
   readonly model_id: string;
   readonly status: ProviderCall["status"];
@@ -344,6 +352,22 @@ interface RawPayloadRow {
   readonly body_b64: string | null;
   readonly body_sha256: string | null;
   readonly body_encoding: "aws-eventstream" | null;
+}
+
+interface StreamChunkCaptureRow {
+  readonly id: string;
+  readonly call_id: string;
+  readonly flow_id: string;
+  readonly chunk_index: number;
+  readonly observed_at: number;
+  readonly host: string;
+  readonly method: string;
+  readonly path: string;
+  readonly headers_json: string;
+  readonly body_b64: string;
+  readonly body_sha256: string | null;
+  readonly body_encoding: "aws-eventstream" | null;
+  readonly content_type: string | null;
 }
 
 interface TokenCountRow {
@@ -659,6 +683,7 @@ LIMIT ?
       };
       return {
         subject,
+        provider: row.provider,
         base,
         text,
         requestBodyText: this.requestBodyTextForCall(subject.callId),
@@ -682,6 +707,7 @@ LIMIT ?
       };
       return {
         subject,
+        provider: row.provider,
         base,
         text,
         cacheKey: tokenCacheKey(base),
@@ -706,6 +732,7 @@ LIMIT ?
       };
       return {
         subject,
+        provider: row.provider,
         base,
         text,
         cacheKey: tokenCacheKey(base),
@@ -723,6 +750,7 @@ LIMIT ?
     };
     return {
       subject,
+      provider: row.provider,
       base,
       text: subject.text,
       cacheKey: tokenCacheKey(base),
@@ -878,7 +906,9 @@ ON CONFLICT(cache_key) DO UPDATE SET
       } else if (event.direction === "error") {
         this.persistErrorEventUnlocked(event);
       } else {
-        this.persistStreamChunkEventUnlocked(event);
+        if (!this.persistStreamChunkEventUnlocked(event)) {
+          return "deferred";
+        }
       }
     } catch (error) {
       this.recordIngestError(path, error);
@@ -890,7 +920,8 @@ ON CONFLICT(cache_key) DO UPDATE SET
   }
 
   private persistRequestUnlocked(event: SpoolRequestEvent): void {
-    const normalized = normalizeBedrockRequest(event, { storeRaw: this.storeRaw });
+    const adapter = providerAdapterFor(event.provider);
+    const normalized = adapter.normalizeRequest(event, { storeRaw: this.storeRaw });
     const httpEvent = httpEventFromRequest(event, normalized.call.id);
     this.db.transaction(() => {
       this.upsertPendingCall(normalized.call);
@@ -903,17 +934,26 @@ ON CONFLICT(cache_key) DO UPDATE SET
   }
 
   private persistResponseUnlocked(event: SpoolResponseEvent): boolean {
-    const callId = bedrockCallIdForFlow(event.flow_id);
+    const adapter = providerAdapterFor(event.provider);
+    const callId = adapter.callIdForFlow(event.flow_id);
     if (!this.callExists(callId)) {
       return false;
     }
 
-    const normalized = normalizeBedrockResponse(event, { storeRaw: this.storeRaw });
+    const capturedEvent = this.responseEventWithCapturedStreamChunks(event, callId);
+    const normalized = adapter.normalizeResponse(capturedEvent, { storeRaw: this.storeRaw });
     const httpEvent = httpEventFromResponse(event, normalized.call.id);
+    const requestBlocks = normalized.blocks.filter((block) => block.direction === "request");
+    const responseBlocks = normalized.blocks.filter((block) => block.direction === "response");
     this.db.transaction(() => {
       this.updateResponseCall(normalized.call);
       this.replaceHttpEvent(httpEvent);
-      this.replaceBlocks(normalized.call.id, "response", normalized.blocks);
+      if (requestBlocks.length > 0) {
+        const existingRequestBlocks = this.blocksForCall(normalized.call.id, "request")
+          .filter((block) => !isResponseDerivedRequestBlock(block));
+        this.replaceBlocks(normalized.call.id, "request", [...existingRequestBlocks, ...requestBlocks]);
+      }
+      this.replaceBlocks(normalized.call.id, "response", responseBlocks);
       this.replaceUsageRecords(normalized.call.id, normalized.usage);
       this.replaceStreamEvents(normalized.call.id, normalized.streamEvents);
       this.replaceRawPayloads(normalized.call.id, "response", normalized.rawPayloads);
@@ -938,22 +978,31 @@ ON CONFLICT(cache_key) DO UPDATE SET
       this.setMetadata("last_spool_error_at", String(event.ts));
       this.setMetadata("last_spool_error", JSON.stringify(event));
       if (event.flow_id !== undefined) {
-        const callId = bedrockCallIdForFlow(event.flow_id);
-        if (this.callExists(callId)) {
-          this.db.query(`
+        if (event.provider !== undefined) {
+          const callId = providerAdapterFor(event.provider).callIdForFlow(event.flow_id);
+          if (this.callExists(callId)) {
+            this.db.query(`
 UPDATE provider_call
 SET status = 'error',
     completed_at = ?,
     response_flow_id = ?
 WHERE id = ?
 `).run(event.ts, event.flow_id, callId);
+          }
         }
       }
     })();
   }
 
-  private persistStreamChunkEventUnlocked(event: SpoolStreamChunkEvent): void {
+  private persistStreamChunkEventUnlocked(event: SpoolStreamChunkEvent): boolean {
+    const adapter = providerAdapterFor(event.provider);
+    const callId = adapter.callIdForFlow(event.flow_id);
+    if (!this.callExists(callId)) {
+      return false;
+    }
+
     this.db.transaction(() => {
+      this.replaceStreamChunkCapture(event, callId);
       this.incrementCounter("spool_stream_chunk_events", 1);
       this.setMetadata("last_stream_chunk_at", String(event.ts));
       this.setMetadata("last_stream_chunk_event", JSON.stringify({
@@ -962,6 +1011,7 @@ WHERE id = ?
         body_sha256: event.body_sha256,
       }));
     })();
+    return true;
   }
 
   private upsertPendingCall(call: ProviderCall): void {
@@ -997,6 +1047,10 @@ ON CONFLICT(id) DO UPDATE SET
     this.db.query(`
 UPDATE provider_call
 SET status = ?,
+    model_id = CASE
+      WHEN provider_call.model_id IN ('cursor', 'unknown') THEN ?
+      ELSE provider_call.model_id
+    END,
     completed_at = ?,
     status_code = ?,
     response_flow_id = ?,
@@ -1004,6 +1058,7 @@ SET status = ?,
 WHERE id = ?
 `).run(
       call.status,
+      call.model_id,
       call.completed_at ?? null,
       call.status_code ?? null,
       call.response_flow_id ?? null,
@@ -1143,6 +1198,85 @@ INSERT INTO raw_payload (
         payload.body_encoding ?? null,
       );
     }
+  }
+
+  private replaceStreamChunkCapture(event: SpoolStreamChunkEvent, callId: string): void {
+    this.db.query(`
+INSERT INTO stream_chunk_capture (
+  id, call_id, flow_id, chunk_index, observed_at, host, method, path,
+  headers_json, body_b64, body_sha256, body_encoding, content_type
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(call_id, chunk_index) DO UPDATE SET
+  id = excluded.id,
+  flow_id = excluded.flow_id,
+  observed_at = excluded.observed_at,
+  host = excluded.host,
+  method = excluded.method,
+  path = excluded.path,
+  headers_json = excluded.headers_json,
+  body_b64 = excluded.body_b64,
+  body_sha256 = excluded.body_sha256,
+  body_encoding = excluded.body_encoding,
+  content_type = excluded.content_type
+`).run(
+      streamChunkCaptureId(callId, event.chunk_index),
+      callId,
+      event.flow_id,
+      event.chunk_index,
+      event.ts,
+      event.host,
+      event.method,
+      event.path,
+      JSON.stringify(event.headers),
+      event.body_b64,
+      event.body_sha256 ?? null,
+      event.body_encoding ?? null,
+      contentType(event.headers) ?? null,
+    );
+  }
+
+  private responseEventWithCapturedStreamChunks(event: SpoolResponseEvent, callId: string): SpoolResponseEvent {
+    const chunks = this.streamChunksForCall(callId);
+    if (chunks.length === 0) {
+      return event;
+    }
+
+    const buffers: Buffer[] = [];
+    for (const chunk of chunks) {
+      try {
+        buffers.push(Buffer.from(chunk.body_b64, "base64"));
+      } catch {
+        return event;
+      }
+    }
+
+    const body = Buffer.concat(buffers);
+    if (body.length === 0) {
+      return event;
+    }
+
+    const merged: Record<string, unknown> = {
+      ...event,
+      body_b64: body.toString("base64"),
+      body_sha256: sha256Buffer(body),
+    };
+    delete merged.body_text;
+    if (!chunks.every((chunk) => chunk.body_encoding !== null && chunk.body_encoding === chunks[0]?.body_encoding)) {
+      delete merged.body_encoding;
+    } else if (chunks[0]?.body_encoding !== null && chunks[0]?.body_encoding !== undefined) {
+      merged.body_encoding = chunks[0].body_encoding;
+    }
+    return SpoolResponseEventSchema.parse(merged);
+  }
+
+  private streamChunksForCall(callId: string): StreamChunkCaptureRow[] {
+    return this.db.query(`
+SELECT id, call_id, flow_id, chunk_index, observed_at, host, method, path,
+       headers_json, body_b64, body_sha256, body_encoding, content_type
+FROM stream_chunk_capture
+WHERE call_id = ?
+ORDER BY chunk_index ASC, id ASC
+`).all(callId) as StreamChunkCaptureRow[];
   }
 
   private paginatedCallSummaries(rows: readonly ProviderCallRow[], limit: number): SpyPaginatedResult<SpyCallSummary> {
@@ -1858,6 +1992,14 @@ function appendProviderCallFilters(
     conditions.push(`${column("status")} = ?`);
     params.push(options.status);
   }
+  if (options.traffic === "conversation" && options.operation === undefined) {
+    conditions.push(`(${column("provider")} != ? OR ${column("operation")} IN (${placeholders(CURSOR_CONVERSATION_OPERATIONS.length)}))`);
+    params.push("cursor", ...CURSOR_CONVERSATION_OPERATIONS);
+  }
+}
+
+function placeholders(count: number): string {
+  return Array.from({ length: count }, () => "?").join(", ");
 }
 
 function blockSignature(block: NormalizedBlock): string {
@@ -1869,6 +2011,11 @@ function blockSignature(block: NormalizedBlock): string {
     block.source,
     block.provider_path ?? "",
   ].join("\u001f");
+}
+
+function isResponseDerivedRequestBlock(block: NormalizedBlock): boolean {
+  return block.source === "cursor-response-request-context"
+    || block.source === "cursor-response-context-metadata";
 }
 
 function httpEventFromRequest(event: SpoolRequestEvent, callId: string): HttpEventRecord {
@@ -1905,6 +2052,14 @@ function httpEventFromResponse(event: SpoolResponseEvent, callId: string): HttpE
 function contentType(headers: readonly (readonly [string, string])[]): string | undefined {
   const pair = headers.find(([name]) => name.toLowerCase() === "content-type");
   return pair?.[1];
+}
+
+function streamChunkCaptureId(callId: string, chunkIndex: number): string {
+  return `stream-chunk-${callId}-${String(chunkIndex).padStart(6, "0")}`;
+}
+
+function sha256Buffer(buffer: Buffer): string {
+  return createHash("sha256").update(buffer).digest("hex");
 }
 
 function positiveNumber(value: number | undefined, fallback: number): number {

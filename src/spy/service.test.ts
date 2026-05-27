@@ -15,7 +15,7 @@ import {
   SseEventPayloadSchemas,
   type SpyCallDetail,
 } from "./api-contracts.ts";
-import { SpoolEventSchema, type SpoolEvent } from "./schemas.ts";
+import { SpoolEventSchema, SpoolRequestEventSchema, SpoolResponseEventSchema, type SpoolEvent, type SpoolRequestEvent, type SpoolResponseEvent } from "./schemas.ts";
 import { spyServiceConfigFromEnv, startSpyService, type SpyServiceHandle } from "./service.ts";
 import type { BedrockTokenCounter, BedrockTokenCountInput } from "./bedrock-token-count.ts";
 
@@ -124,6 +124,43 @@ function writeSpoolEvents(spoolDir: string, events: readonly SpoolEvent[]): void
   });
 }
 
+function cursorRequest(flowId: string, operation = "StreamUnifiedChat"): SpoolRequestEvent {
+  return SpoolRequestEventSchema.parse({
+    version: 1,
+    ts: 1779497300,
+    direction: "request",
+    flow_id: flowId,
+    provider: "cursor",
+    operation,
+    model_id: "Composer 2.5",
+    host: "api2.cursor.sh",
+    method: "POST",
+    path: `/aiserver.v1.AiService/${operation}`,
+    headers: [["content-type", "application/json"]],
+    body_text: JSON.stringify({ model: "Composer 2.5", prompt: "RCSPY-CURSOR-SERVICE" }),
+  });
+}
+
+function cursorResponse(flowId: string, operation = "StreamUnifiedChat"): SpoolResponseEvent {
+  return SpoolResponseEventSchema.parse({
+    version: 1,
+    ts: 1779497301,
+    direction: "response",
+    flow_id: flowId,
+    provider: "cursor",
+    operation,
+    model_id: "Composer 2.5",
+    host: "api2.cursor.sh",
+    method: "POST",
+    path: `/aiserver.v1.AiService/${operation}`,
+    headers: [["content-type", "application/json"]],
+    status_code: 200,
+    reason: "OK",
+    request_headers: [["content-type", "application/json"]],
+    body_text: JSON.stringify({ result: { text: "cursor-service-ok" } }),
+  });
+}
+
 async function jsonAs<T>(response: Response, schema: ZodType<T>): Promise<T> {
   const parsed: unknown = await response.json();
   return schema.parse(parsed);
@@ -223,6 +260,30 @@ describe("spy web service", () => {
     const unknownOperationResponse = await fetch(`${handle.url}/api/calls?operation=invoke`);
     const unknownOperation = await jsonAs(unknownOperationResponse, SpyCallSummaryPageSchema);
     expect(unknownOperation.items).toHaveLength(0);
+
+    handle.store.persistRequest(cursorRequest("fixture-cursor-service"));
+    expect(handle.store.persistResponse(cursorResponse("fixture-cursor-service"))).toBe(true);
+    handle.store.persistRequest(cursorRequest("fixture-cursor-support", "BidiAppend"));
+    expect(handle.store.persistResponse(cursorResponse("fixture-cursor-support", "BidiAppend"))).toBe(true);
+    const cursorCallsResponse = await fetch(`${handle.url}/api/calls?provider=cursor&model_id=${encodeURIComponent("Composer 2.5")}&status=complete`);
+    const cursorCalls = await jsonAs(cursorCallsResponse, SpyCallSummaryPageSchema);
+    expect(cursorCalls.items).toHaveLength(2);
+    expect(cursorCalls.items[0]?.call.provider).toBe("cursor");
+    const conversationCursorCalls = await jsonAs(
+      await fetch(`${handle.url}/api/calls?provider=cursor&traffic=conversation`),
+      SpyCallSummaryPageSchema,
+    );
+    expect(conversationCursorCalls.items.map((item) => item.call.operation)).toEqual(["StreamUnifiedChat"]);
+    const allCursorCalls = await jsonAs(
+      await fetch(`${handle.url}/api/calls?provider=cursor&traffic=all`),
+      SpyCallSummaryPageSchema,
+    );
+    expect(allCursorCalls.items.map((item) => item.call.operation)).toContain("BidiAppend");
+    const explicitSupportOperation = await jsonAs(
+      await fetch(`${handle.url}/api/calls?provider=cursor&traffic=conversation&operation=BidiAppend`),
+      SpyCallSummaryPageSchema,
+    );
+    expect(explicitSupportOperation.items.map((item) => item.call.operation)).toEqual(["BidiAppend"]);
 
     const filteredSearchResponse = await fetch(`${handle.url}/api/search?q=${encodeURIComponent("Fixture capture")}&since=1779496808&provider=bedrock&model_id=${encodeURIComponent("us.anthropic.claude-sonnet-4-6")}&operation=converse-stream&status=complete&limit=1`);
     const filteredSearch = await jsonAs(filteredSearchResponse, SpyCallSummaryPageSchema);
@@ -389,6 +450,44 @@ describe("spy web service", () => {
       provenance: "unavailable",
       tokens: null,
       error: "provider offline",
+    });
+  });
+
+  test("returns a Cursor-specific unavailable token record without calling Bedrock CountTokens", async () => {
+    const counter = new FakeTokenCounter(77);
+    const { handle } = createTestService({
+      tokenCounter: counter,
+      tokenCountMode: "provider",
+    });
+    handle.store.persistRequest(cursorRequest("fixture-cursor-token-count"));
+    expect(handle.store.persistResponse(cursorResponse("fixture-cursor-token-count"))).toBe(true);
+
+    const callId = "call-cursor-fixture-cursor-token-count";
+    const detail = await jsonAs(await fetch(`${handle.url}/api/calls/${encodeURIComponent(callId)}`), SpyCallDetailSchema);
+    expect(detail.tokenCounts.some((record) =>
+      record.subjectType === "call"
+      && record.direction === "request"
+      && record.provenance === "unavailable"
+      && record.error === "provider token counting is currently available only for Bedrock captures; Cursor request/block token recounting is not implemented"
+    )).toBe(true);
+    expect(detail.tokenCounts.some((record) => record.subjectType === "block" && record.provenance === "unavailable")).toBe(true);
+    expect(counter.inputs).toHaveLength(0);
+
+    const response = await jsonAs(await fetch(`${handle.url}/api/token-count`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        mode: "provider",
+        subjects: [{ type: "call", callId, direction: "request" }],
+      }),
+    }), SpyTokenCountResponseSchema);
+
+    expect(counter.inputs).toHaveLength(0);
+    expect(response.records[0]).toMatchObject({
+      subjectType: "call",
+      provenance: "unavailable",
+      tokens: null,
+      error: "provider token counting is currently available only for Bedrock captures; Cursor request/block token recounting is not implemented",
     });
   });
 

@@ -333,6 +333,11 @@ def request(flow: http.HTTPFlow) -> None:
         agent_spy.capture_request(flow)
 
 
+def responseheaders(flow: http.HTTPFlow) -> None:
+    if agent_spy is not None:
+        agent_spy.prepare_response_stream(flow)
+
+
 def response(flow: http.HTTPFlow) -> None:
     if agent_spy is not None:
         agent_spy.capture_response(flow)
