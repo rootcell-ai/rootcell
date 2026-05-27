@@ -284,6 +284,43 @@ describe("Cursor adapter", () => {
     });
   });
 
+  test("does not promote Cursor compaction summaries as request context", () => {
+    const summary = [
+      "Summary:",
+      "1. Primary Request and Intent:",
+      "The user asked to convert the project to Python.",
+    ].join("\n");
+    const summaryStateFrame = connectFrame(Buffer.from(JSON.stringify({
+      role: "user",
+      content: `[Previous conversation summary]: ${summary}`,
+      providerOptions: { cursor: { isSummary: true } },
+    }), "utf8"), true);
+    const assistantSummaryFrame = connectFrame(Buffer.from(JSON.stringify({
+      role: "assistant",
+      content: [{ type: "text", text: summary }],
+    }), "utf8"), true);
+
+    const normalized = normalizeCursorResponse({
+      ...cursorResponse("fixture-cursor-compaction-summary", {}),
+      model_id: "cursor",
+      headers: [["content-type", "text/event-stream"]],
+      body_text: undefined,
+      body_b64: Buffer.concat([summaryStateFrame, assistantSummaryFrame]).toString("base64"),
+    });
+
+    const requestText = normalized.blocks
+      .filter((block) => block.direction === "request")
+      .map((block) => block.text)
+      .join("\n");
+    const assistantText = normalized.blocks.find((block) => block.kind === "assistant-output")?.text ?? "";
+    expect(requestText).not.toContain("Previous conversation summary");
+    expect(requestText).not.toContain("convert the project to Python");
+    expect(assistantText).toContain("convert the project to Python");
+    expect(normalized.streamEvents.some((event) =>
+      JSON.stringify(event.payload).includes("\"isSummary\":true")
+    )).toBe(true);
+  });
+
   test("persists raw Cursor Connect/protobuf bytes and annotates the known usage envelope", () => {
     const usageMessage = Buffer.concat([
       protoVarintField(1, 10779),

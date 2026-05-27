@@ -1038,6 +1038,9 @@ function collectCursorRequestContextCandidates(values: readonly unknown[]): Requ
     if (!isRecord(value)) {
       return;
     }
+    if (isCursorSummaryMessage(value)) {
+      return;
+    }
 
     const role = stringField(value, "role");
     if (role === "system" || role === "user" || role === "human") {
@@ -1069,6 +1072,15 @@ function collectCursorRequestContextCandidates(values: readonly unknown[]): Requ
   });
 
   return candidates;
+}
+
+function isCursorSummaryMessage(value: Record<string, unknown>): boolean {
+  const providerOptions = value.providerOptions;
+  if (!isRecord(providerOptions)) {
+    return false;
+  }
+  const cursor = providerOptions.cursor;
+  return isRecord(cursor) && cursor.isSummary === true;
 }
 
 function messageTextFromRecord(value: Record<string, unknown>): string | undefined {

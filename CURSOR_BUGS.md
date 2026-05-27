@@ -2,6 +2,74 @@
 
 ## 2026-05-27 - Cursor startup/tool capability capture
 
+### BUG-015 - Cursor `/compress` summary is duplicated as request context
+
+Status: fixed in working tree and verified against the live `jmp` call.
+
+Live evidence:
+
+- Spy call: `call-cursor-d4286793-0c7d-4c6e-88a1-0834257e1b41`
+- The captured `RunSSE` request body was only 43 bytes and contained just a
+  request id frame: `6b08ac2c-5983-4d28-bb66-56987606d33a`.
+- The generated compaction summary appeared once as response output, which is
+  expected, and once as a request-side `prior-conversation-history` block, which
+  was incorrect.
+- The duplicated request-side payload came from a Cursor response-stream message
+  shaped like:
+  `role=user`, `content="[Previous conversation summary]: ..."`,
+  `providerOptions.cursor.isSummary=true`.
+
+Trigger evidence:
+
+- The nearby support call `call-cursor-3379ecbb-ae82-46b7-8c9b-84bc64924739`
+  captured `TrackEvents` JSON with
+  `eventName=cli.slash_command.used`, `command=compress`, and
+  `source=builtin`.
+- The telemetry timestamp was `1779885494915`; the compaction `RunSSE` call
+  started at `1779885495.0277288`, about 113 ms later.
+- The two normal turns before compaction were:
+  - `call-cursor-1a377a65-b69b-4a38-8014-3106d09d72ae` with current user input
+    `Please summarize this repository.`
+  - `call-cursor-8b3fff29-1400-42ba-8426-87c2f4dc84cf` with current user input
+    `Please update this so that it uses Python instead of TypeScript.`
+
+Root cause: Cursor handles `/compress` as a builtin client/control command, not
+as normal current-user model input. The Cursor adapter intentionally mines
+response-stream role messages for echoed request context because Cursor
+`RunSSE` requests are often tiny and server-side context is otherwise hidden.
+For compaction, that heuristic treated Cursor's synthetic summary state message
+as request history for the same call.
+
+Fix: response-stream messages with `providerOptions.cursor.isSummary=true` are
+no longer promoted into request-context blocks. The summary remains available as
+response output and in raw stream events.
+
+Compaction detection notes for future UI work:
+
+- Confirmed Cursor compaction should be detected as a multi-call workflow, not a
+  normal user turn.
+- Strong detection signal: a `TrackEvents` support call with
+  `eventName=cli.slash_command.used`, `command=compress`, `source=builtin`,
+  followed by a nearby `RunSSE` whose stream contains
+  `providerOptions.cursor.isSummary=true`.
+- Fallback/probable signal when telemetry is absent: a `RunSSE` with
+  `isSummary=true`, no `current-user-input` block, summary-shaped assistant
+  output, and request-context conversation metadata.
+- The UI should eventually label this as a compaction/state-transition event
+  such as `/compress triggered conversation compaction`, rather than showing it
+  as a normal prompt/response turn.
+
+Verification:
+
+- Added a regression test for `providerOptions.cursor.isSummary=true`.
+- `bun test src/spy/cursor.test.ts --timeout 10000`
+- `bun run typecheck`
+- `bun run lint`
+- `./rootcell provision`
+- Backfilled `call-cursor-d4286793-0c7d-4c6e-88a1-0834257e1b41` from its saved
+  raw response payload; live store verification reports `requestSummary=0` and
+  `responseSummary=1`.
+
 ### BUG-014 - Cursor protobuf text is mojibake when frames contain UTF-8 strings
 
 Status: fixed in working tree and verified against the saved live raw payload.
