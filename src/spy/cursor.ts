@@ -41,6 +41,8 @@ interface BlockInput {
   readonly providerPath?: string | undefined;
   readonly text?: string | undefined;
   readonly json?: unknown;
+  readonly charSize?: number | undefined;
+  readonly byteSize?: number | undefined;
 }
 
 interface TextCandidate {
@@ -70,6 +72,7 @@ interface ParsedBody {
   readonly modelText?: string | undefined;
   readonly json?: unknown;
   readonly jsonLines: readonly unknown[];
+  readonly proto?: DecodedProtoMessage | undefined;
   readonly connectFrames?: readonly ParsedConnectFrame[] | undefined;
 }
 
@@ -101,6 +104,9 @@ interface DecodedProtoField {
   readonly text?: string | undefined;
   readonly packedVarints?: readonly number[] | undefined;
   readonly nested?: DecodedProtoMessage | undefined;
+  readonly hexDecoded?: DecodedProtoMessage | undefined;
+  readonly hexByteLength?: number | undefined;
+  readonly hexSha256?: string | undefined;
   readonly byteLength?: number | undefined;
 }
 
@@ -117,6 +123,109 @@ interface CursorWireUsageCandidate {
   readonly cacheWriteTokens: number;
   readonly wireInputTokens: number;
 }
+
+interface RequestContextSectionMetadata {
+  readonly key: string;
+  readonly label: string;
+  readonly kind: BlockKind;
+  readonly path: string;
+  readonly frameIndex: number;
+  readonly startOffset?: number | undefined;
+  readonly reportedSize: number;
+}
+
+interface ProtoSource {
+  readonly source: "raw-protobuf" | "connect-frame";
+  readonly message: DecodedProtoMessage;
+  readonly frameIndex?: number | undefined;
+}
+
+interface CursorBidiAppendEnvelope {
+  readonly path: string;
+  readonly requestId?: string | undefined;
+  readonly appendSeqno?: number | undefined;
+  readonly dataHexByteLength: number;
+  readonly dataDecodedByteLength: number;
+  readonly dataSha256: string;
+}
+
+interface CursorSkillEntry {
+  readonly path: string;
+  readonly filePath: string;
+  readonly content: string;
+  readonly description?: string | undefined;
+}
+
+interface CursorProtoUserMessage {
+  readonly path: string;
+  readonly text: string;
+  readonly messageId?: string | undefined;
+}
+
+interface CursorToolCapability {
+  readonly id: number;
+  readonly name: string;
+  readonly path: string;
+  readonly encoding: "varint" | "packed-varint";
+}
+
+const CURSOR_CONTEXT_SECTION_ORDER = [
+  "system_prompt",
+  "rules",
+  "skills",
+  "mcp",
+  "subagents",
+  "tools",
+  "summarized_conversation",
+  "conversation",
+] as const;
+
+const CURSOR_CLIENT_SIDE_TOOL_V2_NAMES = new Map<number, string>([
+  [1, "READ_SEMSEARCH_FILES"],
+  [3, "RIPGREP_SEARCH"],
+  [5, "READ_FILE"],
+  [6, "LIST_DIR"],
+  [7, "EDIT_FILE"],
+  [8, "FILE_SEARCH"],
+  [9, "SEMANTIC_SEARCH_FULL"],
+  [11, "DELETE_FILE"],
+  [12, "REAPPLY"],
+  [15, "RUN_TERMINAL_COMMAND_V2"],
+  [16, "FETCH_RULES"],
+  [18, "WEB_SEARCH"],
+  [19, "MCP"],
+  [23, "SEARCH_SYMBOLS"],
+  [24, "BACKGROUND_COMPOSER_FOLLOWUP"],
+  [25, "KNOWLEDGE_BASE"],
+  [26, "FETCH_PULL_REQUEST"],
+  [27, "DEEP_SEARCH"],
+  [28, "CREATE_DIAGRAM"],
+  [29, "FIX_LINTS"],
+  [30, "READ_LINTS"],
+  [31, "GO_TO_DEFINITION"],
+  [32, "TASK"],
+  [33, "AWAIT_TASK"],
+  [34, "TODO_READ"],
+  [35, "TODO_WRITE"],
+  [38, "EDIT_FILE_V2"],
+  [39, "LIST_DIR_V2"],
+  [40, "READ_FILE_V2"],
+  [41, "RIPGREP_RAW_SEARCH"],
+  [42, "GLOB_FILE_SEARCH"],
+  [43, "CREATE_PLAN"],
+  [44, "LIST_MCP_RESOURCES"],
+  [45, "READ_MCP_RESOURCE"],
+  [46, "READ_PROJECT"],
+  [47, "UPDATE_PROJECT"],
+  [48, "TASK_V2"],
+  [49, "CALL_MCP_TOOL"],
+  [50, "APPLY_AGENT_DIFF"],
+  [51, "ASK_QUESTION"],
+  [52, "SWITCH_MODE"],
+  [53, "GENERATE_IMAGE"],
+  [54, "COMPUTER_USE"],
+  [55, "WRITE_SHELL_STDIN"],
+]);
 
 export function cursorCallIdForFlow(flowId: string): string {
   return stableId("call", "cursor", flowId);
@@ -214,6 +323,8 @@ function normalizeCursorRequestBlocks(
     });
   }
 
+  normalizeRequestProtobuf(body, addBlock, usedPaths);
+
   const bodyText = body.text ?? body.binaryText;
   if (blocks.length === 1 && bodyText !== undefined && bodyText.trim().length > 0) {
     addBlock({
@@ -225,6 +336,317 @@ function normalizeCursorRequestBlocks(
   }
 
   return blocks;
+}
+
+function normalizeRequestProtobuf(
+  body: ParsedBody,
+  addBlock: (input: Omit<BlockInput, "callId" | "direction" | "ordinal">) => void,
+  usedPaths: Set<string>,
+): void {
+  const sources = cursorProtoSources(body);
+  if (sources.length === 0) {
+    return;
+  }
+
+  const seen = new Set<string>();
+  const addUnique = (key: string, input: Omit<BlockInput, "callId" | "direction" | "ordinal">): void => {
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    if (input.providerPath !== undefined) {
+      usedPaths.add(input.providerPath);
+    }
+    addBlock(input);
+  };
+
+  for (const source of sources) {
+    const envelope = cursorBidiAppendEnvelope(source.message);
+    if (envelope !== undefined) {
+      addUnique(`bidi-envelope:${envelope.requestId ?? ""}:${String(envelope.appendSeqno ?? "")}:${envelope.dataSha256}`, {
+        kind: "provider-envelope",
+        source: "cursor-request-protobuf-envelope",
+        providerPath: envelope.path,
+        text: [
+          "Cursor BidiAppend protobuf envelope",
+          envelope.requestId === undefined ? undefined : `requestId=${envelope.requestId}`,
+          envelope.appendSeqno === undefined ? undefined : `appendSeqno=${String(envelope.appendSeqno)}`,
+          `decodedData=${String(envelope.dataDecodedByteLength)} bytes`,
+        ].filter((part): part is string => part !== undefined).join(" "),
+        json: {
+          requestId: envelope.requestId,
+          appendSeqno: envelope.appendSeqno,
+          dataHexByteLength: envelope.dataHexByteLength,
+          dataDecodedByteLength: envelope.dataDecodedByteLength,
+          dataSha256: envelope.dataSha256,
+        },
+      });
+    }
+  }
+
+  for (const message of collectCursorProtoUserMessages(sources)) {
+    addUnique(`user-message:${message.messageId ?? ""}:${message.text}`, {
+      kind: "current-user-input",
+      source: "cursor-request-protobuf-message",
+      providerPath: message.path,
+      role: "user",
+      text: message.text,
+      json: {
+        ...(message.messageId === undefined ? {} : { messageId: message.messageId }),
+      },
+    });
+  }
+
+  for (const skill of collectCursorProtoSkills(sources)) {
+    addUnique(`skill:${skill.filePath}:${sha256(skill.content)}`, {
+      kind: "harness-system-context",
+      source: "cursor-request-protobuf-skill",
+      providerPath: skill.path,
+      role: "skill",
+      text: `${skill.filePath}\n\n${skill.content}`,
+      json: {
+        filePath: skill.filePath,
+        ...(skill.description === undefined ? {} : { description: skill.description }),
+      },
+    });
+  }
+
+  for (const model of collectCursorProtoModels(sources)) {
+    addUnique(`model:${model.model}`, {
+      kind: "provider-envelope",
+      source: "cursor-request-protobuf-model",
+      providerPath: model.path,
+      text: `model: ${model.model}`,
+    });
+  }
+
+  const toolCapabilities = collectCursorToolCapabilities(sources);
+  if (toolCapabilities.length > 0) {
+    const tools = toolCapabilities.map((tool) => ({
+      id: tool.id,
+      name: tool.name,
+      path: tool.path,
+      encoding: tool.encoding,
+    }));
+    addUnique(`tool-capabilities:${tools.map((tool) => `${String(tool.id)}:${tool.path}`).join(",")}`, {
+      kind: "tool-definition",
+      source: "cursor-request-protobuf-tool-enums",
+      providerPath: "$.protobuf.ClientSideToolV2",
+      text: [
+        "Cursor ClientSideToolV2 capabilities:",
+        ...tools.map((tool) => `- ${tool.name} (${String(tool.id)}) at ${tool.path}`),
+      ].join("\n"),
+      json: {
+        enum: "ClientSideToolV2",
+        tools,
+      },
+    });
+  }
+}
+
+function cursorProtoSources(body: ParsedBody): ProtoSource[] {
+  const sources: ProtoSource[] = [];
+  if (body.proto !== undefined) {
+    sources.push({ source: "raw-protobuf", message: body.proto });
+  }
+  for (const frame of body.connectFrames ?? []) {
+    if (frame.proto !== undefined) {
+      sources.push({ source: "connect-frame", message: frame.proto, frameIndex: frame.index });
+    }
+  }
+  return sources;
+}
+
+function cursorBidiAppendEnvelope(message: DecodedProtoMessage): CursorBidiAppendEnvelope | undefined {
+  const dataField = message.fields.find((field) =>
+    field.fieldNumber === 1
+    && field.wireType === 2
+    && field.hexDecoded !== undefined
+    && field.hexByteLength !== undefined
+    && field.hexSha256 !== undefined
+  );
+  if (dataField?.hexDecoded === undefined || dataField.hexByteLength === undefined || dataField.hexSha256 === undefined) {
+    return undefined;
+  }
+
+  const requestIdContainer = message.fields.find((field) => field.fieldNumber === 2 && field.nested !== undefined)?.nested;
+  const requestId = requestIdContainer === undefined ? undefined : directProtoTextField(requestIdContainer, 1);
+  const appendSeqno = directProtoNumberField(message, 3);
+  return {
+    path: message.path,
+    requestId,
+    appendSeqno,
+    dataHexByteLength: dataField.byteLength ?? 0,
+    dataDecodedByteLength: dataField.hexByteLength,
+    dataSha256: dataField.hexSha256,
+  };
+}
+
+function collectCursorProtoUserMessages(sources: readonly ProtoSource[]): CursorProtoUserMessage[] {
+  const messages: CursorProtoUserMessage[] = [];
+  const seen = new Set<string>();
+
+  const visit = (message: DecodedProtoMessage): void => {
+    const text = directProtoTextField(message, 1);
+    const messageId = directProtoTextField(message, 2);
+    const role = directProtoNumberField(message, 4);
+    if (
+      text !== undefined
+      && text.trim().length > 0
+      && role === 1
+      && (messageId === undefined || isUuidLike(messageId))
+      && !looksLikeCursorSkillPath(text)
+      && !looksLikeCursorSkillContent(text)
+    ) {
+      const key = `${messageId ?? ""}:${text}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        messages.push({
+          path: message.path,
+          text,
+          ...(messageId === undefined ? {} : { messageId }),
+        });
+      }
+    }
+
+    for (const child of nestedProtoMessages(message)) {
+      visit(child);
+    }
+  };
+
+  for (const source of sources) {
+    visit(source.message);
+  }
+  return messages;
+}
+
+function collectCursorProtoSkills(sources: readonly ProtoSource[]): CursorSkillEntry[] {
+  const skills: CursorSkillEntry[] = [];
+  const seen = new Set<string>();
+
+  const visit = (message: DecodedProtoMessage): void => {
+    const filePath = directProtoTextField(message, 1);
+    const content = directProtoTextField(message, 2);
+    if (
+      filePath !== undefined
+      && content !== undefined
+      && looksLikeCursorSkillPath(filePath)
+      && looksLikeCursorSkillContent(content)
+    ) {
+      const description = directProtoTextField(message, 3);
+      const key = `${filePath}:${sha256(content)}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        skills.push({
+          path: message.path,
+          filePath,
+          content,
+          ...(description === undefined || description.trim().length === 0 ? {} : { description }),
+        });
+      }
+    }
+
+    for (const child of nestedProtoMessages(message)) {
+      visit(child);
+    }
+  };
+
+  for (const source of sources) {
+    visit(source.message);
+  }
+  return skills;
+}
+
+function collectCursorProtoModels(sources: readonly ProtoSource[]): { readonly path: string; readonly model: string }[] {
+  const models: { readonly path: string; readonly model: string }[] = [];
+  const seen = new Set<string>();
+
+  const visit = (message: DecodedProtoMessage): void => {
+    for (const field of message.fields) {
+      const model = modelIdFromText(field.text);
+      if (model !== undefined && !seen.has(model)) {
+        seen.add(model);
+        models.push({ path: field.path, model });
+      }
+    }
+    for (const child of nestedProtoMessages(message)) {
+      visit(child);
+    }
+  };
+
+  for (const source of sources) {
+    visit(source.message);
+  }
+  return models;
+}
+
+function collectCursorToolCapabilities(sources: readonly ProtoSource[]): CursorToolCapability[] {
+  const capabilities: CursorToolCapability[] = [];
+  const seen = new Set<number>();
+
+  const push = (id: number, path: string, encoding: CursorToolCapability["encoding"]): void => {
+    const name = CURSOR_CLIENT_SIDE_TOOL_V2_NAMES.get(id);
+    if (name === undefined || seen.has(id)) {
+      return;
+    }
+    seen.add(id);
+    capabilities.push({ id, name, path, encoding });
+  };
+
+  const visit = (message: DecodedProtoMessage): void => {
+    for (const field of message.fields) {
+      if (field.fieldNumber === 29 && field.wireType === 0 && typeof field.value === "number") {
+        push(field.value, field.path, "varint");
+      }
+      if (field.fieldNumber === 29 && field.wireType === 2 && plausiblePackedToolIds(field.packedVarints)) {
+        for (const id of field.packedVarints) {
+          push(id, field.path, "packed-varint");
+        }
+      }
+    }
+    for (const child of nestedProtoMessages(message)) {
+      visit(child);
+    }
+  };
+
+  for (const source of sources) {
+    visit(source.message);
+  }
+  return capabilities.sort((left, right) => left.id - right.id);
+}
+
+function plausiblePackedToolIds(values: readonly number[] | undefined): values is readonly number[] {
+  return values !== undefined
+    && values.length > 0
+    && values.length <= CURSOR_CLIENT_SIDE_TOOL_V2_NAMES.size
+    && values.every((value) => CURSOR_CLIENT_SIDE_TOOL_V2_NAMES.has(value));
+}
+
+function nestedProtoMessages(message: DecodedProtoMessage): DecodedProtoMessage[] {
+  const nested: DecodedProtoMessage[] = [];
+  for (const field of message.fields) {
+    nested.push(...nestedProtoMessagesFromField(field));
+  }
+  return nested;
+}
+
+function nestedProtoMessagesFromField(field: DecodedProtoField): DecodedProtoMessage[] {
+  return [
+    ...(field.nested === undefined ? [] : [field.nested]),
+    ...(field.hexDecoded === undefined ? [] : [field.hexDecoded]),
+  ];
+}
+
+function looksLikeCursorSkillPath(value: string): boolean {
+  return /(?:^|\/)\.cursor\/skills(?:-[^/]+)?\/[^/]+\/SKILL\.md$/i.test(value);
+}
+
+function looksLikeCursorSkillContent(value: string): boolean {
+  return /^---\s*\nname:\s*/.test(value) || /^#\s+\S/.test(value);
+}
+
+function isUuidLike(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 }
 
 function normalizeRequestJson(
@@ -351,7 +773,7 @@ function normalizeCursorResponseBody(
   });
 
   const values = structuredValues(body);
-  const requestBlocks = normalizeCursorResponseRequestContext(callId, values);
+  const requestBlocks = normalizeCursorResponseRequestContext(callId, values, body.connectFrames ?? []);
   const textParts = collectCursorResponseText(values);
   if (textParts.length === 0) {
     const bodyText = body.text ?? body.binaryText;
@@ -412,6 +834,7 @@ function normalizeCursorResponseBody(
 function normalizeCursorResponseRequestContext(
   callId: string,
   values: readonly unknown[],
+  frames: readonly ParsedConnectFrame[],
 ): NormalizedBlock[] {
   const candidates = collectCursorRequestContextCandidates(values);
   const blocks: NormalizedBlock[] = [];
@@ -438,7 +861,168 @@ function normalizeCursorResponseRequestContext(
     ordinal += 1;
   }
 
+  for (const metadata of collectCursorRequestContextSectionMetadata(frames)) {
+    if (requestContextMetadataCovered(blocks, metadata)) {
+      continue;
+    }
+    const key = `metadata\n${metadata.key}\n${String(metadata.reportedSize)}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    blocks.push(createBlock({
+      callId,
+      direction: "request",
+      ordinal,
+      kind: metadata.kind,
+      source: "cursor-response-context-metadata",
+      providerPath: metadata.path,
+      text: `Cursor reported ${metadata.label} in request context (${String(metadata.reportedSize)} bytes). Exact section text was not exposed in captured Cursor HTTP payload.`,
+      json: {
+        sectionKey: metadata.key,
+        sectionLabel: metadata.label,
+        reportedCharSize: metadata.reportedSize,
+        reportedByteSize: metadata.reportedSize,
+        frameIndex: metadata.frameIndex,
+        ...(metadata.startOffset === undefined ? {} : { startOffset: metadata.startOffset }),
+      },
+      charSize: metadata.reportedSize,
+      byteSize: metadata.reportedSize,
+    }));
+    ordinal += 1;
+  }
+
   return blocks;
+}
+
+function collectCursorRequestContextSectionMetadata(
+  frames: readonly ParsedConnectFrame[],
+): RequestContextSectionMetadata[] {
+  const byKey = new Map<string, RequestContextSectionMetadata>();
+
+  const visit = (message: DecodedProtoMessage, frameIndex: number): void => {
+    const metadata = cursorRequestContextSectionMetadata(message, frameIndex);
+    if (metadata !== undefined) {
+      const existing = byKey.get(metadata.key);
+      if (
+        existing === undefined
+        || metadata.reportedSize > existing.reportedSize
+        || (metadata.reportedSize === existing.reportedSize && metadata.frameIndex > existing.frameIndex)
+      ) {
+        byKey.set(metadata.key, metadata);
+      }
+    }
+    for (const field of message.fields) {
+      for (const child of nestedProtoMessagesFromField(field)) {
+        visit(child, frameIndex);
+      }
+    }
+  };
+
+  for (const frame of frames) {
+    if (frame.proto !== undefined) {
+      visit(frame.proto, frame.index);
+    }
+  }
+
+  return [...byKey.values()].sort((left, right) =>
+    cursorContextSectionOrder(left.key) - cursorContextSectionOrder(right.key)
+  );
+}
+
+function cursorRequestContextSectionMetadata(
+  message: DecodedProtoMessage,
+  frameIndex: number,
+): RequestContextSectionMetadata | undefined {
+  const key = directProtoTextField(message, 1);
+  const label = directProtoTextField(message, 2);
+  const reportedSize = directProtoNumberField(message, 4);
+  if (key === undefined || label === undefined || reportedSize === undefined || reportedSize <= 0) {
+    return undefined;
+  }
+  const kind = cursorContextSectionKind(key);
+  if (kind === undefined) {
+    return undefined;
+  }
+  const startOffset = directProtoNumberField(message, 3);
+  return {
+    key,
+    label,
+    kind,
+    path: message.path,
+    frameIndex,
+    ...(startOffset === undefined ? {} : { startOffset }),
+    reportedSize,
+  };
+}
+
+function cursorContextSectionKind(key: string): BlockKind | undefined {
+  if (key === "tools") {
+    return "tool-definition";
+  }
+  if (key === "conversation" || key === "summarized_conversation") {
+    return "prior-conversation-history";
+  }
+  if (key === "system_prompt" || key === "rules" || key === "skills" || key === "mcp" || key === "subagents") {
+    return "harness-system-context";
+  }
+  return undefined;
+}
+
+function cursorContextSectionOrder(key: string): number {
+  const index = CURSOR_CONTEXT_SECTION_ORDER.indexOf(key as (typeof CURSOR_CONTEXT_SECTION_ORDER)[number]);
+  return index === -1 ? CURSOR_CONTEXT_SECTION_ORDER.length : index;
+}
+
+function requestContextMetadataCovered(
+  blocks: readonly NormalizedBlock[],
+  metadata: RequestContextSectionMetadata,
+): boolean {
+  if (metadata.key === "tools") {
+    return blocks.some((block) => block.kind === "tool-definition");
+  }
+  if (metadata.key === "conversation" || metadata.key === "summarized_conversation") {
+    return blocks.some((block) => block.kind === "prior-conversation-history");
+  }
+  if (metadata.key === "system_prompt") {
+    return blocks.some((block) => block.kind === "harness-system-context" && block.role === "system");
+  }
+
+  const pattern = cursorContextSectionCoveragePattern(metadata.key);
+  if (pattern !== undefined) {
+    return blocks.some((block) =>
+      block.kind === "harness-system-context"
+      && block.text !== undefined
+      && pattern.test(block.text)
+    );
+  }
+
+  return blocks.some((block) => block.kind === metadata.kind);
+}
+
+function cursorContextSectionCoveragePattern(key: string): RegExp | undefined {
+  if (key === "rules") {
+    return /<(?:rules|user_rules)\b/i;
+  }
+  if (key === "skills") {
+    return /<(?:agent_skills|available_skills|agent_skill)\b/i;
+  }
+  if (key === "mcp") {
+    return /<mcp\b/i;
+  }
+  if (key === "subagents") {
+    return /subagent/i;
+  }
+  return undefined;
+}
+
+function directProtoTextField(message: DecodedProtoMessage, fieldNumber: number): string | undefined {
+  return message.fields.find((field) => field.fieldNumber === fieldNumber && typeof field.text === "string")?.text;
+}
+
+function directProtoNumberField(message: DecodedProtoMessage, fieldNumber: number): number | undefined {
+  const value = message.fields.find((field) => field.fieldNumber === fieldNumber && typeof field.value === "number")?.value;
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function collectCursorRequestContextCandidates(values: readonly unknown[]): RequestContextCandidate[] {
@@ -807,6 +1391,10 @@ function parseCapturedBody(event: {
       if (framed !== undefined) {
         return framed;
       }
+      const proto = parseRawProtoBody(event.body_b64);
+      if (proto !== undefined) {
+        return proto;
+      }
       return { jsonLines: [] };
     }
     return { text, jsonLines };
@@ -815,6 +1403,10 @@ function parseCapturedBody(event: {
   const framed = parseConnectEnvelope(event.body_b64, event.direction);
   if (framed !== undefined) {
     return framed;
+  }
+  const proto = parseRawProtoBody(event.body_b64);
+  if (proto !== undefined) {
+    return proto;
   }
   const binaryText = extractUsefulPrintableStrings(event.body_b64);
   return { binaryText, jsonLines: [] };
@@ -876,13 +1468,21 @@ function parseConnectEnvelope(value: string | undefined, direction: string | und
     const compressed = (flags & 1) === 1;
     const payload = decodeConnectPayload(buffer.subarray(offset, offset + length), compressed);
     offset += length;
+    const proto = decodeProtoMessage(payload, `$frame[${String(index)}]`);
     const text = decodePayloadText(payload);
-    const jsonValues = text === undefined ? [] : extractJsonValues(text);
+    const textJsonValues = text === undefined ? [] : extractJsonValues(text);
+    const protoJsonValues = proto === undefined ? [] : collectProtoJsonValues(proto);
+    const jsonValues = uniqueJsonValues([...textJsonValues, ...protoJsonValues]);
     if (text !== undefined && modelText === undefined) {
       modelText = modelIdFromText(text);
     }
-    const usefulText = text === undefined ? undefined : cursorSemanticTextFromDecoded(text, direction);
-    const proto = decodeProtoMessage(payload, `$frame[${String(index)}]`);
+    if (proto !== undefined && modelText === undefined) {
+      modelText = collectProtoTextFields(proto).find((field) => modelIdFromText(field.text) !== undefined)?.text;
+    }
+    const usefulText = joinOptionalText([
+      text === undefined ? undefined : cursorSemanticTextFromDecoded(text, direction),
+      proto === undefined ? undefined : cursorSemanticTextFromProto(proto, direction),
+    ]);
     const frameEnd = offset;
     const frameBytes = buffer.subarray(frameOffset, frameEnd);
     frames.push({
@@ -913,6 +1513,68 @@ function parseConnectEnvelope(value: string | undefined, direction: string | und
     ...(modelText === undefined ? {} : { modelText }),
     connectFrames: frames,
   };
+}
+
+function parseRawProtoBody(value: string | undefined): ParsedBody | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  let buffer: Buffer;
+  try {
+    buffer = Buffer.from(value, "base64");
+  } catch {
+    return undefined;
+  }
+  const proto = decodeProtoMessage(buffer, "$protobuf");
+  if (proto === undefined) {
+    return undefined;
+  }
+  const jsonLines = collectProtoJsonValues(proto);
+  const modelText = collectProtoTextFields(proto).find((field) => modelIdFromText(field.text) !== undefined)?.text;
+  const binaryTextParts = uniqueStrings(collectProtoTextFields(proto)
+    .map((field) => field.text)
+    .filter(isUsefulCursorSemanticText));
+  return {
+    jsonLines,
+    ...(binaryTextParts.length === 0 ? {} : { binaryText: joinTextParts(binaryTextParts) }),
+    ...(modelText === undefined ? {} : { modelText }),
+    proto,
+  };
+}
+
+function collectProtoJsonValues(message: DecodedProtoMessage): unknown[] {
+  const values: unknown[] = [];
+  for (const field of collectProtoTextFields(message)) {
+    const trimmed = field.text.trim();
+    const parsed = trimmed.startsWith("{") ? parseJson(trimmed) : { ok: false as const };
+    if (parsed.ok) {
+      values.push(parsed.value);
+      continue;
+    }
+    if (/^data:\s*[{[]/m.test(trimmed)) {
+      values.push(...parseJsonLinesOrSse(trimmed));
+    }
+  }
+  return values;
+}
+
+function collectProtoTextFields(message: DecodedProtoMessage): { readonly path: string; readonly text: string }[] {
+  const fields: { readonly path: string; readonly text: string }[] = [];
+  const visit = (candidate: DecodedProtoMessage): void => {
+    for (const field of candidate.fields) {
+      if (field.text !== undefined) {
+        fields.push({ path: field.path, text: field.text });
+      }
+      if (field.nested !== undefined) {
+        visit(field.nested);
+      }
+      if (field.hexDecoded !== undefined) {
+        visit(field.hexDecoded);
+      }
+    }
+  };
+  visit(message);
+  return fields;
 }
 
 function decodeProtoMessage(buffer: Buffer, path: string, depth = 0): DecodedProtoMessage | undefined {
@@ -975,6 +1637,8 @@ function decodeProtoMessage(buffer: Buffer, path: string, depth = 0): DecodedPro
       offset += byteLength;
       const text = protoString(bytes);
       const nested = decodeProtoMessage(bytes, fieldPath, depth + 1);
+      const hexBytes = protoHexBytes(bytes);
+      const hexDecoded = hexBytes === undefined ? undefined : decodeProtoMessage(hexBytes, `${fieldPath}[hex]`, depth + 1);
       const packedVarints = decodePackedProtoVarints(bytes);
       fields.push({
         path: fieldPath,
@@ -984,6 +1648,11 @@ function decodeProtoMessage(buffer: Buffer, path: string, depth = 0): DecodedPro
         ...(text === undefined ? {} : { text }),
         ...(packedVarints === undefined ? {} : { packedVarints }),
         ...(nested === undefined ? {} : { nested }),
+        ...(hexDecoded === undefined || hexBytes === undefined ? {} : {
+          hexDecoded,
+          hexByteLength: hexBytes.length,
+          hexSha256: sha256Buffer(hexBytes),
+        }),
       });
     } else if (wireType === 5) {
       if (offset + 4 > buffer.length) {
@@ -1039,7 +1708,7 @@ function protoNumber(value: bigint): number | string {
 }
 
 function protoString(buffer: Buffer): string | undefined {
-  if (buffer.length === 0 || buffer.length > 64_000) {
+  if (buffer.length === 0 || buffer.length > 128_000) {
     return undefined;
   }
   const text = buffer.toString("utf8");
@@ -1053,7 +1722,22 @@ function protoString(buffer: Buffer): string | undefined {
   if (controlCount > Math.max(1, text.length * 0.05)) {
     return undefined;
   }
-  return text.length === 0 ? undefined : truncateText(text, 4_000);
+  return text.length === 0 ? undefined : text;
+}
+
+function protoHexBytes(buffer: Buffer): Buffer | undefined {
+  if (buffer.length < 16 || buffer.length % 2 !== 0) {
+    return undefined;
+  }
+  for (const byte of buffer) {
+    const isDigit = byte >= 0x30 && byte <= 0x39;
+    const isLowerHex = byte >= 0x61 && byte <= 0x66;
+    const isUpperHex = byte >= 0x41 && byte <= 0x46;
+    if (!isDigit && !isLowerHex && !isUpperHex) {
+      return undefined;
+    }
+  }
+  return Buffer.from(buffer.toString("ascii"), "hex");
 }
 
 function decodePackedProtoVarints(buffer: Buffer): number[] | undefined {
@@ -1093,7 +1777,21 @@ function decodePayloadText(payload: Buffer): string | undefined {
   if (!text.includes("\uFFFD")) {
     return text;
   }
-  return payload.toString("latin1");
+  return undefined;
+}
+
+function uniqueJsonValues(values: readonly unknown[]): unknown[] {
+  const seen = new Set<string>();
+  const unique: unknown[] = [];
+  for (const value of values) {
+    const key = canonicalJson(value);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    unique.push(value);
+  }
+  return unique;
 }
 
 function extractJsonValues(text: string): unknown[] {
@@ -1196,6 +1894,7 @@ function streamEvents(callId: string, observedAt: number, body: ParsedBody): Str
 }
 
 function connectFramePayload(frame: ParsedConnectFrame): unknown {
+  const protoSources = frame.proto === undefined ? [] : [{ source: "connect-frame" as const, message: frame.proto, frameIndex: frame.index }];
   return {
     format: "connect",
     frameIndex: frame.index,
@@ -1210,12 +1909,18 @@ function connectFramePayload(frame: ParsedConnectFrame): unknown {
     ...(frame.jsonValues.length === 0 ? {} : { jsonValues: frame.jsonValues }),
     ...(frame.proto === undefined ? {} : { protobuf: protoPayload(frame.proto) }),
     ...(frame.proto === undefined ? {} : optionalCursorWireUsage(frame.proto)),
+    ...(protoSources.length === 0 ? {} : optionalCursorToolCapabilities(protoSources)),
   };
 }
 
 function optionalCursorWireUsage(message: DecodedProtoMessage): { readonly cursorUsage: readonly CursorWireUsageCandidate[] } | Record<string, never> {
   const usage = collectCursorWireUsageCandidates(message);
   return usage.length === 0 ? {} : { cursorUsage: usage };
+}
+
+function optionalCursorToolCapabilities(sources: readonly ProtoSource[]): { readonly cursorToolCapabilities: readonly CursorToolCapability[] } | Record<string, never> {
+  const capabilities = collectCursorToolCapabilities(sources);
+  return capabilities.length === 0 ? {} : { cursorToolCapabilities: capabilities };
 }
 
 function protoPayload(message: DecodedProtoMessage): unknown {
@@ -1232,6 +1937,11 @@ function protoPayload(message: DecodedProtoMessage): unknown {
       ...(field.packedVarints === undefined ? {} : { packedVarints: field.packedVarints }),
       ...(field.byteLength === undefined ? {} : { byteLength: field.byteLength }),
       ...(field.nested === undefined ? {} : { nested: protoPayload(field.nested) }),
+      ...(field.hexDecoded === undefined ? {} : {
+        hexDecoded: protoPayload(field.hexDecoded),
+        hexByteLength: field.hexByteLength,
+        hexSha256: field.hexSha256,
+      }),
     })),
   };
 }
@@ -1316,8 +2026,8 @@ function collectCursorWireUsageCandidates(message: DecodedProtoMessage): CursorW
     candidates.push(direct);
   }
   for (const field of message.fields) {
-    if (field.nested !== undefined) {
-      candidates.push(...collectCursorWireUsageCandidates(field.nested));
+    for (const child of nestedProtoMessagesFromField(field)) {
+      candidates.push(...collectCursorWireUsageCandidates(child));
     }
   }
   return candidates;
@@ -1439,12 +2149,18 @@ function usageRecordFromUsage(callId: string, index: number, usage: Record<strin
   };
 }
 
-function cursorModelId(existing: string | undefined, body: Pick<ParsedBody, "json" | "jsonLines"> & Partial<Pick<ParsedBody, "text" | "binaryText" | "modelText" | "connectFrames">>): string | undefined {
+function cursorModelId(existing: string | undefined, body: Pick<ParsedBody, "json" | "jsonLines"> & Partial<Pick<ParsedBody, "text" | "binaryText" | "modelText" | "connectFrames" | "proto">>): string | undefined {
   if (existing !== undefined && existing !== "cursor" && existing !== "unknown") {
     return existing;
   }
   for (const value of structuredValues({ ...body, text: undefined })) {
     const model = firstStringDeep(value, ["model", "model_id", "modelName", "modelDisplayName", "selectedModel"]);
+    if (model !== undefined) {
+      return model;
+    }
+  }
+  if (body.proto !== undefined) {
+    const model = collectCursorProtoModels([{ source: "raw-protobuf", message: body.proto }])[0]?.model;
     if (model !== undefined) {
       return model;
     }
@@ -1540,6 +2256,15 @@ function capturedBodyHashMaterial(body: ParsedBody): unknown {
   if (body.jsonLines.length > 0) {
     return body.jsonLines;
   }
+  if (body.proto !== undefined) {
+    return protoPayload(body.proto);
+  }
+  if (body.connectFrames !== undefined) {
+    return body.connectFrames.map((frame) => ({
+      index: frame.index,
+      payloadSha256: frame.payloadSha256,
+    }));
+  }
   return body.text ?? body.binaryText ?? "";
 }
 
@@ -1589,6 +2314,34 @@ function cursorSemanticTextFromDecoded(text: string, direction: string | undefin
     return undefined;
   }
   return usefulPrintableTextFromDecoded(text);
+}
+
+function cursorSemanticTextFromProto(message: DecodedProtoMessage, direction: string | undefined): string | undefined {
+  const exactFieldText = collectProtoTextFields(message)
+    .flatMap((field) => {
+      const trimmed = field.text.trim();
+      const direct = trimmed.startsWith("{") || /^data:\s*[{[]/m.test(trimmed)
+        ? []
+        : [field.text].filter(isUsefulCursorSemanticText);
+      const jsonFields = extractJsonStringFields(field.text, ["text", "result"])
+        .filter(isUsefulCursorSemanticText);
+      return [...direct, ...jsonFields];
+    });
+  if (exactFieldText.length > 0) {
+    return uniqueStrings(exactFieldText).join("\n");
+  }
+  if (direction === "response") {
+    return undefined;
+  }
+  return undefined;
+}
+
+function joinOptionalText(values: readonly (string | undefined)[]): string | undefined {
+  const parts = uniqueStrings(values
+    .filter((value): value is string => value !== undefined)
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0));
+  return parts.length === 0 ? undefined : parts.join("\n");
 }
 
 function extractJsonStringFields(text: string, keys: readonly string[]): string[] {
@@ -1657,7 +2410,9 @@ function uniqueStrings(values: readonly string[]): string[] {
 }
 
 function createBlock(input: BlockInput): NormalizedBlock {
-  const material = input.json === undefined ? input.text ?? "" : canonicalJson(input.json);
+  const material = input.text ?? (input.json === undefined ? "" : canonicalJson(input.json));
+  const charSize = input.charSize ?? material.length;
+  const byteSize = input.byteSize ?? Buffer.byteLength(material, "utf8");
   return {
     id: stableId("block", input.callId, input.direction, String(input.ordinal)),
     call_id: input.callId,
@@ -1665,8 +2420,8 @@ function createBlock(input: BlockInput): NormalizedBlock {
     ordinal: input.ordinal,
     kind: input.kind,
     source: input.source,
-    char_size: material.length,
-    byte_size: Buffer.byteLength(material, "utf8"),
+    char_size: charSize,
+    byte_size: byteSize,
     content_hash: sha256(material),
     cache_marker: false,
     ...(input.role === undefined ? {} : { role: input.role }),

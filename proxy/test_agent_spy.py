@@ -32,6 +32,7 @@ def eventstream_message(headers, payload):
 def make_flow(
     flow_id="flow-1",
     host="bedrock-runtime.us-east-1.amazonaws.com",
+    method="POST",
     path="/model/anthropic.claude/converse-stream",
     request_headers=None,
     request_body=b'{"messages":[]}',
@@ -42,7 +43,7 @@ def make_flow(
     request = types.SimpleNamespace(
         pretty_host=host,
         host=host,
-        method="POST",
+        method=method,
         path=path,
         headers=request_headers
         or [
@@ -127,34 +128,41 @@ class AgentSpyDetectionTests(unittest.TestCase):
                 "GET",
             )
         )
-        self.assertIsNone(
-            agent_spy.detect_cursor_request(
-                "api.cursor.com",
-                "/auth/login",
-                "POST",
-            )
+        login_info = agent_spy.detect_cursor_request("api.cursor.com", "/auth/login", "POST")
+        self.assertIsNotNone(login_info)
+        self.assertEqual(login_info["operation"], "login")
+
+        analytics_info = agent_spy.detect_cursor_request(
+            "agentn.global.api5.cursor.sh",
+            "/aiserver.v1.AnalyticsService/BootstrapStatsig",
+            "POST",
         )
-        self.assertIsNone(
-            agent_spy.detect_cursor_request(
-                "agentn.global.api5.cursor.sh",
-                "/aiserver.v1.AnalyticsService/BootstrapStatsig",
-                "POST",
-            )
+        self.assertIsNotNone(analytics_info)
+        self.assertEqual(analytics_info["operation"], "BootstrapStatsig")
+
+        bidi_info = agent_spy.detect_cursor_request(
+            "api2.cursor.sh",
+            "/aiserver.v1.BidiService/BidiAppend",
+            "POST",
         )
-        self.assertIsNone(
-            agent_spy.detect_cursor_request(
-                "api2.cursor.sh",
-                "/aiserver.v1.BidiService/BidiAppend",
-                "POST",
-            )
+        self.assertIsNotNone(bidi_info)
+        self.assertEqual(bidi_info["operation"], "BidiAppend")
+
+        repo_info = agent_spy.detect_cursor_request(
+            "api2.cursor.sh",
+            "/repository.v1.RepositoryService/FastRepoInitHandshakeV2",
+            "POST",
         )
-        self.assertIsNone(
-            agent_spy.detect_cursor_request(
-                "api2.cursor.sh",
-                "/repository.v1.RepositoryService/FastRepoInitHandshakeV2",
-                "POST",
-            )
+        self.assertIsNotNone(repo_info)
+        self.assertEqual(repo_info["operation"], "FastRepoInitHandshakeV2")
+
+        get_info = agent_spy.detect_cursor_request(
+            "api2.cursor.sh",
+            "/aiserver.v1.ServerConfigService/GetUsableModels",
+            "GET",
         )
+        self.assertIsNotNone(get_info)
+        self.assertEqual(get_info["operation"], "GetUsableModels")
 
     def test_detects_wildcard_cursor_agent_hosts(self):
         info = agent_spy.detect_cursor_request(
@@ -299,8 +307,32 @@ class AgentSpySpoolShimTests(unittest.TestCase):
             [pair for pair in event["headers"] if pair[0].lower() == "authorization"],
             [["Authorization", "[redacted]"]],
         )
-        self.assertEqual(json.loads(event["body_text"])["prompt"], "RCSPY-CURSOR-ALPHA")
+        self.assertNotIn("body_text", event)
+        self.assertEqual(
+            json.loads(base64.b64decode(event["body_b64"]).decode("utf-8"))["prompt"],
+            "RCSPY-CURSOR-ALPHA",
+        )
+        self.assertEqual(event["body_sha256"], agent_spy._sha256_bytes(flow.request.raw_content))
         self.assertEqual(flow.metadata["agent_spy"]["provider"], "cursor")
+
+    def test_cursor_get_request_spools_empty_raw_body(self):
+        self.write_config(enabled=True)
+        flow = make_flow(
+            host="api2.cursor.sh",
+            method="GET",
+            path="/aiserver.v1.ServerConfigService/GetUsableModels",
+            request_body=b"",
+        )
+
+        agent_spy.capture_request(flow)
+
+        events = self.read_events()
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(event["provider"], "cursor")
+        self.assertEqual(event["operation"], "GetUsableModels")
+        self.assertEqual(event["body_b64"], "")
+        self.assertEqual(event["body_sha256"], agent_spy._sha256_bytes(b""))
 
     def test_cursor_response_streaming_is_enabled_for_matched_flows(self):
         flow = make_flow(
@@ -314,6 +346,19 @@ class AgentSpySpoolShimTests(unittest.TestCase):
         agent_spy.prepare_response_stream(flow)
 
         self.assertTrue(callable(flow.response.stream))
+
+    def test_cursor_non_stream_operation_does_not_force_response_streaming(self):
+        flow = make_flow(
+            host="api2.cursor.sh",
+            path="/aiserver.v1.ServerConfigService/GetUsableModels",
+            request_headers=[("Content-Type", "application/connect+proto")],
+            request_body=b"",
+            response_headers=[("Content-Type", "application/json")],
+        )
+
+        agent_spy.prepare_response_stream(flow)
+
+        self.assertFalse(hasattr(flow.response, "stream"))
 
     def test_cursor_response_stream_callback_spools_chunks_unchanged(self):
         self.write_config(enabled=True)

@@ -24,6 +24,7 @@ import {
   type SpyStore,
   type SpyStoreOptions,
   type SpyStreamEventsOptions,
+  type SpyTrafficScope,
 } from "./store.ts";
 import { ProviderCallStatusSchema, ProviderIdSchema, type ProviderId } from "./schemas.ts";
 import { unavailableTokenRecord } from "./tokens.ts";
@@ -582,16 +583,18 @@ function searchOptions(url: URL): SpySearchCallsOptions {
   };
 }
 
-function callFilters(url: URL): Pick<SpyListCallsOptions, "provider" | "modelId" | "operation" | "status"> {
+function callFilters(url: URL): Pick<SpyListCallsOptions, "provider" | "modelId" | "operation" | "status" | "traffic"> {
   const provider = providerParam(url);
   const modelId = stringParam(url, "model_id");
   const operation = stringParam(url, "operation");
   const status = statusParam(url);
+  const traffic = trafficParam(url);
   return {
     ...(provider === undefined ? {} : { provider }),
     ...(modelId === undefined ? {} : { modelId }),
     ...(operation === undefined ? {} : { operation }),
     ...(status === undefined ? {} : { status }),
+    ...(traffic === undefined ? {} : { traffic }),
   };
 }
 
@@ -617,6 +620,17 @@ function statusParam(url: URL): SpyListCallsOptions["status"] {
     throw new HttpError(400, "invalid status");
   }
   return parsed.data;
+}
+
+function trafficParam(url: URL): SpyTrafficScope | undefined {
+  const value = stringParam(url, "traffic");
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === "conversation" || value === "all") {
+    return value;
+  }
+  throw new HttpError(400, "invalid traffic scope");
 }
 
 function streamOptions(url: URL): SpyStreamEventsOptions {

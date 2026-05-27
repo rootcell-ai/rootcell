@@ -1,5 +1,180 @@
 # Cursor Spy Bugs
 
+## 2026-05-27 - Cursor startup/tool capability capture
+
+### BUG-014 - Cursor protobuf text is mojibake when frames contain UTF-8 strings
+
+Status: fixed in working tree and verified against the saved live raw payload.
+
+Live evidence:
+
+- Spy call: `call-cursor-f835ca09-621e-43e2-92dd-169c8e6ee917`
+- The assistant output and tool result blocks showed mojibake such as
+  `â`, `â`, `ââ`, `âº`, `Â·`, and `Cursorâs`.
+- The expected text was normal UTF-8 punctuation and box drawing, for example
+  `Harness ──protobuf──► Server ──internal──► Composer inference`.
+
+Root cause: Cursor Connect/protobuf frames are binary protobuf, not whole-frame
+UTF-8 text. The previous decoder tried whole-frame UTF-8 first, and when that
+failed because protobuf tags/length prefixes are binary, it decoded the entire
+frame as Latin-1 before searching for embedded JSON. That preserved ASCII JSON
+syntax but corrupted every non-ASCII UTF-8 byte sequence inside JSON strings.
+For example, UTF-8 bytes for `──` (`e2 94 80 e2 94 80`) became
+`ââ` after Latin-1 decoding.
+
+Fix: Connect/protobuf frames no longer fall back to Latin-1 whole-frame text.
+The adapter now decodes protobuf length-delimited fields first, then extracts
+JSON/text from those exact UTF-8 string field bytes. Whole-frame text extraction
+is used only when the entire payload is valid UTF-8.
+
+Verification:
+
+- Re-normalizing the saved raw response payload for
+  `call-cursor-f835ca09-621e-43e2-92dd-169c8e6ee917` now reports
+  `containsMojibake=false` and includes
+  `Harness ──protobuf──► Server ──internal──► Composer inference`.
+- After `./rootcell provision`, the existing live call was re-normalized by
+  submitting its saved raw response through the normal spy spool ingest path.
+  The live detail API now reports zero blocks matching `[âÂ]`; assistant output
+  and tool results show `→`, `—`, `──`, `►`, `·`, and `Cursor’s` correctly.
+- A direct live store scan found 17 historical Cursor calls with stale
+  normalized mojibake blocks. Re-submitting those saved raw responses through
+  spool ingest raised the response ingest counter and left zero normalized
+  blocks matching `[âÂ]` in the live SQLite store.
+- Added a regression test that builds a protobuf frame whose JSON string
+  contains `──`, `►`, `—`, `’`, and `·`; the frame as a whole is invalid UTF-8
+  because of protobuf length-prefix bytes, and normalization still returns the
+  correct Unicode text.
+- `bun test src/spy/cursor.test.ts`
+- `bun run typecheck`
+- `bun run lint`
+- `bun run build:spy`
+
+### BUG-013 - Cursor support traffic overwhelms the spy timeline
+
+Status: fixed in working tree and verified live after `./rootcell provision`.
+
+After widening Cursor capture to preserve every Cursor API request, the spy UI
+started showing many support RPCs that are not useful as conversation
+request/response pairs, including `BidiAppend`, `SubmitLogs`, `TrackEvents`,
+`traces`, and privacy/config polling.
+
+Fix: the call list now has a `traffic` scope. The default `conversation`
+scope hides Cursor support RPCs unless the user explicitly selects one of those
+operations. The `all` scope still exposes every captured Cursor request for
+raw protocol investigation.
+
+Verification:
+
+- `traffic=conversation` returned 53 Cursor calls with only `Run` and `RunSSE`.
+- `traffic=all` returned 120 Cursor calls including `BidiAppend`, telemetry,
+  traces, privacy/config polling, and `RunSSE`.
+- `traffic=conversation&operation=BidiAppend` still returned BidiAppend calls,
+  so explicit operation filters can inspect support traffic.
+- `./rootcell provision`
+- `bun run build:spy`
+- `bun run typecheck`
+- `bun run lint`
+
+### BUG-012 - Cursor BidiAppend raw protobuf request data is not promoted
+
+Status: fixed in working tree and verified against the saved post-restart
+capture.
+
+Live evidence:
+
+- Spy call: `call-cursor-99ec2eaf-9b30-499d-b650-936259490d43`
+- The raw `BidiAppend` request body was 334,642 bytes, but request composition
+  only showed the HTTP provider envelope.
+- The outer protobuf field 1 contained an ASCII hex-encoded inner protobuf
+  message. Decoding that inner message exposed the current user prompt,
+  `composer-2.5`, and 12 Cursor skill files from
+  `/home/luser/.cursor/skills-cursor/.../SKILL.md`.
+- A scan of the same capture did not find `ClientSideToolV2` enum capability
+  IDs, but reverse-engineering evidence indicates older/alternate Cursor agent
+  requests may send supported tools as enum IDs instead of JSON schemas.
+
+Fix: Cursor request normalization now decodes raw protobuf bodies, recurses into
+hex-encoded BidiAppend data fields, promotes BidiAppend envelope metadata,
+current-user protobuf messages, Cursor skill file contents, model markers, and
+known `ClientSideToolV2` enum capability lists when present.
+
+Verification:
+
+- Saved live `BidiAppend` request re-normalizes to 16 request blocks and
+  80,327 request bytes: HTTP envelope, decoded BidiAppend envelope, current
+  user input, 12 Cursor skill blocks, and model marker.
+- `bun test src/spy/cursor.test.ts src/spy/store.test.ts`
+- `bun run typecheck`
+- `bun run lint`
+
+### BUG-011 - Cursor setup RPCs may be hidden by capture gating
+
+Status: diagnostic capture widened in working tree and hot-deployed to the live
+firewall.
+
+Live evidence:
+
+- Spy call: `call-cursor-e623f954-fcca-4aec-b7ac-7fb78c1cbd7f`
+- This call was made after restarting Cursor CLI, but the captured `RunSSE`
+  request body was still only 43 bytes.
+- The `RunSSE` response metadata reported `Tool definitions` as 24,509 bytes,
+  but the exact schema text was not present in the captured RunSSE protobuf
+  frames.
+- No separate startup/setup call appeared in the store because the proxy only
+  captured Cursor `Run`, `RunSSE`, and `StreamUnifiedChat` operations.
+
+Diagnostic fix: Cursor detection now captures every request to known Cursor API
+hosts and wildcard `*.cursor.sh` hosts, including startup, auth, analytics,
+config/model, repository, and bidi operations. Cursor request/response bodies
+are stored as base64 plus sha256 so raw protobuf bytes are preserved even when
+they happen to decode as UTF-8.
+
+Live deployment:
+
+- Installed updated `/etc/agent-vm/agent_spy.py` on the `jmp` firewall.
+- Restarted `mitmproxy-explicit.service` and `mitmproxy-transparent.service`.
+- Verified both mitmproxy services are active and the deployed shim checksum
+  matches the local file.
+
+## 2026-05-27 - Cursor protobuf context section metadata
+
+### BUG-010 - Cursor request composition omits protobuf context-section metadata
+
+Status: fixed in working tree and verified against the captured live call payload.
+
+Live evidence:
+
+- Spy call: `call-cursor-70693ea3-5926-41d0-bb0d-a4c778d80e94`
+- Before the fix, the detail API/UI showed only 4 request blocks:
+  - provider envelope
+  - Cursor system prompt
+  - one large harness/rules/skills block
+  - current user input
+- The Cursor response stream also carried protobuf section metadata for hidden
+  or cached request-context sections, including `tools`, `subagents`, and
+  `conversation`, but the normalizer only used JSON-like role messages.
+- Re-normalizing the live raw response with the fixed adapter adds metadata
+  request blocks for:
+  - `Tool definitions`: 24,509 bytes
+  - `Subagent definitions`: 714 bytes
+  - `Conversation`: 3,580 bytes
+- After hot-deploying the rebuilt spy service and backfilling that call, the
+  live detail API/UI reports 7 request blocks and 47 KiB of request context.
+
+Fix: Cursor response normalization now walks decoded protobuf frames for
+request-context section metadata and promotes sections that are not otherwise
+represented by exact captured text. The store also treats these metadata blocks
+as response-derived request blocks so repeated response persistence remains
+idempotent.
+
+Verification:
+
+- `bun test src/spy/cursor.test.ts src/spy/store.test.ts`
+- `bun run typecheck`
+- `bun run lint`
+- `bun run test:spy` with localhost listener permissions
+
 ## 2026-05-26 22:41 EDT - Fresh Cursor UI verification
 
 Fresh real run:

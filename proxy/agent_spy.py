@@ -45,24 +45,7 @@ CURSOR_API_HOSTS = {
     "agentn.global.api5.cursor.sh",
 }
 
-CURSOR_CAPTURE_PATH_RE = re.compile(
-    r"/(?:aiserver|agent|chat|composer|conversation|completion|generate|stream|v\d+/)",
-    re.IGNORECASE,
-)
-
-CURSOR_SKIP_PATH_RE = re.compile(
-    r"/(?:auth|login|logout|telemetry|analytics|metrics|update|download|extension|settings)(?:/|$)",
-    re.IGNORECASE,
-)
-
-CURSOR_SKIP_OPERATION_RE = re.compile(
-    r"(?:AnalyticsService|DashboardService|ServerConfigService|GetUsableModels|AvailableModels|"
-    r"GetDefaultModelForCli|GetCliDownloadUrl|SubmitLogs|TrackEvents|BootstrapStatsig|Statsig|traces|"
-    r"BidiService|BidiAppend)",
-    re.IGNORECASE,
-)
-
-CURSOR_CAPTURE_OPERATION_RE = re.compile(
+CURSOR_STREAM_OPERATION_RE = re.compile(
     r"^(?:Run|RunSSE|StreamUnifiedChat)$",
     re.IGNORECASE,
 )
@@ -238,29 +221,13 @@ def detect_cursor_request(
     method: str | None = None,
     body: bytes | None = None,
 ) -> dict[str, str] | None:
-    """Detect Cursor Agent API calls while excluding auth/update/download noise."""
+    """Detect all Cursor API calls so startup/tool capability traffic is visible."""
 
     if not is_cursor_api_host(host):
         return None
 
-    if method is not None and method.upper() not in {"POST", "PUT", "PATCH"}:
-        return None
-
     url_path = urllib.parse.urlsplit(path).path
-    if CURSOR_SKIP_PATH_RE.search(url_path):
-        return None
-
     operation = _cursor_operation_from_path(url_path)
-    if CURSOR_SKIP_OPERATION_RE.search(url_path) or CURSOR_SKIP_OPERATION_RE.search(operation):
-        return None
-
-    if CURSOR_CAPTURE_OPERATION_RE.match(operation) is None:
-        return None
-
-    normalized_host = host.split(":", 1)[0].strip(".").lower() if host else ""
-    if not normalized_host.endswith(".cursor.sh") and CURSOR_CAPTURE_PATH_RE.search(url_path) is None:
-        return None
-
     return {
         "provider": "cursor",
         "model_id": _cursor_model_id_from_body(body) or "cursor",
@@ -577,11 +544,22 @@ def _flow_id(flow: Any) -> str | None:
     return str(value) if value is not None else None
 
 
-def _attach_body(event: dict[str, Any], body: bytes, *, force_encoding: str | None = None) -> None:
+def _attach_body(
+    event: dict[str, Any],
+    body: bytes,
+    *,
+    force_encoding: str | None = None,
+    force_base64: bool = False,
+) -> None:
     if force_encoding == "aws-eventstream":
         event["body_b64"] = base64.b64encode(body).decode("ascii")
         event["body_sha256"] = _sha256_bytes(body)
         event["body_encoding"] = "aws-eventstream"
+        return
+
+    if force_base64:
+        event["body_b64"] = base64.b64encode(body).decode("ascii")
+        event["body_sha256"] = _sha256_bytes(body)
         return
 
     text = _decode_utf8(body)
@@ -641,7 +619,7 @@ def capture_request(flow: Any) -> None:
 
         event = _event_base(flow, "request", info)
         event["headers"] = redact_headers(getattr(request, "headers", None))
-        _attach_body(event, body)
+        _attach_body(event, body, force_base64=info["provider"] == "cursor")
         _write_spool_event(event, config)
     except Exception as exc:  # pragma: no cover - defensive for live traffic.
         _write_shim_error(flow, str(exc))
@@ -670,7 +648,7 @@ def capture_response(flow: Any) -> None:
         if info["provider"] == "bedrock" and _is_eventstream_content_type(content_type):
             _attach_body(event, body, force_encoding="aws-eventstream")
         else:
-            _attach_body(event, body)
+            _attach_body(event, body, force_base64=info["provider"] == "cursor")
         _write_spool_event(event, config)
     except Exception as exc:  # pragma: no cover - defensive for live traffic.
         _write_shim_error(flow, str(exc))
@@ -710,6 +688,12 @@ def prepare_response_stream(flow: Any) -> None:
         if info is None or response is None:
             return
         if info.get("provider") != "cursor":
+            return
+        content_type = _header_value(getattr(response, "headers", None), "content-type")
+        if (
+            CURSOR_STREAM_OPERATION_RE.match(info.get("operation", "")) is None
+            and _content_type_base(content_type) != "text/event-stream"
+        ):
             return
         def tee_cursor_chunk(chunk: bytes) -> bytes:
             capture_stream_chunk(flow, chunk)

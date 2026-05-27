@@ -79,8 +79,25 @@ function protoVarintField(fieldNumber: number, value: number): Buffer {
   return protoField(fieldNumber, 0, protoVarint(value));
 }
 
+function protoPackedVarintsField(fieldNumber: number, values: readonly number[]): Buffer {
+  return protoMessageField(fieldNumber, Buffer.concat(values.map((value) => protoVarint(value))));
+}
+
 function protoMessageField(fieldNumber: number, message: Buffer): Buffer {
   return protoField(fieldNumber, 2, Buffer.concat([protoVarint(message.length), message]));
+}
+
+function protoStringField(fieldNumber: number, value: string): Buffer {
+  return protoMessageField(fieldNumber, Buffer.from(value, "utf8"));
+}
+
+function cursorContextSectionMetadata(key: string, label: string, startOffset: number, size: number): Buffer {
+  return Buffer.concat([
+    protoStringField(1, key),
+    protoStringField(2, label),
+    protoVarintField(3, startOffset),
+    protoVarintField(4, size),
+  ]);
 }
 
 describe("Cursor adapter", () => {
@@ -342,6 +359,158 @@ describe("Cursor adapter", () => {
         cacheWriteTokens: 0,
         wireInputTokens: 10779,
       }],
+    });
+  });
+
+  test("decodes embedded protobuf JSON as UTF-8 instead of Latin-1 mojibake", () => {
+    const assistantText = [
+      "Harness \u2500\u2500protobuf\u2500\u2500\u25ba Server \u2014 ok",
+      "Apostrophe: Cursor\u2019s agent. Bullet: \u00b7.",
+      "Padding so the protobuf length prefix uses a multi-byte varint and the whole frame is not valid UTF-8.",
+    ].join("\n");
+    const assistantJson = JSON.stringify({
+      role: "assistant",
+      content: [{ type: "text", text: assistantText }],
+    });
+    expect(Buffer.byteLength(assistantJson, "utf8")).toBeGreaterThan(127);
+    const protoPayload = protoStringField(1, assistantJson);
+    expect(protoPayload.toString("utf8")).toContain("\uFFFD");
+
+    const normalized = normalizeCursorResponse({
+      ...cursorResponse("fixture-cursor-protobuf-utf8-json", {}),
+      headers: [["content-type", "application/connect+proto"]],
+      body_text: undefined,
+      body_b64: connectFrame(protoPayload).toString("base64"),
+    });
+
+    const normalizedText = normalized.blocks.find((block) => block.kind === "assistant-output")?.text ?? "";
+    expect(normalizedText).toContain("Harness \u2500\u2500protobuf\u2500\u2500\u25ba Server \u2014 ok");
+    expect(normalizedText).toContain("Cursor\u2019s agent");
+    expect(normalizedText).toContain("Bullet: \u00b7");
+    expect(normalizedText).not.toContain("â");
+    expect(normalizedText).not.toContain("Â");
+    expect(normalized.streamEvents.some((event) => JSON.stringify(event.payload).includes("Harness \u2500\u2500protobuf\u2500\u2500\u25ba Server"))).toBe(true);
+  });
+
+  test("promotes Cursor protobuf request-context section metadata", () => {
+    const sectionEnvelope = Buffer.concat([
+      protoMessageField(3, cursorContextSectionMetadata("tools", "Tool definitions", 5_884, 24_509)),
+      protoMessageField(3, cursorContextSectionMetadata("conversation", "Conversation", 1_029, 3_083)),
+    ]);
+    const normalized = normalizeCursorResponse({
+      ...cursorResponse("fixture-cursor-protobuf-context-sections", {}),
+      headers: [["content-type", "application/connect+proto"]],
+      body_text: undefined,
+      body_b64: connectFrame(sectionEnvelope).toString("base64"),
+    });
+
+    const requestBlocks = normalized.blocks.filter((block) => block.direction === "request");
+    const toolMetadata = requestBlocks.find((block) => block.kind === "tool-definition");
+    expect(toolMetadata).toMatchObject({
+      source: "cursor-response-context-metadata",
+      provider_path: "$frame[0].3",
+      char_size: 24_509,
+      byte_size: 24_509,
+    });
+    expect(toolMetadata?.text).toContain("Tool definitions");
+    expect(toolMetadata?.json).toMatchObject({
+      sectionKey: "tools",
+      reportedByteSize: 24_509,
+    });
+
+    const conversationMetadata = requestBlocks.find((block) => block.kind === "prior-conversation-history");
+    expect(conversationMetadata).toMatchObject({
+      source: "cursor-response-context-metadata",
+      char_size: 3_083,
+      byte_size: 3_083,
+    });
+    expect(conversationMetadata?.text).toContain("Conversation");
+  });
+
+  test("extracts Cursor BidiAppend hex protobuf request context", () => {
+    const userMessage = Buffer.concat([
+      protoStringField(1, "Please inspect the repo and reply with RCSPY-BIDI-OK"),
+      protoStringField(2, "a3e38f7d-f57f-4e25-8c71-fe4bba7353f0"),
+      protoStringField(3, ""),
+      protoVarintField(4, 1),
+    ]);
+    const skillEntry = Buffer.concat([
+      protoStringField(1, "/home/luser/.cursor/skills-cursor/sample/SKILL.md"),
+      protoStringField(2, "---\nname: sample\ndescription: Test skill.\n---\n# Sample Skill\nUse this skill for tests."),
+      protoStringField(3, "Test skill."),
+    ]);
+    const requestContext = Buffer.concat([
+      protoMessageField(1, userMessage),
+      protoMessageField(2, protoMessageField(2, skillEntry)),
+    ]);
+    const innerRequest = protoMessageField(1, Buffer.concat([
+      protoStringField(1, ""),
+      protoMessageField(2, protoMessageField(1, requestContext)),
+      protoMessageField(9, protoStringField(1, "composer-2.5")),
+    ]));
+    const bidiAppend = Buffer.concat([
+      protoStringField(1, innerRequest.toString("hex")),
+      protoMessageField(2, protoStringField(1, "e9cf8f00-34dc-4361-b214-be52cc52f310")),
+      protoVarintField(3, 2),
+    ]);
+
+    const normalized = normalizeCursorRequest({
+      ...cursorRequest("fixture-cursor-bidi-append", {}),
+      operation: "BidiAppend",
+      model_id: "cursor",
+      path: "/aiserver.v1.BidiService/BidiAppend",
+      headers: [["content-type", "application/proto"]],
+      body_text: undefined,
+      body_b64: bidiAppend.toString("base64"),
+    }, { storeRaw: true });
+
+    expect(normalized.call.model_id).toBe("composer-2.5");
+    expect(normalized.rawPayloads).toHaveLength(1);
+    const envelope = normalized.blocks.find((block) => block.source === "cursor-request-protobuf-envelope");
+    expect(envelope?.text).toContain("requestId=e9cf8f00-34dc-4361-b214-be52cc52f310");
+    expect(envelope?.json).toMatchObject({
+      appendSeqno: 2,
+      dataDecodedByteLength: innerRequest.length,
+    });
+    const requestText = normalized.blocks.filter((block) => block.direction === "request").map((block) => block.text).join("\n");
+    expect(requestText).toContain("RCSPY-BIDI-OK");
+    expect(requestText).toContain("/home/luser/.cursor/skills-cursor/sample/SKILL.md");
+    expect(requestText).toContain("# Sample Skill");
+    expect(requestText).toContain("model: composer-2.5");
+  });
+
+  test("surfaces Cursor ClientSideToolV2 enum capabilities when protobuf carries them", () => {
+    const requestProto = Buffer.concat([
+      protoVarintField(29, 5),
+      protoVarintField(29, 6),
+      protoVarintField(29, 15),
+      protoPackedVarintsField(29, [41, 42]),
+    ]);
+
+    const normalized = normalizeCursorRequest({
+      ...cursorRequest("fixture-cursor-tool-enums", {}),
+      model_id: "cursor",
+      headers: [["content-type", "application/proto"]],
+      body_text: undefined,
+      body_b64: requestProto.toString("base64"),
+    });
+
+    const toolBlock = normalized.blocks.find((block) => block.source === "cursor-request-protobuf-tool-enums");
+    expect(toolBlock?.kind).toBe("tool-definition");
+    expect(toolBlock?.text).toContain("READ_FILE (5)");
+    expect(toolBlock?.text).toContain("LIST_DIR (6)");
+    expect(toolBlock?.text).toContain("RUN_TERMINAL_COMMAND_V2 (15)");
+    expect(toolBlock?.text).toContain("RIPGREP_RAW_SEARCH (41)");
+    expect(toolBlock?.text).toContain("GLOB_FILE_SEARCH (42)");
+    expect(toolBlock?.json).toMatchObject({
+      enum: "ClientSideToolV2",
+      tools: [
+        { id: 5, name: "READ_FILE" },
+        { id: 6, name: "LIST_DIR" },
+        { id: 15, name: "RUN_TERMINAL_COMMAND_V2" },
+        { id: 41, name: "RIPGREP_RAW_SEARCH" },
+        { id: 42, name: "GLOB_FILE_SEARCH" },
+      ],
     });
   });
 });

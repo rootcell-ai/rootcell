@@ -56,6 +56,7 @@ describe("spy UI API helpers", () => {
 
   test("builds call list URLs with since and cursors", () => {
     expect(callsUrl({ since: 123, cursor: "next", limit: 25 })).toBe("/api/calls?limit=25&cursor=next&since=123");
+    expect(callsUrl({ since: 123, traffic: "conversation" })).toBe("/api/calls?limit=100&since=123&traffic=conversation");
   });
 
   test("uses search endpoint when query text is present", () => {
@@ -69,12 +70,13 @@ describe("spy UI API helpers", () => {
       modelId: "us.anthropic.claude-sonnet-4-6",
       operation: "converse-stream",
       status: "complete",
+      traffic: "all" as const,
     };
     expect(callsUrl(query)).toBe(
-      "/api/calls?limit=100&since=123&provider=bedrock&model_id=us.anthropic.claude-sonnet-4-6&operation=converse-stream&status=complete",
+      "/api/calls?limit=100&since=123&provider=bedrock&model_id=us.anthropic.claude-sonnet-4-6&operation=converse-stream&status=complete&traffic=all",
     );
     expect(callsUrl({ ...query, search: "fixture capture" })).toBe(
-      "/api/search?limit=100&since=123&provider=bedrock&model_id=us.anthropic.claude-sonnet-4-6&operation=converse-stream&status=complete&q=fixture+capture",
+      "/api/search?limit=100&since=123&provider=bedrock&model_id=us.anthropic.claude-sonnet-4-6&operation=converse-stream&status=complete&traffic=all&q=fixture+capture",
     );
   });
 

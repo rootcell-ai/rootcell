@@ -67,7 +67,10 @@ export interface CallQuery {
   readonly modelId?: string | undefined;
   readonly operation?: string | undefined;
   readonly status?: string | undefined;
+  readonly traffic?: TrafficScope | undefined;
 }
+
+export type TrafficScope = "conversation" | "all";
 
 export interface UiFilters {
   readonly provider: string;
@@ -75,4 +78,5 @@ export interface UiFilters {
   readonly operation: string;
   readonly status: string;
   readonly blockKind: string;
+  readonly traffic: TrafficScope;
 }

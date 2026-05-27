@@ -124,35 +124,35 @@ function writeSpoolEvents(spoolDir: string, events: readonly SpoolEvent[]): void
   });
 }
 
-function cursorRequest(flowId: string): SpoolRequestEvent {
+function cursorRequest(flowId: string, operation = "StreamUnifiedChat"): SpoolRequestEvent {
   return SpoolRequestEventSchema.parse({
     version: 1,
     ts: 1779497300,
     direction: "request",
     flow_id: flowId,
     provider: "cursor",
-    operation: "StreamUnifiedChat",
+    operation,
     model_id: "Composer 2.5",
     host: "api2.cursor.sh",
     method: "POST",
-    path: "/aiserver.v1.AiService/StreamUnifiedChat",
+    path: `/aiserver.v1.AiService/${operation}`,
     headers: [["content-type", "application/json"]],
     body_text: JSON.stringify({ model: "Composer 2.5", prompt: "RCSPY-CURSOR-SERVICE" }),
   });
 }
 
-function cursorResponse(flowId: string): SpoolResponseEvent {
+function cursorResponse(flowId: string, operation = "StreamUnifiedChat"): SpoolResponseEvent {
   return SpoolResponseEventSchema.parse({
     version: 1,
     ts: 1779497301,
     direction: "response",
     flow_id: flowId,
     provider: "cursor",
-    operation: "StreamUnifiedChat",
+    operation,
     model_id: "Composer 2.5",
     host: "api2.cursor.sh",
     method: "POST",
-    path: "/aiserver.v1.AiService/StreamUnifiedChat",
+    path: `/aiserver.v1.AiService/${operation}`,
     headers: [["content-type", "application/json"]],
     status_code: 200,
     reason: "OK",
@@ -263,10 +263,27 @@ describe("spy web service", () => {
 
     handle.store.persistRequest(cursorRequest("fixture-cursor-service"));
     expect(handle.store.persistResponse(cursorResponse("fixture-cursor-service"))).toBe(true);
+    handle.store.persistRequest(cursorRequest("fixture-cursor-support", "BidiAppend"));
+    expect(handle.store.persistResponse(cursorResponse("fixture-cursor-support", "BidiAppend"))).toBe(true);
     const cursorCallsResponse = await fetch(`${handle.url}/api/calls?provider=cursor&model_id=${encodeURIComponent("Composer 2.5")}&status=complete`);
     const cursorCalls = await jsonAs(cursorCallsResponse, SpyCallSummaryPageSchema);
-    expect(cursorCalls.items).toHaveLength(1);
+    expect(cursorCalls.items).toHaveLength(2);
     expect(cursorCalls.items[0]?.call.provider).toBe("cursor");
+    const conversationCursorCalls = await jsonAs(
+      await fetch(`${handle.url}/api/calls?provider=cursor&traffic=conversation`),
+      SpyCallSummaryPageSchema,
+    );
+    expect(conversationCursorCalls.items.map((item) => item.call.operation)).toEqual(["StreamUnifiedChat"]);
+    const allCursorCalls = await jsonAs(
+      await fetch(`${handle.url}/api/calls?provider=cursor&traffic=all`),
+      SpyCallSummaryPageSchema,
+    );
+    expect(allCursorCalls.items.map((item) => item.call.operation)).toContain("BidiAppend");
+    const explicitSupportOperation = await jsonAs(
+      await fetch(`${handle.url}/api/calls?provider=cursor&traffic=conversation&operation=BidiAppend`),
+      SpyCallSummaryPageSchema,
+    );
+    expect(explicitSupportOperation.items.map((item) => item.call.operation)).toEqual(["BidiAppend"]);
 
     const filteredSearchResponse = await fetch(`${handle.url}/api/search?q=${encodeURIComponent("Fixture capture")}&since=1779496808&provider=bedrock&model_id=${encodeURIComponent("us.anthropic.claude-sonnet-4-6")}&operation=converse-stream&status=complete&limit=1`);
     const filteredSearch = await jsonAs(filteredSearchResponse, SpyCallSummaryPageSchema);

@@ -60,6 +60,7 @@ import type {
 const api = new SpyApiClient();
 const CALL_LIMIT = 100;
 const ALL_FILTER = "all";
+const DEFAULT_TRAFFIC_SCOPE = "conversation";
 const TIMELINE_ROW_ESTIMATE = 138;
 const BLOCK_LIST_VIRTUALIZE_MIN_ITEMS = 24;
 const BLOCK_ROW_ESTIMATE = 230;
@@ -94,6 +95,15 @@ const OPERATION_OPTIONS = [
   { value: "Run", label: "Cursor Run" },
   { value: "RunSSE", label: "Cursor Run SSE" },
   { value: "StreamUnifiedChat", label: "Cursor Unified Chat" },
+  { value: "StreamUnifiedChatWithTools", label: "Cursor Chat Tools" },
+  { value: "BidiAppend", label: "Cursor Bidi Append" },
+  { value: "SubmitLogs", label: "Cursor Logs" },
+  { value: "TrackEvents", label: "Cursor Events" },
+  { value: "traces", label: "Cursor Traces" },
+  { value: "GetUserPrivacyMode", label: "Cursor Privacy" },
+  { value: "GetServerConfig", label: "Cursor Config" },
+  { value: "GetManagedSkills", label: "Cursor Skills" },
+  { value: "AvailableModels", label: "Cursor Models" },
   { value: "invoke", label: "Invoke" },
   { value: "invoke-with-response-stream", label: "Invoke Stream" },
   { value: "converse", label: "Converse" },
@@ -164,6 +174,7 @@ export function App(): React.ReactElement {
     operation: ALL_FILTER,
     status: ALL_FILTER,
     blockKind: ALL_FILTER,
+    traffic: DEFAULT_TRAFFIC_SCOPE,
   });
   const [calls, setCalls] = React.useState<readonly SpyCallSummary[]>([]);
   const [nextCursor, setNextCursor] = React.useState<string | undefined>();
@@ -187,7 +198,8 @@ export function App(): React.ReactElement {
     filters.model,
     filters.operation,
     filters.status,
-  ].join("|"), [filters.model, filters.operation, filters.provider, filters.status, search, since]);
+    filters.traffic,
+  ].join("|"), [filters.model, filters.operation, filters.provider, filters.status, filters.traffic, search, since]);
   const previousTimelineContextKey = React.useRef<string | null>(null);
   const previousSelectedCallId = React.useRef<string | undefined>(undefined);
 
@@ -203,6 +215,7 @@ export function App(): React.ReactElement {
         modelId: filterQueryValue(filters.model),
         operation: filterQueryValue(filters.operation),
         status: filterQueryValue(filters.status),
+        traffic: filters.traffic,
         ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
       });
       setCalls((current) => options.append === true ? [...current, ...page.items] : page.items);
@@ -221,7 +234,7 @@ export function App(): React.ReactElement {
       setCallState("error");
       setCallError(error instanceof Error ? error.message : "failed to load calls");
     }
-  }, [filters.model, filters.operation, filters.provider, filters.status, preset, search, since]);
+  }, [filters.model, filters.operation, filters.provider, filters.status, filters.traffic, preset, search, since]);
 
   React.useEffect(() => {
     void loadCalls();
@@ -792,6 +805,16 @@ function TimelineControls(props: {
           <option value="pending">Pending</option>
           <option value="error">Error</option>
           <option value="dropped">Dropped</option>
+        </Select>
+        <Select
+          aria-label="Filter Cursor traffic scope"
+          value={filters.traffic}
+          onChange={(event) => {
+            props.onFilters({ ...filters, traffic: event.target.value === "all" ? "all" : "conversation" });
+          }}
+        >
+          <option value="conversation">Conversation traffic</option>
+          <option value="all">All captured traffic</option>
         </Select>
         <Select
           aria-label="Filter by model"
@@ -2434,6 +2457,7 @@ function timelineEmptyStateFor(search: string, filters: UiFilters): TimelineEmpt
     && filters.model === ALL_FILTER
     && filters.operation === ALL_FILTER
     && filters.status === ALL_FILTER
+    && filters.traffic === DEFAULT_TRAFFIC_SCOPE
     ? "range"
     : "query";
 }

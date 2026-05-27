@@ -241,6 +241,19 @@ function protoMessageField(fieldNumber: number, message: Buffer): Buffer {
   return Buffer.concat([protoVarint(fieldNumber * 8 + 2), protoVarint(message.length), message]);
 }
 
+function protoStringField(fieldNumber: number, value: string): Buffer {
+  return protoMessageField(fieldNumber, Buffer.from(value, "utf8"));
+}
+
+function cursorContextSectionMetadata(key: string, label: string, startOffset: number, size: number): Buffer {
+  return Buffer.concat([
+    protoStringField(1, key),
+    protoStringField(2, label),
+    protoVarintField(3, startOffset),
+    protoVarintField(4, size),
+  ]);
+}
+
 function responseVariant(
   event: SpoolResponseEvent,
   overrides: Partial<Pick<SpoolResponseEvent, "flow_id" | "ts" | "model_id" | "operation" | "status_code">>,
@@ -407,6 +420,46 @@ describe("spy SQLite store", () => {
         && block.text === "Cursor current request from response stream"
       )).toBe(true);
       expect(detail.requestComposition.sections.find((section) => section.kind === "current-user-input")?.present).toBe(true);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("includes Cursor protobuf context section metadata in request composition", () => {
+    const { store } = createTestStore();
+    try {
+      const flowId = "fixture-cursor-context-section-metadata";
+      const request = syntheticCursorRequest(flowId, 3060, {
+        model: "Composer 2.5",
+        prompt: "Cursor context metadata prompt",
+      });
+      const sectionEnvelope = Buffer.concat([
+        protoMessageField(3, cursorContextSectionMetadata("tools", "Tool definitions", 5_884, 24_509)),
+        protoMessageField(3, cursorContextSectionMetadata("conversation", "Conversation", 1_029, 3_083)),
+      ]);
+      const response = SpoolResponseEventSchema.parse({
+        ...syntheticCursorResponse(flowId, 3061, {}),
+        headers: [["content-type", "application/connect+proto"]],
+        body_text: undefined,
+        body_b64: connectFrame(sectionEnvelope).toString("base64"),
+      });
+
+      store.persistRequest(request);
+      expect(store.persistResponse(response)).toBe(true);
+
+      const detail = requiredDetail(store, cursorCallIdForFlow(flowId));
+      expect(compositionSection(detail, "tool-definition")).toMatchObject({
+        present: true,
+        blockCount: 1,
+        byteSize: 24_509,
+      });
+      expect(compositionSection(detail, "prior-conversation-history")).toMatchObject({
+        present: true,
+        blockCount: 1,
+        byteSize: 3_083,
+      });
+      expect(detail.summary.requestByteSize).toBeGreaterThan(24_509 + 3_083);
+      expect(detail.blocks.find((block) => block.kind === "tool-definition")?.source).toBe("cursor-response-context-metadata");
     } finally {
       store.close();
     }

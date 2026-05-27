@@ -45,6 +45,12 @@ const DEFAULT_RETENTION_DAYS = 7;
 const DEFAULT_MAX_BYTES = 6 * 1024 * 1024 * 1024;
 const DEFAULT_QUERY_LIMIT = 100;
 const MAX_QUERY_LIMIT = 500;
+const CURSOR_CONVERSATION_OPERATIONS = [
+  "Run",
+  "RunSSE",
+  "StreamUnifiedChat",
+  "StreamUnifiedChatWithTools",
+] as const;
 const REQUEST_COMPOSITION_SECTION_ORDER: readonly NormalizedBlock["kind"][] = [
   "provider-envelope",
   "harness-system-context",
@@ -167,12 +173,15 @@ export interface SpyProviderCallFilters {
   readonly modelId?: string | undefined;
   readonly operation?: string | undefined;
   readonly status?: ProviderCall["status"] | undefined;
+  readonly traffic?: SpyTrafficScope | undefined;
 }
 
 export interface SpyListCallsOptions extends SpyProviderCallFilters {
   readonly cursor?: string | undefined;
   readonly limit?: number | undefined;
 }
+
+export type SpyTrafficScope = "conversation" | "all";
 
 export interface SpySearchCallsOptions extends SpyProviderCallFilters {
   readonly query: string;
@@ -1983,6 +1992,14 @@ function appendProviderCallFilters(
     conditions.push(`${column("status")} = ?`);
     params.push(options.status);
   }
+  if (options.traffic === "conversation" && options.operation === undefined) {
+    conditions.push(`(${column("provider")} != ? OR ${column("operation")} IN (${placeholders(CURSOR_CONVERSATION_OPERATIONS.length)}))`);
+    params.push("cursor", ...CURSOR_CONVERSATION_OPERATIONS);
+  }
+}
+
+function placeholders(count: number): string {
+  return Array.from({ length: count }, () => "?").join(", ");
 }
 
 function blockSignature(block: NormalizedBlock): string {
@@ -1997,7 +2014,8 @@ function blockSignature(block: NormalizedBlock): string {
 }
 
 function isResponseDerivedRequestBlock(block: NormalizedBlock): boolean {
-  return block.source === "cursor-response-request-context";
+  return block.source === "cursor-response-request-context"
+    || block.source === "cursor-response-context-metadata";
 }
 
 function httpEventFromRequest(event: SpoolRequestEvent, callId: string): HttpEventRecord {
