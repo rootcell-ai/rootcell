@@ -1,4 +1,4 @@
-{ config, pkgs, lib, ... }:
+{ config, pkgs, lib, username, ... }:
 
 # Agent VM: where the coding agent runs. The agent has root inside this VM,
 # so this VM is treated as untrusted from the host's perspective. Its only
@@ -22,6 +22,29 @@ in
   # No firewall inside this VM — the agent has root and could rewrite it
   # anyway. All meaningful filtering happens in the firewall VM.
   networking.firewall.enable = false;
+
+  # Rootful Docker is part of the agent surface area. Access to the Docker
+  # socket is equivalent to root in this VM, which matches rootcell's threat
+  # model: the VM boundary matters, not privilege separation inside it.
+  virtualisation.docker = {
+    enable = true;
+    enableOnBoot = true;
+    storageDriver = "overlay2";
+    logDriver = "local";
+    daemon.settings = {
+      "log-opts" = {
+        "max-size" = "10m";
+        "max-file" = "3";
+      };
+    };
+    autoPrune = {
+      enable = true;
+      dates = "weekly";
+      flags = [ "--all" ];
+    };
+  };
+
+  users.users.${username}.extraGroups = [ "docker" ];
 
   # Networking: only the per-instance private Lima user-v2 link is configured.
   # Lima's VZ hostagent still needs a DHCP lease on that link before it opens

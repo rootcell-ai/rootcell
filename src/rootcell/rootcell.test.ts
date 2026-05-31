@@ -1466,6 +1466,10 @@ describe("VM and network providers", () => {
     expect(agentModule).toContain("UseDNS = false;");
     expect(agentModule).toContain("UseRoutes = false;");
     expect(agentModule).toContain("PreferredSource = net.agentIp;");
+    expect(agentModule).toContain("virtualisation.docker = {");
+    expect(agentModule).toContain("enableOnBoot = true;");
+    expect(agentModule).toContain("storageDriver = \"overlay2\";");
+    expect(agentModule).toContain("users.users.${username}.extraGroups = [ \"docker\" ];");
 
     const homeModule = readFileSync("home.nix", "utf8");
     expect(homeModule).toContain("extensions-home-manager.nix");
@@ -1479,9 +1483,10 @@ describe("VM and network providers", () => {
       networkPrefix: "24",
       agentPrivateInterface: "enp0s1",
     });
-    expect(script).toContain("find /sys/class/net -mindepth 1 -maxdepth 1 ! -name lo");
+    expect(script).toContain("container_iface_re='^(docker0|docker_gwbridge|br-[0-9a-f]+|veth.*)$'");
+    expect(script).toContain("for path in /sys/class/net/*; do");
     expect(script).toContain("ip -4 addr show dev \"$iface\" | grep -q \" $agent_ip/$prefix\"");
-    expect(script).toContain("! ip -4 -o addr show scope global | grep -v \"^[0-9]\\+: $iface\\b\" | grep -q .");
+    expect(script).toContain("done < <(ip -4 -o addr show scope global)");
     expect(script).toContain("test \"$(ip route show default | wc -l | tr -d ' ')\" = 1");
     expect(script).toContain("ip route show default | grep -q \"^default via $firewall_ip dev $iface\\b\"");
   });

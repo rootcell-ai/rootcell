@@ -42,6 +42,14 @@ export async function expectPrivateNetworkRouting(flow: IntegrationFlow): Promis
 export async function expectGuestTools(flow: IntegrationFlow): Promise<void> {
   await flow.agentSh("command -v pi && command -v rg && command -v gh && command -v jq >/dev/null");
   await flow.agentSh("out=$(pi --help) && [ -n \"$out\" ]");
+  await flow.agentSh("systemctl is-active docker >/dev/null && docker version >/dev/null && docker compose version >/dev/null");
+  await flow.agentSh([
+    "tmp=$(mktemp -d)",
+    "trap 'rm -rf \"$tmp\"; docker image rm -f rootcell-docker-smoke:latest >/dev/null 2>&1 || true' EXIT",
+    "mkdir -p \"$tmp/empty\"",
+    "tar -C \"$tmp/empty\" -cf - . | docker import - rootcell-docker-smoke:latest >/dev/null",
+    "docker run --rm --network=none -v /nix/store:/nix/store:ro -v /run/current-system/sw/bin:/host-bin:ro rootcell-docker-smoke:latest /host-bin/true",
+  ].join("\n"));
 }
 
 export async function expectProxyPolicy(flow: IntegrationFlow): Promise<void> {
