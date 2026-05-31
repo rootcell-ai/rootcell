@@ -22,7 +22,7 @@ in
 
   home.username = username;
   home.homeDirectory = "/home/${username}";
-  home.stateVersion = "25.11";
+  home.stateVersion = "26.05";
 
   home.packages = with pkgs; [
     # The reason this VM exists.
@@ -130,22 +130,21 @@ in
   programs.ssh = {
     enable = true;
     # Don't pull in home-manager's default ProxyCommand/ServerAlive/etc;
-    # we only want our own matchBlocks. Silences the deprecation warning
+    # we only want our own settings. Silences the deprecation warning
     # asking us to opt into the new explicit-defaults behavior.
     enableDefaultConfig = false;
 
-    matchBlocks."*" = {
-      proxyCommand = "${pkgs.netcat-openbsd}/bin/nc -X connect -x ${net.firewallIp}:8080 %h %p";
-    };
+    settings = {
+      "*" = {
+        ProxyCommand = "${pkgs.netcat-openbsd}/bin/nc -X connect -x ${net.firewallIp}:8080 %h %p";
+      };
 
-    matchBlocks."ssh.dev.azure.com" = {
-      extraOptions = {
+      "ssh.dev.azure.com" = {
         # Disable weak crypto warnings - Azure Devops does not support post-quantum yet
         WarnWeakCrypto = "no-pq-kex";
       };
-    };
-    matchBlocks."bitbucket.org" = {
-      extraOptions = {
+
+      "bitbucket.org" = {
         WarnWeakCrypto = "no-pq-kex";
       };
     };

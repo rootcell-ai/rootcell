@@ -25,7 +25,7 @@ export function parseAwsEc2Config(env: NodeJS.ProcessEnv): AwsEc2Config {
     agentRootVolumeGiB: positiveIntegerEnv(env, "ROOTCELL_AWS_AGENT_ROOT_VOLUME_GIB", 60),
     firewallRootVolumeGiB: positiveIntegerEnv(env, "ROOTCELL_AWS_FIREWALL_ROOT_VOLUME_GIB", 64),
     nixosAmiOwnerId: env.ROOTCELL_AWS_NIXOS_AMI_OWNER_ID ?? NIXOS_AMI_OWNER_ID,
-    nixosAmiNamePattern: env.ROOTCELL_AWS_NIXOS_AMI_NAME_PATTERN ?? "nixos/25.11*",
+    nixosAmiNamePattern: env.ROOTCELL_AWS_NIXOS_AMI_NAME_PATTERN ?? "nixos/26.05*",
   }, "invalid AWS EC2 provider config");
 }
 

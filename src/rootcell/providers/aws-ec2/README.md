@@ -97,12 +97,12 @@ data "aws_ami" "nixos_arm64" {
 ```
 
 The default owner is the official NixOS AMI publisher account
-`427812963091`, and the default name pattern is `nixos/25.11*`. Override them
+`427812963091`, and the default name pattern is `nixos/26.05*`. Override them
 only when intentionally testing a different upstream image stream:
 
 ```sh
 ROOTCELL_AWS_NIXOS_AMI_OWNER_ID=427812963091
-ROOTCELL_AWS_NIXOS_AMI_NAME_PATTERN='nixos/25.11*'
+ROOTCELL_AWS_NIXOS_AMI_NAME_PATTERN='nixos/26.05*'
 ```
 
 Official NixOS AMIs initially accept SSH as `root`. Rootcell supplies a
