@@ -3,7 +3,7 @@
 # Pi (pi.dev) ships a Bun-compiled standalone binary on each release, so
 # we don't need Node.js in the VM at all. Pinned by version + sha256 —
 # bump both fields together. Latest at:
-#   https://github.com/badlogic/pi-mono/releases
+#   https://github.com/earendil-works/pi/releases
 #
 # The release tarball contains the binary plus runtime resources it
 # reads at startup (themes, export-html template, a wasm blob, and
@@ -12,11 +12,11 @@
 # and symlink the binary into $out/bin so `pi` is on PATH.
 pkgs.stdenv.mkDerivation rec {
   pname = "pi-coding-agent";
-  version = "0.74.0";
+  version = "0.78.0";
 
   src = pkgs.fetchurl {
-    url = "https://github.com/badlogic/pi-mono/releases/download/v${version}/pi-linux-arm64.tar.gz";
-    sha256 = "261aa912878ca983c903d9c4a0408310dd8637b583085651d9b5ddb70c9df572";
+    url = "https://github.com/earendil-works/pi/releases/download/v${version}/pi-linux-arm64.tar.gz";
+    sha256 = "49155173682473720d9decf4deecbed754fae84925ef003c0b66aac31d5f9005";
   };
 
   # Patch the bundled ELF interpreter to point at glibc inside the Nix
