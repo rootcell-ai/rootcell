@@ -80,6 +80,6 @@ in
       ln -sfn /run/current-system/sw/bin/bash /bin/bash
     '';
 
-    system.stateVersion = "25.11";
+    system.stateVersion = "26.05";
   };
 }

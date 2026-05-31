@@ -544,7 +544,7 @@ describe("environment parsing", () => {
       agentRootVolumeGiB: 60,
       firewallRootVolumeGiB: 64,
       nixosAmiOwnerId: "427812963091",
-      nixosAmiNamePattern: "nixos/25.11*",
+      nixosAmiNamePattern: "nixos/26.05*",
     });
   });
 
@@ -3025,7 +3025,7 @@ function fakeAwsOutputs(controlCidr: string): Record<string, string> {
     agent_private_ip: "192.168.109.11",
     firewall_private_ip: "192.168.109.10",
     nixos_ami_id: "ami-nixos",
-    nixos_ami_name: "nixos/25.11-aarch64-linux",
+    nixos_ami_name: "nixos/26.05-aarch64-linux",
     applied_control_cidr: controlCidr,
   };
 }
