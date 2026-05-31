@@ -159,6 +159,33 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
+const AGENT_CA_BUNDLE = "/etc/ssl/certs/ca-certificates.crt";
+const AGENT_CA_DIR = "/etc/ssl/certs";
+const AGENT_CA_ENV = [
+  ["NODE_EXTRA_CA_CERTS", AGENT_CA_BUNDLE],
+  ["NIX_SSL_CERT_FILE", AGENT_CA_BUNDLE],
+  ["SSL_CERT_FILE", AGENT_CA_BUNDLE],
+  ["SSL_CERT_DIR", AGENT_CA_DIR],
+  ["REQUESTS_CA_BUNDLE", AGENT_CA_BUNDLE],
+  ["CURL_CA_BUNDLE", AGENT_CA_BUNDLE],
+  ["GIT_SSL_CAINFO", AGENT_CA_BUNDLE],
+  ["PIP_CERT", AGENT_CA_BUNDLE],
+  ["AWS_CA_BUNDLE", AGENT_CA_BUNDLE],
+  ["UV_NATIVE_TLS", "true"],
+] as const;
+
+function agentCaEnv(bundlePath = AGENT_CA_BUNDLE): readonly string[] {
+  return AGENT_CA_ENV.map(([key, value]) => `${key}=${value === AGENT_CA_BUNDLE ? bundlePath : value}`);
+}
+
+function exportAgentCaEnvScript(bundlePath: string): string {
+  return agentCaEnv(bundlePath).map((entry) => `export ${entry}`).join("\n");
+}
+
+function sudoAgentCaEnvScript(): string {
+  return AGENT_CA_ENV.map(([key]) => `  ${key}="$${key}" \\`).join("\n");
+}
+
 function nixStringList(values: readonly string[]): string {
   return `[ ${values.map(nixString).join(" ")} ]`;
 }
@@ -292,9 +319,7 @@ export class RootcellApp<TAttachment extends VmNetworkAttachment> {
       env: [
         ...injectedSecretEnv,
         `AWS_REGION=${this.config.awsEc2?.region ?? process.env.AWS_REGION ?? "us-east-1"}`,
-        "NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt",
-        "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
-        "REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt",
+        ...agentCaEnv(),
       ],
     });
   }
@@ -971,15 +996,9 @@ sudo nixos-rebuild switch --flake ${shellQuote(this.guestFlakeRef(this.nixosConf
     await this.bootstrapAgentFirewallTrust();
     await this.runNixosSwitch("agent", `
 set -e
-export NIX_SSL_CERT_FILE=/tmp/agent-vm-bootstrap-ca-bundle.crt
-export SSL_CERT_FILE=/tmp/agent-vm-bootstrap-ca-bundle.crt
-export GIT_SSL_CAINFO=/tmp/agent-vm-bootstrap-ca-bundle.crt
-export REQUESTS_CA_BUNDLE=/tmp/agent-vm-bootstrap-ca-bundle.crt
+${exportAgentCaEnvScript("/tmp/agent-vm-bootstrap-ca-bundle.crt")}
 sudo env \\
-  NIX_SSL_CERT_FILE="$NIX_SSL_CERT_FILE" \\
-  SSL_CERT_FILE="$SSL_CERT_FILE" \\
-  GIT_SSL_CAINFO="$GIT_SSL_CAINFO" \\
-  REQUESTS_CA_BUNDLE="$REQUESTS_CA_BUNDLE" \\
+${sudoAgentCaEnvScript()}
   nixos-rebuild switch --flake ${shellQuote(this.guestFlakeRef(this.nixosConfiguration("agent")))}
 `);
     await this.runAgentHomeManager();
@@ -1038,10 +1057,7 @@ fi
   private async runAgentHomeManager(): Promise<void> {
     const script = `
 set -e
-export NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
-export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
-export GIT_SSL_CAINFO=/etc/ssl/certs/ca-certificates.crt
-export REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+${exportAgentCaEnvScript(AGENT_CA_BUNDLE)}
 nix run ${shellQuote(this.guestFlakeRef("home-manager"))} -- switch --flake ${shellQuote(this.guestFlakeRef(this.config.guestUser))}
 `;
     const attempts = 4;

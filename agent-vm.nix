@@ -8,6 +8,8 @@
 let
   net = import ./network.nix;
   privateMatch = { Name = net.agentPrivateInterface; };
+  caBundle = "/etc/ssl/certs/ca-certificates.crt";
+  caDir = "/etc/ssl/certs";
 in
 {
   imports =
@@ -95,14 +97,19 @@ in
 
   # Common SDK trust-store env vars. NixOS's security.pki.certificateFiles
   # adds the CA to /etc/ssl/certs/ca-certificates.crt, which curl, git,
-  # and OpenSSL pick up automatically. Node, Python `requests`, and a few
-  # other ecosystems read their CA bundle from a hardcoded path or env
-  # var instead, so set those explicitly. Pi, Claude Code, Codex, etc.
-  # are all Node CLIs — without NODE_EXTRA_CA_CERTS they'd fail TLS to
-  # every allowlisted host the moment MITM is enabled.
+  # and OpenSSL pick up automatically. Node, Python, pip, uv, botocore,
+  # and Nix dev shells can otherwise prefer package-local CA bundles
+  # that do not include our per-instance MITM CA.
   environment.variables = {
-    NODE_EXTRA_CA_CERTS = "/etc/ssl/certs/ca-certificates.crt";
-    SSL_CERT_FILE = "/etc/ssl/certs/ca-certificates.crt";
-    REQUESTS_CA_BUNDLE = "/etc/ssl/certs/ca-certificates.crt";
+    NODE_EXTRA_CA_CERTS = caBundle;
+    NIX_SSL_CERT_FILE = caBundle;
+    SSL_CERT_FILE = caBundle;
+    SSL_CERT_DIR = caDir;
+    REQUESTS_CA_BUNDLE = caBundle;
+    CURL_CA_BUNDLE = caBundle;
+    GIT_SSL_CAINFO = caBundle;
+    PIP_CERT = caBundle;
+    AWS_CA_BUNDLE = caBundle;
+    UV_NATIVE_TLS = "true";
   };
 }
