@@ -1510,6 +1510,9 @@ describe("VM and network providers", () => {
     expect(hcl).toContain("data \"aws_ami\" \"nixos_arm64\"");
     expect(hcl).toContain('values = ["arm64"]');
     expect(hcl).toContain("user_data     = local.rootcell_bootstrap_user_data");
+    expect(hcl).toContain("groupadd -r docker");
+    expect(hcl).toContain("useradd -m -u 501 -g users -G wheel,docker");
+    expect(hcl).toContain("usermod -a -G wheel,docker");
     expect(hcl).not.toContain("  network_interface {");
     expect(hcl).not.toContain("aws_s3_object");
     expect(hcl).not.toContain("aws_ebs_snapshot_import");

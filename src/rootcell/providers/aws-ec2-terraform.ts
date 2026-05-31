@@ -489,10 +489,14 @@ if ! getent group users >/dev/null 2>&1; then
   groupadd -r users
 fi
 
+if ! getent group docker >/dev/null 2>&1; then
+  groupadd -r docker
+fi
+
 if ! id -u "$user" >/dev/null 2>&1; then
-  useradd -m -u 501 -g users -G wheel -s /run/current-system/sw/bin/bash "$user"
+  useradd -m -u 501 -g users -G wheel,docker -s /run/current-system/sw/bin/bash "$user"
 else
-  usermod -a -G wheel "$user"
+  usermod -a -G wheel,docker "$user"
   mkdir -p "$home"
   chown "$user:users" "$home"
 fi
