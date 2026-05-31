@@ -23,6 +23,7 @@ rootcell is early and intentionally narrow. Today it supports:
 | VM providers | `lima` for local macOS + Lima, and `aws-ec2` for AWS EC2 |
 | Guest OS | AARCH64 NixOS agent and firewall VMs |
 | Coding harness | [Pi](https://pi.dev) inside the agent VM |
+| Containers | Rootful Docker, enabled at boot inside the agent VM |
 | Network policy | DNS, HTTPS, and SSH egress through the firewall VM |
 | Secrets | Host-side secret providers, including macOS Keychain and AWS Secrets Manager |
 
@@ -85,7 +86,7 @@ The two VMs have the same roles in either provider:
 
 | Piece | What it does |
 | --- | --- |
-| `agent` VM | Runs the coding harness, shell commands, Git, build tools, and project work. It has root inside the VM, but no direct public internet route. |
+| `agent` VM | Runs the coding harness, shell commands, Git, Docker containers, build tools, and project work. It has root inside the VM, but no direct public internet route. |
 | `firewall` VM | Owns the public egress path. It runs `dnsmasq` for DNS allowlisting and `mitmproxy` for HTTPS interception and SSH CONNECT policy. |
 | `./rootcell` | Host-side wrapper that creates, provisions, updates, and enters the VMs. It also syncs allowlists and injects configured provider secrets for each session. |
 

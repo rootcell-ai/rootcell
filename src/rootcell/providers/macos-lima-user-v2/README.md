@@ -129,9 +129,9 @@ Rootcell static address, firewall DNS, and default route remain authoritative.
 The firewall VM keeps the same route-free, DNS-free DHCP lease on its private
 user-v2 interface for the same Lima VSOCK startup path.
 During startup, rootcell runs a proof gate inside the agent that checks there is
-exactly one non-loopback interface, that all global IPv4 addresses are on that
-interface, that the Rootcell static address is present, and that there is no
-default-route bypass.
+no extra provider-facing interface beyond the private Rootcell link. Docker's
+local bridge/veth interfaces are allowed, but the proof still verifies that the
+Rootcell static address is present and that there is no default-route bypass.
 
 The host connects to the firewall through Lima's generated localhost SSH
 endpoint. The agent is reached through SSH ProxyJump via the firewall over the
