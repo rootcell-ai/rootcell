@@ -1135,6 +1135,100 @@ describe("VM and network providers", () => {
     ]);
   });
 
+  test("app lifecycle repairs legacy MITM CA certificates and reprovisions VMs", async () => {
+    const repo = makeInstanceRepo();
+    const buildSpyArtifacts = vi.spyOn(
+      RootcellApp.prototype as unknown as { buildSpyArtifacts: () => void },
+      "buildSpyArtifacts",
+    ).mockImplementation(() => undefined);
+    try {
+      const env = instanceEnv(repo);
+      const config = buildConfig(repo, env, fakeInstance("dev", repo, env));
+      mkdirSync(config.generatedDir, { recursive: true });
+      mkdirSync(config.proxyDir, { recursive: true });
+      for (const file of ["allowed-https.txt", "allowed-ssh.txt", "allowed-dns.txt"]) {
+        writeFileSync(join(config.proxyDir, file), "\n", "utf8");
+      }
+      writeLegacyAgentCa(config.pkiDir);
+      const crt = join(config.pkiDir, "agent-vm-ca-cert.pem");
+      expect(certText(crt)).not.toContain("X509v3 Subject Key Identifier");
+
+      const calls: string[] = [];
+      const copiedGuestPaths: string[] = [];
+      const attachment: VmNetworkAttachment = { kind: "fake" };
+      const providers: ProviderBundle = {
+        network: {
+          id: "fake-network",
+          plan: () => ({
+            provider: "fake-network",
+            guest: {
+              firewallIp: config.firewallIp,
+              agentIp: config.agentIp,
+              networkPrefix: 24,
+              agentPrivateInterface: "agent0",
+              firewallPrivateInterface: "firewall0",
+              firewallEgressInterface: "egress0",
+            },
+            vms: {
+              agent: attachment,
+              firewall: attachment,
+            },
+          }),
+          preflight: () => Promise.resolve(),
+          stop: () => Promise.resolve(),
+          remove: () => Promise.resolve(),
+          ensureReady: () => Promise.resolve(),
+        },
+        vm: {
+          id: "fake-vm",
+          status: () => Promise.resolve({ state: "running" }),
+          stopIfRunning: () => Promise.resolve(),
+          forceStopIfRunning: () => Promise.resolve(),
+          remove: () => Promise.resolve(),
+          assertCompatible: () => Promise.resolve(),
+          ensureRunning: (input) => {
+            calls.push(`ensure:${input.role}:${input.name}`);
+            return Promise.resolve({ created: false });
+          },
+          exec: (name, args) => {
+            calls.push(`exec:${name}:${args.join(" ")}`);
+            return Promise.resolve({ status: 0 });
+          },
+          execCapture: () => Promise.resolve({ status: 0, stdout: "", stderr: "" }),
+          execInteractive: (name) => {
+            calls.push(`interactive:${name}`);
+            return Promise.resolve(0);
+          },
+          copyToGuest: (_name, _hostPath, guestPath) => {
+            copiedGuestPaths.push(guestPath);
+            return Promise.resolve();
+          },
+          forwardLocalPort: (_name, options) => Promise.resolve({
+            ...options,
+            closed: Promise.resolve(0),
+            close: () => Promise.resolve(),
+          }),
+        },
+        secrets: new StaticSecretProviderRegistry([]),
+      };
+
+      const status = await new RootcellApp(config, providers).runAfterEnvironment("", [], { open: true });
+
+      expect(status).toBe(0);
+      const updatedCert = certText(crt);
+      expect(updatedCert).toContain("X509v3 Subject Key Identifier");
+      expect(updatedCert).toContain("X509v3 Authority Key Identifier");
+      expect(calls).toContain(`ensure:firewall:${config.firewallVm}`);
+      expect(calls).toContain(`ensure:agent:${config.agentVm}`);
+      expect(copiedGuestPaths).toContain("/tmp/.agent-vm-ca.pem.staged");
+      expect(copiedGuestPaths).toContain(`${config.guestRepoDir}/pki/agent-vm-ca-cert.pem`);
+      expect(calls).toContain(`interactive:${config.agentVm}`);
+    } finally {
+      buildSpyArtifacts.mockRestore();
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   test("spy uses the shared tunnel fallback and foreground close path", async () => {
     const repo = makeInstanceRepo();
     const oldSpyEnabled = process.env.ROOTCELL_SPY_ENABLED;
@@ -1146,10 +1240,7 @@ describe("VM and network providers", () => {
       mkdirSync(config.instanceDir, { recursive: true });
       mkdirSync(config.generatedDir, { recursive: true });
       mkdirSync(config.proxyDir, { recursive: true });
-      mkdirSync(config.pkiDir, { recursive: true, mode: 0o700 });
-      for (const file of ["agent-vm-ca.key", "agent-vm-ca-cert.pem", "agent-vm-ca.pem"]) {
-        writeFileSync(join(config.pkiDir, file), "test\n", "utf8");
-      }
+      writeStrictAgentCa(config.pkiDir);
       for (const file of ["allowed-https.txt", "allowed-ssh.txt", "allowed-dns.txt"]) {
         writeFileSync(join(config.proxyDir, file), "\n", "utf8");
       }
@@ -3000,6 +3091,90 @@ function makeInstanceRepo(): string {
     writeFileSync(join(repo, "proxy", `${file}.defaults`), "\n", "utf8");
   }
   return repo;
+}
+
+function writeLegacyAgentCa(pkiDir: string): void {
+  writeAgentCa(pkiDir, false);
+}
+
+function writeStrictAgentCa(pkiDir: string): void {
+  writeAgentCa(pkiDir, true);
+}
+
+function writeAgentCa(pkiDir: string, strict: boolean): void {
+  mkdirSync(pkiDir, { recursive: true, mode: 0o700 });
+  const key = join(pkiDir, "agent-vm-ca.key");
+  const crt = join(pkiDir, "agent-vm-ca-cert.pem");
+  const pem = join(pkiDir, "agent-vm-ca.pem");
+  if (!strict) {
+    const csr = join(pkiDir, "agent-vm-ca.csr");
+    runCapture("openssl", [
+      "req",
+      "-newkey",
+      "rsa:2048",
+      "-nodes",
+      "-keyout",
+      key,
+      "-out",
+      csr,
+      "-subj",
+      "/CN=agent-vm proxy CA",
+    ]);
+    runCapture("openssl", [
+      "x509",
+      "-req",
+      "-in",
+      csr,
+      "-signkey",
+      key,
+      "-out",
+      crt,
+      "-days",
+      "3650",
+    ]);
+    rmSync(csr, { force: true });
+    writeFileSync(pem, readFileSync(key, "utf8") + readFileSync(crt, "utf8"), "utf8");
+    return;
+  }
+
+  const config = join(pkiDir, "openssl-test.cnf");
+  writeFileSync(config, [
+    "[req]",
+    "prompt = no",
+    "distinguished_name = dn",
+    "x509_extensions = v3_ca",
+    "[dn]",
+    "CN = agent-vm proxy CA",
+    "[v3_ca]",
+    "basicConstraints = critical,CA:TRUE,pathlen:0",
+    "keyUsage = critical,keyCertSign,cRLSign",
+    "subjectKeyIdentifier = hash",
+    "authorityKeyIdentifier = keyid:always",
+    "",
+  ].join("\n"), "utf8");
+  runCapture("openssl", [
+    "req",
+    "-x509",
+    "-newkey",
+    "rsa:2048",
+    "-nodes",
+    "-keyout",
+    key,
+    "-out",
+    crt,
+    "-days",
+    "3650",
+    "-config",
+    config,
+    "-extensions",
+    "v3_ca",
+  ]);
+  rmSync(config, { force: true });
+  writeFileSync(pem, readFileSync(key, "utf8") + readFileSync(crt, "utf8"), "utf8");
+}
+
+function certText(path: string): string {
+  return runCapture("openssl", ["x509", "-in", path, "-noout", "-text"]).stdout;
 }
 
 function restoreEnv(name: string, value: string | undefined): void {
