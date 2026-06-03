@@ -147,6 +147,16 @@ describe("rootcell extension registry", () => {
     expect(claudeCode?.hostCommands).toEqual(expect.schemaMatching(EmptyStringArraySchema));
   });
 
+  test("Claude Code extension installs bundled Rootcell skills", () => {
+    const module = readFileSync(join("extensions", "claude-code", "home-manager.nix"), "utf8");
+
+    expect(module).toContain('home.file.".claude/skills/add-flake-dep"');
+    expect(module).toContain('home.file.".claude/skills/network-allowlist"');
+    expect(module).toContain("source = ../../pi/agent/skills/add-flake-dep;");
+    expect(module).toContain("source = ../../pi/agent/skills/network-allowlist;");
+    expect(module.match(/recursive = true;/g)).toHaveLength(2);
+  });
+
   test("registers Cursor CLI package install hook", () => {
     const cursor = ROOTCELL_EXTENSIONS.find((extension) => extension.id === "cursor-cli");
 
@@ -154,6 +164,16 @@ describe("rootcell extension registry", () => {
     expect(cursor?.guestHooks.agentNixos).toEqual(expect.schemaMatching(EmptyStringArraySchema));
     expect(cursor?.guestHooks.firewallNixos).toEqual(expect.schemaMatching(EmptyStringArraySchema));
     expect(cursor?.hostCommands).toEqual(expect.schemaMatching(EmptyStringArraySchema));
+  });
+
+  test("Cursor CLI extension installs bundled Rootcell skills", () => {
+    const module = readFileSync(join("extensions", "cursor-cli", "home-manager.nix"), "utf8");
+
+    expect(module).toContain('home.file.".cursor/skills-cursor/add-flake-dep"');
+    expect(module).toContain('home.file.".cursor/skills-cursor/network-allowlist"');
+    expect(module).toContain("source = ../../pi/agent/skills/add-flake-dep;");
+    expect(module).toContain("source = ../../pi/agent/skills/network-allowlist;");
+    expect(module.match(/recursive = true;/g)).toHaveLength(2);
   });
 });
 
