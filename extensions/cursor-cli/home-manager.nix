@@ -5,6 +5,15 @@
     pkgs.cursor-cli
   ];
 
+  home.file.".cursor/skills-cursor/add-flake-dep" = {
+    source = ../../pi/agent/skills/add-flake-dep;
+    recursive = true;
+  };
+  home.file.".cursor/skills-cursor/network-allowlist" = {
+    source = ../../pi/agent/skills/network-allowlist;
+    recursive = true;
+  };
+
   home.activation.cursorCliHttp1ForAgent = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
     config="$HOME/.cursor/cli-config.json"
     tmp="$config.tmp"

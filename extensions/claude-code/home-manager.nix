@@ -5,6 +5,15 @@
     pkgs.claude-code
   ];
 
+  home.file.".claude/skills/add-flake-dep" = {
+    source = ../../pi/agent/skills/add-flake-dep;
+    recursive = true;
+  };
+  home.file.".claude/skills/network-allowlist" = {
+    source = ../../pi/agent/skills/network-allowlist;
+    recursive = true;
+  };
+
   home.sessionVariables = {
     CLAUDE_CODE_USE_BEDROCK = "1";
     ANTHROPIC_MODEL = "us.anthropic.claude-sonnet-4-6";
