@@ -3,6 +3,8 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  renameSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -161,6 +163,14 @@ function shellQuote(value: string): string {
 
 const AGENT_CA_BUNDLE = "/etc/ssl/certs/ca-certificates.crt";
 const AGENT_CA_DIR = "/etc/ssl/certs";
+const AGENT_CA_DAYS = "3650";
+const AGENT_CA_SUBJECT = "/CN=agent-vm proxy CA";
+const AGENT_CA_EXTENSIONS = [
+  "basicConstraints=critical,CA:TRUE,pathlen:0",
+  "keyUsage=critical,keyCertSign,cRLSign",
+  "subjectKeyIdentifier=hash",
+  "authorityKeyIdentifier=keyid:always",
+] as const;
 const AGENT_CA_ENV = [
   ["NODE_EXTRA_CA_CERTS", AGENT_CA_BUNDLE],
   ["NIX_SSL_CERT_FILE", AGENT_CA_BUNDLE],
@@ -184,6 +194,19 @@ function exportAgentCaEnvScript(bundlePath: string): string {
 
 function sudoAgentCaEnvScript(): string {
   return AGENT_CA_ENV.map(([key]) => `  ${key}="$${key}" \\`).join("\n");
+}
+
+function agentCaExtensionArgs(): readonly string[] {
+  return AGENT_CA_EXTENSIONS.flatMap((extension) => ["-addext", extension]);
+}
+
+function agentCaHasStrictExtensions(crt: string): boolean {
+  const result = runCapture("openssl", ["x509", "-in", crt, "-noout", "-text"], {
+    allowFailure: true,
+  });
+  return result.status === 0
+    && result.stdout.includes("X509v3 Subject Key Identifier")
+    && result.stdout.includes("X509v3 Authority Key Identifier");
 }
 
 function nixStringList(values: readonly string[]): string {
@@ -295,10 +318,11 @@ export class RootcellApp<TAttachment extends VmNetworkAttachment> {
         await this.providers.vm.forceStopIfRunning(name);
       },
     });
-    if (!await this.ensureFirewall(subcommand === "provision", { allowProvision: subcommand !== "spy" })) {
+    const caChanged = this.ensureCa();
+    const needsProvisionForCa = subcommand === "provision" || caChanged;
+    if (!await this.ensureFirewall(needsProvisionForCa, { allowProvision: subcommand !== "spy" })) {
       return 1;
     }
-    this.ensureCa();
     await this.syncAllowlists();
     await this.waitForFirewallListeners();
 
@@ -306,7 +330,7 @@ export class RootcellApp<TAttachment extends VmNetworkAttachment> {
       return await this.runSpy(spyOptions);
     }
 
-    await this.ensureAgent(subcommand === "provision");
+    await this.ensureAgent(needsProvisionForCa);
     if (subcommand === "provision") {
       log("done.");
       return 0;
@@ -616,18 +640,44 @@ exit 1
     throw new Error(`timeout waiting for SSH transport to ${this.config.firewallVm}${lastError.length === 0 ? "" : `: ${lastError}`}`);
   }
 
-  private ensureCa(): void {
+  private ensureCa(): boolean {
     const dir = this.config.pkiDir;
     const key = join(dir, "agent-vm-ca.key");
     const crt = join(dir, "agent-vm-ca-cert.pem");
     const pem = join(dir, "agent-vm-ca.pem");
-    if (existsSync(key) && existsSync(crt) && existsSync(pem)) {
-      return;
-    }
-
-    log(`generating TLS-MITM CA for instance '${this.config.instanceName}' (one-time, persists across runs)`);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     chmodSync(dir, 0o700);
+
+    let changed = false;
+    if (!existsSync(key) || !existsSync(crt)) {
+      log(`generating TLS-MITM CA for instance '${this.config.instanceName}' (one-time, persists across runs)`);
+      this.generateCa(key, crt);
+      changed = true;
+    } else if (!agentCaHasStrictExtensions(crt)) {
+      log("updating TLS-MITM CA certificate for strict Python/OpenSSL certificate verification");
+      if (!this.reissueCaCert(key, crt)) {
+        log("existing TLS-MITM CA key/cert could not be reused; generating a fresh CA");
+        this.generateCa(key, crt);
+      }
+      changed = true;
+    }
+
+    const pemContent = readFileSync(key, "utf8") + readFileSync(crt, "utf8");
+    if (!existsSync(pem) || readFileSync(pem, "utf8") !== pemContent) {
+      writeFileSync(pem, pemContent, "utf8");
+      changed = true;
+    }
+    chmodSync(key, 0o600);
+    chmodSync(pem, 0o600);
+    chmodSync(crt, 0o644);
+    return changed;
+  }
+
+  private generateCa(key: string, crt: string): void {
+    const tmpKey = `${key}.tmp`;
+    const tmpCrt = `${crt}.tmp`;
+    rmSync(tmpKey, { force: true });
+    rmSync(tmpCrt, { force: true });
     runInherited("openssl", [
       "req",
       "-x509",
@@ -635,22 +685,45 @@ exit 1
       "rsa:2048",
       "-nodes",
       "-keyout",
+      tmpKey,
+      "-out",
+      tmpCrt,
+      "-days",
+      AGENT_CA_DAYS,
+      "-subj",
+      AGENT_CA_SUBJECT,
+      ...agentCaExtensionArgs(),
+    ], { ignoredOutput: true });
+    renameSync(tmpKey, key);
+    renameSync(tmpCrt, crt);
+  }
+
+  private reissueCaCert(key: string, crt: string): boolean {
+    const tmpCrt = `${crt}.tmp`;
+    rmSync(tmpCrt, { force: true });
+    const result = runInherited("openssl", [
+      "req",
+      "-x509",
+      "-new",
+      "-key",
       key,
       "-out",
-      crt,
+      tmpCrt,
       "-days",
-      "3650",
+      AGENT_CA_DAYS,
       "-subj",
-      "/CN=agent-vm proxy CA",
-      "-addext",
-      "basicConstraints=critical,CA:TRUE,pathlen:0",
-      "-addext",
-      "keyUsage=critical,keyCertSign,cRLSign",
-    ], { ignoredOutput: true });
-    writeFileSync(pem, readFileSync(key, "utf8") + readFileSync(crt, "utf8"), "utf8");
-    chmodSync(key, 0o600);
-    chmodSync(pem, 0o600);
-    chmodSync(crt, 0o644);
+      AGENT_CA_SUBJECT,
+      ...agentCaExtensionArgs(),
+    ], {
+      allowFailure: true,
+      ignoredOutput: true,
+    });
+    if (result.status !== 0) {
+      rmSync(tmpCrt, { force: true });
+      return false;
+    }
+    renameSync(tmpCrt, crt);
+    return true;
   }
 
   private async syncFirewallCa(): Promise<void> {
