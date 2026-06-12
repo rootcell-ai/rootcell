@@ -12,11 +12,11 @@
 # and symlink the binary into $out/bin so `pi` is on PATH.
 pkgs.stdenv.mkDerivation rec {
   pname = "pi-coding-agent";
-  version = "0.78.0";
+  version = "0.79.1";
 
   src = pkgs.fetchurl {
     url = "https://github.com/earendil-works/pi/releases/download/v${version}/pi-linux-arm64.tar.gz";
-    sha256 = "49155173682473720d9decf4deecbed754fae84925ef003c0b66aac31d5f9005";
+    sha256 = "015wqibca5pbb1wpm933516zfw50qa0kkxb0qlj19gvssp4a14d1";
   };
 
   # Patch the bundled ELF interpreter to point at glibc inside the Nix
