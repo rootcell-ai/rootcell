@@ -310,6 +310,54 @@ describe("rootcell argument parsing", () => {
     });
   });
 
+  test("parses copy subcommands", () => {
+    const hostToGuest = runArgs(["copy", "./file", ":/tmp/"]);
+    expectRunArgs(hostToGuest);
+    expect(hostToGuest).toEqual({
+      kind: "run",
+      instanceName: "default",
+      subcommand: "copy",
+      rest: ["./file", ":/tmp/"],
+      spyOptions: { open: true },
+      copyOptions: { recursive: false },
+    });
+
+    const recursive = runArgs(["copy", "-r", "./dir", ":/tmp/"]);
+    expectRunArgs(recursive);
+    expect(recursive).toEqual({
+      kind: "run",
+      instanceName: "default",
+      subcommand: "copy",
+      rest: ["./dir", ":/tmp/"],
+      spyOptions: { open: true },
+      copyOptions: { recursive: true },
+    });
+
+    const guestToHost = runArgs(["copy", ":/tmp/file", "."]);
+    expectRunArgs(guestToHost);
+    expect(guestToHost).toEqual({
+      kind: "run",
+      instanceName: "default",
+      subcommand: "copy",
+      rest: [":/tmp/file", "."],
+      spyOptions: { open: true },
+      copyOptions: { recursive: false },
+    });
+
+    const dev = runArgs(["--instance", "dev", "copy", ":relative/path", "."]);
+    expectRunArgs(dev);
+    expect(dev.instanceName).toBe("dev");
+    expect(dev.rest).toEqual([":relative/path", "."]);
+
+    expect(() => parseRootcellArgs(["copy"])).toThrow("copy requires at least one source and a target");
+    expect(() => parseRootcellArgs(["copy", ":"])).toThrow("copy requires at least one source and a target");
+    expect(() => parseRootcellArgs(["copy", ":", "."])).toThrow("copy guest paths must include a path after ':'");
+    expect(() => parseRootcellArgs(["copy", "./a", "./b"])).toThrow("copy requires exactly one side");
+    expect(() => parseRootcellArgs(["copy", ":/a", ":/b"])).toThrow("copy requires exactly one side");
+    expect(() => parseRootcellArgs(["copy", "./a", ":/b", ":/tmp/"])).toThrow("copy sources must be all host paths");
+    expect(() => parseRootcellArgs(["copy", "--backend=rsync", "./a", ":/tmp/"])).toThrow("Unknown argument: backend");
+  });
+
   test("parses pass-through guest commands", () => {
     const explicit = runArgs(["--", "nix", "flake", "update"]);
     expectRunArgs(explicit);
@@ -1114,6 +1162,7 @@ describe("VM and network providers", () => {
         exec: () => Promise.resolve({ status: 0 }),
         execCapture: () => Promise.resolve({ status: 0, stdout: "", stderr: "" }),
         execInteractive: () => Promise.resolve(0),
+        copy: () => Promise.resolve(),
         copyToGuest: () => Promise.resolve(),
         forwardLocalPort: (_name, options) => Promise.resolve({
           ...options,
@@ -1199,6 +1248,7 @@ describe("VM and network providers", () => {
             calls.push(`interactive:${name}`);
             return Promise.resolve(0);
           },
+          copy: () => Promise.resolve(),
           copyToGuest: (_name, _hostPath, guestPath) => {
             copiedGuestPaths.push(guestPath);
             return Promise.resolve();
@@ -1225,6 +1275,134 @@ describe("VM and network providers", () => {
       expect(calls).toContain(`interactive:${config.agentVm}`);
     } finally {
       buildSpyArtifacts.mockRestore();
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("copy runs after VM readiness without entering the agent shell or reading secrets", async () => {
+    const repo = makeInstanceRepo();
+    try {
+      const env = instanceEnv(repo);
+      const config = buildConfig(repo, env, fakeInstance("dev", repo, env));
+      mkdirSync(config.instanceDir, { recursive: true });
+      mkdirSync(config.generatedDir, { recursive: true });
+      mkdirSync(config.proxyDir, { recursive: true });
+      writeStrictAgentCa(config.pkiDir);
+      writeFileSync(config.secretsPath, "AWS_ACCESS_KEY_ID=test-provider:should-not-read\n", "utf8");
+      for (const file of ["allowed-https.txt", "allowed-ssh.txt", "allowed-dns.txt"]) {
+        writeFileSync(join(config.proxyDir, file), "\n", "utf8");
+      }
+
+      const attachment: VmNetworkAttachment = { kind: "fake" };
+      const calls: string[] = [];
+      let secretReads = 0;
+      let copied: {
+        readonly name: string;
+        readonly sources: readonly string[];
+        readonly target: string;
+        readonly recursive: boolean | undefined;
+      } | undefined;
+      const providers: ProviderBundle = {
+        network: {
+          id: "fake-network",
+          plan: () => ({
+            provider: "fake-network",
+            guest: {
+              firewallIp: config.firewallIp,
+              agentIp: config.agentIp,
+              networkPrefix: 24,
+              agentPrivateInterface: "agent0",
+              firewallPrivateInterface: "firewall0",
+              firewallEgressInterface: "egress0",
+            },
+            vms: {
+              agent: attachment,
+              firewall: attachment,
+            },
+          }),
+          preflight: () => {
+            calls.push("network:preflight");
+            return Promise.resolve();
+          },
+          stop: () => Promise.resolve(),
+          remove: () => Promise.resolve(),
+          ensureReady: (input) => {
+            calls.push(`network:ensure:${input.affectedVms.join(",")}`);
+            return Promise.resolve();
+          },
+        },
+        vm: {
+          id: "fake-vm",
+          status: () => Promise.resolve({ state: "running" }),
+          stopIfRunning: () => Promise.resolve(),
+          forceStopIfRunning: () => Promise.resolve(),
+          remove: () => Promise.resolve(),
+          assertCompatible: (name) => {
+            calls.push(`assert:${name}`);
+            return Promise.resolve();
+          },
+          ensureRunning: (input) => {
+            calls.push(`ensure:${input.role}:${input.name}`);
+            return Promise.resolve({ created: false });
+          },
+          finalizeNetworking: (input) => {
+            calls.push(`finalize:${input.role}:${input.name}`);
+            return Promise.resolve();
+          },
+          exec: (name) => {
+            calls.push(`exec:${name}`);
+            return Promise.resolve({ status: 0 });
+          },
+          execCapture: () => Promise.resolve({ status: 0, stdout: "", stderr: "" }),
+          execInteractive: () => {
+            calls.push("interactive");
+            return Promise.resolve(99);
+          },
+          copy: (name, sources, target, options) => {
+            calls.push(`copy:${name}`);
+            copied = {
+              name,
+              sources,
+              target,
+              recursive: options?.recursive,
+            };
+            return Promise.resolve();
+          },
+          copyToGuest: () => Promise.resolve(),
+          forwardLocalPort: (_name, options) => Promise.resolve({
+            ...options,
+            closed: Promise.resolve(0),
+            close: () => Promise.resolve(),
+          }),
+        },
+        secrets: {
+          ids: ["test-provider"],
+          read: () => {
+            secretReads += 1;
+            return Promise.reject(new Error("copy should not read secrets"));
+          },
+        },
+      };
+
+      const status = await new RootcellApp(config, providers).runAfterEnvironment(
+        "copy",
+        ["./file", ":/tmp/"],
+        { open: true },
+        { recursive: true },
+      );
+
+      expect(status).toBe(0);
+      expect(copied).toEqual({
+        name: config.agentVm,
+        sources: ["./file"],
+        target: ":/tmp/",
+        recursive: true,
+      });
+      expect(calls.indexOf(`ensure:agent:${config.agentVm}`)).toBeGreaterThanOrEqual(0);
+      expect(calls.indexOf(`copy:${config.agentVm}`)).toBeGreaterThan(calls.indexOf(`ensure:agent:${config.agentVm}`));
+      expect(calls).not.toContain("interactive");
+      expect(secretReads).toBe(0);
+    } finally {
       rmSync(repo, { recursive: true, force: true });
     }
   });
@@ -1292,6 +1470,7 @@ describe("VM and network providers", () => {
           exec: () => Promise.resolve({ status: 0 }),
           execCapture: () => Promise.resolve({ status: 0, stdout: "", stderr: "" }),
           execInteractive: () => Promise.resolve(0),
+          copy: () => Promise.resolve(),
           copyToGuest: () => Promise.resolve(),
           forwardLocalPort: (name, options) => {
             forwarded = { name, options };
@@ -1887,6 +2066,48 @@ describe("VM and network providers", () => {
     expect(bootstrapConfig).toContain(`UserKnownHostsFile "${knownHostsPath}"`);
   });
 
+  test("proxyjump copy maps rootcell guest paths to scp aliases", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rootcell-scp-"));
+    const oldPath = process.env.PATH;
+    const oldArgsPath = process.env.ROOTCELL_FAKE_SCP_ARGS;
+    try {
+      const bin = join(dir, "bin");
+      mkdirSync(bin, { recursive: true });
+      const scp = join(bin, "scp");
+      writeFileSync(scp, fakeScpScript(), "utf8");
+      chmodSync(scp, 0o755);
+      process.env.PATH = `${bin}:${oldPath ?? ""}`;
+
+      const config = buildConfig(dir, {}, fakeInstance("dev", dir));
+      const transport = new ProxyJumpSshTransport(config, () => ({
+        firewallHost: "127.0.0.1",
+        firewallPort: 60_022,
+        agentHost: "192.168.109.11",
+        identityPath: join(dir, "rootcell_control_ed25519"),
+        knownHostsPath: join(dir, "known_hosts"),
+      }));
+
+      const hostToGuestArgs = join(dir, "host-to-guest.txt");
+      process.env.ROOTCELL_FAKE_SCP_ARGS = hostToGuestArgs;
+      await transport.copy(config.agentVm, ["./a", "./b"], ":/tmp/", { recursive: true });
+      const hostToGuest = readLines(hostToGuestArgs);
+      expect(hostToGuest).toContain("-F");
+      expect(hostToGuest).toContain("-r");
+      expect(hostToGuest.slice(-3)).toEqual(["./a", "./b", "rootcell-agent:/tmp/"]);
+
+      const guestToHostArgs = join(dir, "guest-to-host.txt");
+      process.env.ROOTCELL_FAKE_SCP_ARGS = guestToHostArgs;
+      await transport.copy(config.agentVm, [":relative/path"], "./out");
+      const guestToHost = readLines(guestToHostArgs);
+      expect(guestToHost).not.toContain("-r");
+      expect(guestToHost.slice(-2)).toEqual(["rootcell-agent:relative/path", "./out"]);
+    } finally {
+      process.env.PATH = oldPath;
+      restoreEnv("ROOTCELL_FAKE_SCP_ARGS", oldArgsPath);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("proxyjump known_hosts removal clears only the rotated VM host", () => {
     const dir = mkdtempSync(join(tmpdir(), "rootcell-known-hosts-"));
     try {
@@ -2095,6 +2316,35 @@ describe("VM and network providers", () => {
         "list --format json agent-dev",
         "--tty=false stop --force agent-dev",
       ]);
+    } finally {
+      restoreEnv("ROOTCELL_LIMACTL", oldLimactl);
+      restoreEnv("ROOTCELL_LIMACTL_CALLS", oldCalls);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("Lima copy uses limactl copy with rootcell guest path translation", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rootcell-lima-copy-test-"));
+    const oldLimactl = process.env.ROOTCELL_LIMACTL;
+    const oldCalls = process.env.ROOTCELL_LIMACTL_CALLS;
+    try {
+      const callsPath = join(dir, "calls.txt");
+      const limactl = join(dir, "limactl");
+      writeFileSync(limactl, fakeLimactlCopyScript(), "utf8");
+      chmodSync(limactl, 0o755);
+      process.env.ROOTCELL_LIMACTL = limactl;
+      process.env.ROOTCELL_LIMACTL_CALLS = callsPath;
+
+      const config = buildConfig(dir, {}, fakeInstance("dev", dir));
+      const provider = new LimaVmProvider(config, ignoreLog);
+
+      await provider.copy(config.agentVm, ["./dir"], ":/tmp/", { recursive: true });
+      expect(readLines(callsPath)).toEqual(["--tty=false copy -r ./dir agent-dev:/tmp/"]);
+
+      const guestToHostCallsPath = join(dir, "guest-to-host-calls.txt");
+      process.env.ROOTCELL_LIMACTL_CALLS = guestToHostCallsPath;
+      await provider.copy(config.agentVm, [":relative/path"], "./out");
+      expect(readLines(guestToHostCallsPath)).toEqual(["--tty=false copy agent-dev:relative/path ./out"]);
     } finally {
       restoreEnv("ROOTCELL_LIMACTL", oldLimactl);
       restoreEnv("ROOTCELL_LIMACTL_CALLS", oldCalls);
@@ -3030,6 +3280,15 @@ function fakeLimactlStopScript(input: { readonly gracefulStatus: number }): stri
   ].join("\n");
 }
 
+function fakeLimactlCopyScript(): string {
+  return [
+    "#!/bin/sh",
+    "printf '%s\\n' \"$*\" > \"$ROOTCELL_LIMACTL_CALLS\"",
+    "exit 0",
+    "",
+  ].join("\n");
+}
+
 function readLines(path: string): readonly string[] {
   return readFileSync(path, "utf8").trim().split("\n");
 }
@@ -3044,6 +3303,15 @@ function fakeForwardingSshScript(): string {
     "fi",
     "trap 'exit 0' TERM INT",
     "while true; do sleep 1; done",
+    "",
+  ].join("\n");
+}
+
+function fakeScpScript(): string {
+  return [
+    "#!/bin/sh",
+    "printf '%s\\n' \"$@\" > \"$ROOTCELL_FAKE_SCP_ARGS\"",
+    "exit 0",
     "",
   ].join("\n");
 }

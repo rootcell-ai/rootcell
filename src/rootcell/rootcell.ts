@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { parseRootcellArgs } from "./args.ts";
+import { parseRootcellCopySpec } from "./copy.ts";
 import { loadDotEnv, nixString, parseSecretMappings } from "./env.ts";
 import { runExtensionCommand } from "./extensions/commands.ts";
 import type { ExtensionHostCommandContext } from "./extensions/registry.ts";
@@ -34,7 +35,7 @@ import type { NetworkPlan, ProviderBundle, VmNetworkAttachment, VmRole, VmStatus
 import { parseSchema } from "./schema.ts";
 import { parseAwsSecretsManagerProviderConfigs } from "./secrets/aws-secrets-manager-config.ts";
 import { openRoleTargetTunnel, waitForForegroundTunnel, type PortAvailabilityCheck } from "./tunnels.ts";
-import { RootcellConfigSchema, type RootcellConfig, type RootcellInstance, type SpyOptions, type VmFileSet } from "./types.ts";
+import { RootcellConfigSchema, type RootcellConfig, type RootcellCopyOptions, type RootcellInstance, type SpyOptions, type VmFileSet } from "./types.ts";
 
 const GUEST_USER = "luser";
 
@@ -85,6 +86,7 @@ const SPY_ENV_DEFAULTS = {
   ROOTCELL_SPY_PORT: String(SPY_DEFAULT_PORT),
 } as const;
 const SPY_ENV_KEYS = Object.keys(SPY_ENV_DEFAULTS) as (keyof typeof SPY_ENV_DEFAULTS)[];
+const DEFAULT_COPY_OPTIONS: RootcellCopyOptions = { recursive: false };
 const SPY_BEDROCK_SECRET_ENV_NAMES = new Set([
   "AWS_ACCESS_KEY_ID",
   "AWS_SECRET_ACCESS_KEY",
@@ -266,7 +268,12 @@ export class RootcellApp<TAttachment extends VmNetworkAttachment> {
     this.networkPlan = this.providers.network.plan();
   }
 
-  async runAfterEnvironment(subcommand: string, rest: readonly string[], spyOptions: SpyOptions): Promise<number> {
+  async runAfterEnvironment(
+    subcommand: string,
+    rest: readonly string[],
+    spyOptions: SpyOptions,
+    copyOptions: RootcellCopyOptions = DEFAULT_COPY_OPTIONS,
+  ): Promise<number> {
     if (subcommand === "list") {
       process.stdout.write(formatVmList(await this.listVms()));
       return 0;
@@ -331,6 +338,9 @@ export class RootcellApp<TAttachment extends VmNetworkAttachment> {
     }
 
     await this.ensureAgent(needsProvisionForCa);
+    if (subcommand === "copy") {
+      return await this.runCopy(rest, copyOptions);
+    }
     if (subcommand === "provision") {
       log("done.");
       return 0;
@@ -448,6 +458,12 @@ export class RootcellApp<TAttachment extends VmNetworkAttachment> {
       return 1;
     }
     return (await this.providers.vm.exec(this.config.agentVm, ["cat", keyPath], { allowFailure: true })).status;
+  }
+
+  private async runCopy(rest: readonly string[], options: RootcellCopyOptions): Promise<number> {
+    const spec = parseRootcellCopySpec(rest);
+    await this.providers.vm.copy(this.config.agentVm, spec.sources, spec.target, options);
+    return 0;
   }
 
   private async ensureExistingVmNetworksCompatible(): Promise<void> {
@@ -1452,7 +1468,7 @@ export async function rootcellMain(args: readonly string[], importMetaPath: stri
     const instance = loadRootcellInstance(repoDir, instanceName, process.env);
     const config = buildConfig(repoDir, process.env, instance);
     const app = new RootcellApp(config, createProviderBundle(config, log));
-    return await app.runAfterEnvironment(parsed.subcommand, parsed.rest, parsed.spyOptions);
+    return await app.runAfterEnvironment(parsed.subcommand, parsed.rest, parsed.spyOptions, parsed.copyOptions);
   } catch (error) {
     log(messageFromUnknown(error));
     return error instanceof SelectedInstanceStateError ? error.status : 1;

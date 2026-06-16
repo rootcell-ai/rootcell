@@ -1,5 +1,5 @@
 export interface SubcommandMetadata {
-  readonly name: "provision" | "allow" | "pubkey" | "spy" | "list" | "stop" | "remove" | "edit" | "extension" | "select";
+  readonly name: "provision" | "allow" | "pubkey" | "copy" | "spy" | "list" | "stop" | "remove" | "edit" | "extension" | "select";
   readonly description: string;
 }
 
@@ -13,6 +13,7 @@ export const ROOTCELL_SUBCOMMANDS: readonly SubcommandMetadata[] = [
   { name: "provision", description: "re-copy files and rebuild both VMs" },
   { name: "allow", description: "hot-reload allowlists into the firewall VM" },
   { name: "pubkey", description: "print the agent VM SSH public key" },
+  { name: "copy", description: "copy files between the host and the agent VM" },
   { name: "spy", description: "open the browser spy through a local SSH tunnel" },
 ] as const;
 

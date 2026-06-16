@@ -1,5 +1,6 @@
 import yargs from "yargs/yargs";
 import type { Argv, ArgumentsCamelCase } from "yargs";
+import { parseRootcellCopySpec } from "./copy.ts";
 import { completeExtensionCommand } from "./extensions/commands.ts";
 import { isRootcellSubcommand, ROOTCELL_SUBCOMMANDS, type RootcellSubcommand } from "./metadata.ts";
 import { DEFAULT_INSTANCE, listRootcellInstanceNames, readSelectedRootcellInstance, validateInstanceName } from "./instance.ts";
@@ -10,6 +11,7 @@ import {
   ParsedRootcellRunArgsSchema,
   ParsedRootcellSelectArgsSchema,
   ROOTCELL_INIT_ENV_PROVIDER_TYPES,
+  RootcellCopyOptionsSchema,
   RootcellInitEnvProviderTypeSchema,
   SpyOptionsSchema,
   type ParsedRootcellArgs,
@@ -38,6 +40,11 @@ interface EditArgs extends GlobalArgs {
 
 interface ExtensionArgs extends GlobalArgs {
   readonly extensionArgs?: readonly string[];
+}
+
+interface CopyArgs extends GlobalArgs {
+  readonly copyArgs?: readonly string[];
+  readonly recursive?: boolean;
 }
 
 interface SelectArgs extends GlobalArgs {
@@ -212,6 +219,25 @@ function createParser(args: readonly string[]): Argv {
     .command(...rootcellSubcommand("provision"))
     .command(...rootcellSubcommand("allow"))
     .command(...rootcellSubcommand("pubkey"))
+    .command(
+      "copy [copyArgs..]",
+      subcommandDescription("copy"),
+      (argv: ParserArgv) => argv
+        .parserConfiguration({ "unknown-options-as-args": false })
+        .option("recursive", {
+          alias: "r",
+          describe: "copy directories recursively",
+          type: "boolean",
+          default: false,
+        })
+        .positional("copyArgs", {
+          array: true,
+          describe: "source path(s) and target path; guest paths use :/path",
+          type: "string",
+        })
+        .demandCommand(0, 0)
+        .strictOptions(),
+    )
     .command(...rootcellSubcommand("list"))
     .command(...rootcellSubcommand("stop"))
     .command(...rootcellSubcommand("remove"))
@@ -265,6 +291,8 @@ function createParser(args: readonly string[]): Argv {
     .example("$0 edit http", "edit the HTTPS allowlist for the selected instance")
     .example("$0 --instance dev edit dns", "edit the DNS allowlist for the dev instance")
     .example("$0 --instance dev allow", "reload allowlists for the dev instance")
+    .example("$0 copy ./file :/tmp/", "copy a host file into the selected agent VM")
+    .example("$0 copy -r :/tmp/output ./output", "copy a directory from the selected agent VM")
     .example("$0 --instance aws-dev --init-env aws-ec2", "initialize an AWS EC2 instance environment")
     .example("$0 list", "list rootcell VMs and their current state")
     .example("$0 stop --instance dev", "stop the dev instance VMs")
@@ -277,7 +305,7 @@ function createParser(args: readonly string[]): Argv {
 
 export function parseRootcellArgs(args: readonly string[]): ParsedRootcellArgs {
   rejectUnknownSpyHelpOptions(args);
-  const argv = createParser(args).parseSync() as ArgumentsCamelCase<GuestArgs & SpyArgs & ExtensionArgs & SelectArgs>;
+  const argv = createParser(args).parseSync() as ArgumentsCamelCase<GuestArgs & SpyArgs & ExtensionArgs & CopyArgs & SelectArgs>;
   const firstToken = firstRootcellToken(args);
   if (
     argv.help === true
@@ -319,7 +347,14 @@ export function parseRootcellArgs(args: readonly string[]): ParsedRootcellArgs {
       ? [argString((argv as ArgumentsCamelCase<EditArgs>).target)]
       : subcommand === "extension"
         ? stringArray((argv as ArgumentsCamelCase<ExtensionArgs>).extensionArgs)
+        : subcommand === "copy"
+          ? validatedCopyArgs(argv)
         : [];
+    const copyOptions = subcommand === "copy"
+      ? parseSchema(RootcellCopyOptionsSchema, {
+        recursive: argv.recursive ?? false,
+      }, "invalid copy options")
+      : undefined;
     return parseSchema(ParsedRootcellRunArgsSchema, {
       kind: "run",
       instanceName: instanceName(argv),
@@ -330,6 +365,7 @@ export function parseRootcellArgs(args: readonly string[]): ParsedRootcellArgs {
           open: argv.open ?? true,
         }, "invalid spy options")
         : DEFAULT_SPY_OPTIONS,
+      ...(copyOptions === undefined ? {} : { copyOptions }),
     }, "invalid parsed rootcell args");
   }
 
@@ -358,7 +394,13 @@ function fail(message: string, error: Error): never {
   throw error instanceof Error ? error : new Error(message);
 }
 
-function parsedSubcommand(argv: ArgumentsCamelCase<GuestArgs & SpyArgs & ExtensionArgs & SelectArgs>): RootcellSubcommand | undefined {
+function validatedCopyArgs(argv: ArgumentsCamelCase<CopyArgs>): readonly string[] {
+  const rest = stringArray(argv.copyArgs);
+  parseRootcellCopySpec(rest);
+  return rest;
+}
+
+function parsedSubcommand(argv: ArgumentsCamelCase<GuestArgs & SpyArgs & ExtensionArgs & CopyArgs & SelectArgs>): RootcellSubcommand | undefined {
   const command = argv._[0];
   return typeof command === "string" && isRootcellSubcommand(command) ? command : undefined;
 }

@@ -1,9 +1,10 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { isRootcellGuestCopyPath, rootcellGuestCopyPath } from "../copy.ts";
 import { runAsyncInherited, runCapture, runInherited } from "../process.ts";
 import type { RootcellConfig } from "../types.ts";
-import type { CopyToGuestOptions, ExecOptions, LocalPortForwardHandle, LocalPortForwardOptions } from "../providers/types.ts";
+import type { CopyOptions, CopyToGuestOptions, ExecOptions, LocalPortForwardHandle, LocalPortForwardOptions } from "../providers/types.ts";
 import type { CommandResult, InheritedCommandResult } from "../types.ts";
 import type { GuestTransport } from "./types.ts";
 
@@ -51,16 +52,19 @@ export class ProxyJumpSshTransport implements GuestTransport {
     ]);
   }
 
-  copyToGuest(name: string, hostPath: string, guestPath: string, options: CopyToGuestOptions = {}): Promise<void> {
-    const alias = this.aliasFor(name);
+  copy(name: string, sources: readonly string[], target: string, options: CopyOptions = {}): Promise<void> {
     runInherited("scp", [
       "-F",
       this.writeSshConfig(),
       ...(options.recursive === true ? ["-r"] : []),
-      hostPath,
-      `${alias}:${guestPath}`,
+      ...sources.map((source) => this.copyOperand(name, source)),
+      this.copyOperand(name, target),
     ]);
     return Promise.resolve();
+  }
+
+  copyToGuest(name: string, hostPath: string, guestPath: string, options: CopyToGuestOptions = {}): Promise<void> {
+    return this.copy(name, [hostPath], `:${guestPath}`, options);
   }
 
   async forwardLocalPort(name: string, options: LocalPortForwardOptions): Promise<LocalPortForwardHandle> {
@@ -165,6 +169,13 @@ export class ProxyJumpSshTransport implements GuestTransport {
       return "rootcell-agent";
     }
     throw new Error(`unknown rootcell VM for SSH transport: ${name}`);
+  }
+
+  private copyOperand(name: string, operand: string): string {
+    if (!isRootcellGuestCopyPath(operand)) {
+      return operand;
+    }
+    return `${this.aliasFor(name)}:${rootcellGuestCopyPath(operand)}`;
   }
 
   private writeSshConfig(): string {

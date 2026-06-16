@@ -54,6 +54,10 @@ export interface CopyToGuestOptions {
   readonly recursive?: boolean;
 }
 
+export interface CopyOptions {
+  readonly recursive?: boolean;
+}
+
 export interface LocalPortForwardOptions {
   readonly localHost: string;
   readonly localPort: number;
@@ -92,6 +96,7 @@ export interface VmProvider<TAttachment extends VmNetworkAttachment = VmNetworkA
   exec(name: string, command: readonly string[], options?: ExecOptions): Promise<InheritedCommandResult>;
   execCapture(name: string, command: readonly string[], options?: ExecOptions): Promise<CommandResult>;
   execInteractive(name: string, command: readonly string[], options?: ExecOptions): Promise<number>;
+  copy(name: string, sources: readonly string[], target: string, options?: CopyOptions): Promise<void>;
   copyToGuest(name: string, hostPath: string, guestPath: string, options?: CopyToGuestOptions): Promise<void>;
   forwardLocalPort(name: string, options: LocalPortForwardOptions): Promise<LocalPortForwardHandle>;
 }
