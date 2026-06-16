@@ -1,7 +1,7 @@
 import { ProxyJumpSshTransport, type ProxyJumpSshEndpoints } from "../transports/proxyjump-ssh.ts";
 import type { CommandResult, InheritedCommandResult } from "../types.ts";
 import type { RootcellConfig } from "../types.ts";
-import type { CopyToGuestOptions, ExecOptions, LocalPortForwardHandle, LocalPortForwardOptions, VmProvider, VmRole, VmStatus } from "./types.ts";
+import type { CopyOptions, CopyToGuestOptions, ExecOptions, LocalPortForwardHandle, LocalPortForwardOptions, VmProvider, VmRole, VmStatus } from "./types.ts";
 import type { AwsEc2NetworkAttachment } from "./aws-ec2-network.ts";
 import { AwsEc2TerraformProject } from "./aws-ec2-terraform.ts";
 
@@ -98,6 +98,10 @@ export class AwsEc2VmProvider implements VmProvider<AwsEc2NetworkAttachment> {
 
   async execInteractive(name: string, command: readonly string[], options: ExecOptions = {}): Promise<number> {
     return await this.transport.execInteractive(name, command, options);
+  }
+
+  copy(name: string, sources: readonly string[], target: string, options: CopyOptions = {}): Promise<void> {
+    return this.transport.copy(name, sources, target, options);
   }
 
   copyToGuest(name: string, hostPath: string, guestPath: string, options: CopyToGuestOptions = {}): Promise<void> {

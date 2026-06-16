@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
+import { isRootcellGuestCopyPath, rootcellGuestCopyPath } from "../copy.ts";
 import { resolveHostTool } from "../host-tools.ts";
 import { runAsyncInherited, runCapture, runInherited } from "../process.ts";
 import { NonEmptyStringSchema, parseSchema, PositiveSafeIntegerSchema } from "../schema.ts";
@@ -9,7 +10,7 @@ import { forgetKnownHost, ProxyJumpSshTransport, sshConfigValue, type ProxyJumpS
 import type { RootcellConfig } from "../types.ts";
 import type { CommandResult, InheritedCommandResult } from "../types.ts";
 import type { LimaUserV2NetworkAttachment } from "./macos-lima-user-v2-network.ts";
-import type { CopyToGuestOptions, ExecOptions, LocalPortForwardHandle, LocalPortForwardOptions, VmProvider, VmRole, VmStatus } from "./types.ts";
+import type { CopyOptions, CopyToGuestOptions, ExecOptions, LocalPortForwardHandle, LocalPortForwardOptions, VmProvider, VmRole, VmStatus } from "./types.ts";
 
 const LimaProviderSchema = z.custom<"lima">((value) => value === "lima", { message: "provider mismatch" });
 const LimaVmRoleSchema = z.custom<VmRole>(
@@ -224,11 +225,22 @@ export class LimaVmProvider implements VmProvider<LimaUserV2NetworkAttachment> {
     return await this.transport.execInteractive(name, command, options);
   }
 
+  copy(name: string, sources: readonly string[], target: string, options: CopyOptions = {}): Promise<void> {
+    runInherited(this.ensureLimactl(), [
+      "--tty=false",
+      "copy",
+      ...(options.recursive === true ? ["-r"] : []),
+      ...sources.map((source) => this.limaCopyOperand(name, source)),
+      this.limaCopyOperand(name, target),
+    ]);
+    return Promise.resolve();
+  }
+
   copyToGuest(name: string, hostPath: string, guestPath: string, options: CopyToGuestOptions = {}): Promise<void> {
     if (this.shouldUseBootstrapSsh(name)) {
       return this.copyToGuestBootstrap(name, hostPath, guestPath, options);
     }
-    return this.transport.copyToGuest(name, hostPath, guestPath, options);
+    return this.copy(name, [hostPath], `:${guestPath}`, options);
   }
 
   forwardLocalPort(name: string, options: LocalPortForwardOptions): Promise<LocalPortForwardHandle> {
@@ -567,6 +579,17 @@ export class LimaVmProvider implements VmProvider<LimaUserV2NetworkAttachment> {
       return "f";
     }
     throw new Error(`unknown rootcell VM for Lima provider: ${name}`);
+  }
+
+  private limaCopyOperand(name: string, operand: string): string {
+    if (!isRootcellGuestCopyPath(operand)) {
+      return operand;
+    }
+    return `${this.limaInstanceName(name)}:${rootcellGuestCopyPath(operand)}`;
+  }
+
+  private limaInstanceName(name: string): string {
+    return this.readVmState(name)?.limaInstance ?? name;
   }
 }
 

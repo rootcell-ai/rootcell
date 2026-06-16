@@ -102,6 +102,12 @@ export const SpyOptionsSchema = z.object({
 
 export type SpyOptions = Readonly<z.infer<typeof SpyOptionsSchema>>;
 
+export const RootcellCopyOptionsSchema = z.object({
+  recursive: z.boolean(),
+}).strict();
+
+export type RootcellCopyOptions = Readonly<z.infer<typeof RootcellCopyOptionsSchema>>;
+
 const RootcellSubcommandOrEmptySchema = z.custom<RootcellSubcommand | "">(
   (value) => value === "" || (typeof value === "string" && isRootcellSubcommand(value)),
   { message: "must be a rootcell subcommand" },
@@ -113,14 +119,16 @@ export const ParsedRootcellRunArgsSchema = z.object({
   subcommand: RootcellSubcommandOrEmptySchema,
   rest: z.array(z.string()),
   spyOptions: SpyOptionsSchema,
+  copyOptions: RootcellCopyOptionsSchema.optional(),
 });
 
 type ParsedRootcellRunArgsOutput = z.infer<typeof ParsedRootcellRunArgsSchema>;
 
 export type ParsedRootcellRunArgs = Readonly<
-  Omit<ParsedRootcellRunArgsOutput, "rest" | "spyOptions"> & {
+  Omit<ParsedRootcellRunArgsOutput, "rest" | "spyOptions" | "copyOptions"> & {
     readonly rest: readonly string[];
     readonly spyOptions: SpyOptions;
+    readonly copyOptions?: RootcellCopyOptions | undefined;
   }
 >;
 

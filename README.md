@@ -216,6 +216,8 @@ state root.
 ./rootcell select dev             # use the dev instance by default
 ./rootcell -- pi                  # run pi directly
 ./rootcell -- nix flake update    # run any command inside the agent VM
+./rootcell copy ./file :/tmp/     # copy a host file into the agent VM
+./rootcell copy -r :/tmp/out ./out # copy files back from the agent VM recursively
 ./rootcell edit env               # edit the instance .env in $EDITOR
 ./rootcell edit http              # edit the HTTPS allowlist in $EDITOR
 ./rootcell edit dns               # edit the DNS allowlist in $EDITOR
