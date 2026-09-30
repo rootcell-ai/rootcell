@@ -2922,12 +2922,10 @@ describe("rootcell extension command", () => {
             extensionConfig: parseExtensionsConfig("pi-plannotator=true\n"),
             config: buildConfig(repo, env, fakeInstance("dev", repo, env)),
             log: ignoreLog,
-            vmStatus: (role: VmRole) => {
-              void role;
+            vmStatus: () => {
               return Promise.resolve({ state: "running" as const });
             },
-            forwardLocalPort: (role: VmRole, options: LocalPortForwardOptions) => {
-              void role;
+            forwardLocalPort: (_role: VmRole, options: LocalPortForwardOptions) => {
               return Promise.resolve({
                 ...options,
                 closed: Promise.resolve(0),

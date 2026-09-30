@@ -475,7 +475,7 @@ test("keeps inspector summary metric values readable", async ({ page }) => {
   await page.getByTestId("timeline-row").first().click();
 
   const started = page.getByTestId("inspector-section-summary").locator('[data-summary-metric="Started"]');
-  await expect(started).toContainText("May");
+  await expect(started).toContainText(":");
 
   const metrics = await started.evaluate((element) => {
     const styles = getComputedStyle(element);

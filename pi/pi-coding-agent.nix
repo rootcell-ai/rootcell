@@ -12,18 +12,22 @@
 # and symlink the binary into $out/bin so `pi` is on PATH.
 pkgs.stdenv.mkDerivation rec {
   pname = "pi-coding-agent";
-  version = "0.80.3";
+  version = "0.99.1";
 
   src = pkgs.fetchurl {
     url = "https://github.com/earendil-works/pi/releases/download/v${version}/pi-linux-arm64.tar.gz";
-    sha256 = "0s317jrf8xq9i29qckc298nqkxhyicrbrffab2ivvaak14mani65";
+    sha256 = "0m39f69dq7hxff7qbz4w9gv86233blc0j7gps3zjarf8bgjsjcp6";
   };
 
   # Patch the bundled ELF interpreter to point at glibc inside the Nix
   # store; otherwise the binary fails immediately on NixOS, which has no
   # /lib64/ld-linux-aarch64.so.1.
   nativeBuildInputs = [ pkgs.autoPatchelfHook ];
-  buildInputs = [ pkgs.stdenv.cc.cc.lib ];
+  buildInputs = [
+    pkgs.stdenv.cc.cc.lib
+    # The bundled Linux clipboard addon links against libxcb.
+    pkgs.libxcb
+  ];
 
   installPhase = ''
     runHook preInstall
