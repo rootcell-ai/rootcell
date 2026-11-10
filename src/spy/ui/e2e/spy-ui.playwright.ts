@@ -470,12 +470,13 @@ test("shows compaction candidate labels in the selected-call summary", async ({ 
 
 test("keeps inspector summary metric values readable", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
+  // Use a fixed timestamp; the live test server retimes its events to today.
+  await installCacheTimelineRoutes(page);
   await page.goto("/?since=0");
-  await expect(page.getByTestId("timeline-row")).toHaveCount(5);
-  await page.getByTestId("timeline-row").first().click();
+  await timelineRow(page, CACHE_TIMELINE_CALL_ID).click();
 
   const started = page.getByTestId("inspector-section-summary").locator('[data-summary-metric="Started"]');
-  await expect(started).toContainText(":");
+  await expect(started).toContainText("May");
 
   const metrics = await started.evaluate((element) => {
     const styles = getComputedStyle(element);
